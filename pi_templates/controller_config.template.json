@@ -1,0 +1,15 @@
+{
+  "shed_no": 1,
+  "dashboard_url": "http://192.168.1.10:8090",
+  "listen_port": 8091,
+  "serial_port": "/dev/ttyACM0",
+  "serial_baudrate": 115200,
+  "serial_timeout": 1.0,
+  "serial_enabled": true,
+  "sync_on_sensor_update": true,
+  "touch_refresh_seconds": 10,
+  "temp_low_c": 18.0,
+  "temp_high_c": 24.0,
+  "water_low_lpm": 0.1,
+  "feed_low_kg": 2000.0
+}

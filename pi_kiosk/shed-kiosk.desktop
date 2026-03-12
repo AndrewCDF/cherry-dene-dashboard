@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=Shed Controller Kiosk
+Exec=/home/pi/shed-controller/pi_kiosk/kiosk.sh http://127.0.0.1:8091
+X-GNOME-Autostart-enabled=true

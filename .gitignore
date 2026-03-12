@@ -1,0 +1,14 @@
+__pycache__/
+.pytest_cache/
+*.pyc
+.DS_Store
+
+data/
+controller_data/
+*.zip
+
+.pycache/
+
+pi_templates/*.local.json
+controller_data/*.json
+data/controllers.json

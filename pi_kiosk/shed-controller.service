@@ -1,0 +1,16 @@
+[Unit]
+Description=Shed Controller Flask App
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/shed-controller
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /home/pi/shed-controller/shed_controller_server.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

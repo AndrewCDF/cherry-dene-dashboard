@@ -1,0 +1,73 @@
+# Raspberry Pi 5 Shed Controller Setup
+
+## What this installs
+
+- `shed_controller_server.py`: local Flask controller UI on the Pi
+- `pi_kiosk/shed-controller.service`: runs the Flask app at boot
+- `pi_kiosk/kiosk.sh`: launches Chromium in fullscreen kiosk mode
+- `pi_kiosk/shed-kiosk.desktop`: autostarts the browser into the touch UI
+
+## Expected hardware
+
+- Raspberry Pi 5
+- Raspberry Pi OS with desktop
+- 7 inch LCD touch screen
+- Pico 2 connected over USB
+
+## Serial protocol from the Pico 2
+
+The controller expects one JSON object per line over USB serial, for example:
+
+```json
+{"temp_c": 21.4, "rh_pct": 64.1, "water_lpm": 3.22, "feed_kg": 1840, "light_lux": 320, "pressure_pa": 101233, "status": "Sensors OK", "alarms": []}
+```
+
+## First run
+
+1. Copy this project to `/home/pi/shed-controller`
+2. Install Python dependencies:
+
+```bash
+sudo apt update
+sudo apt install -y python3-flask python3-serial chromium-browser unclutter onboard
+```
+
+3. Start the controller once:
+
+```bash
+cd /home/pi/shed-controller
+python3 shed_controller_server.py
+```
+
+This creates `controller_data/controller_config.json`.
+
+4. Edit `controller_data/controller_config.json` for your shed:
+
+```json
+{
+  "shed_no": 3,
+  "dashboard_url": "http://192.168.1.10:8090",
+  "listen_port": 8091,
+  "serial_port": "/dev/ttyACM0",
+  "serial_baudrate": 115200,
+  "serial_timeout": 1.0,
+  "serial_enabled": true,
+  "sync_on_sensor_update": false,
+  "touch_refresh_seconds": 10
+}
+```
+
+5. Install the service and kiosk startup:
+
+```bash
+cd /home/pi/shed-controller
+sudo ./pi_kiosk/install_pi_kiosk.sh /home/pi/shed-controller pi
+```
+
+## Notes
+
+- The Flask app listens on the configured `listen_port`, default `8091`
+- The Chromium kiosk opens `http://127.0.0.1:8091`
+- `onboard` is started by the kiosk script so numeric fields can bring up an on-screen keyboard on the touchscreen
+- If your Pico appears on another port, update `serial_port`
+- If the dashboard must allocate crop IDs for controller-started crops, keep the updated `dashboard_server.py` running on the farm side
