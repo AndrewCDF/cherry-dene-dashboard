@@ -1089,6 +1089,31 @@ def active_crop_id_from_entries(entries):
     return active_crop_id
 
 
+def active_crop_epoch_from_entries(entries, crop_id=None):
+    if crop_id in [None, ""]:
+        crop_id = active_crop_id_from_entries(entries)
+    if crop_id in [None, ""]:
+        return None
+    earliest = None
+    for key in entries:
+        rec = entries.get(key, {})
+        try:
+            rec_crop_id = int(rec.get("crop_id"))
+            crop_active = 1 if int(rec.get("crop_active", 0) or 0) == 1 else 0
+            bird_count = int(rec.get("bird_count", 0) or 0)
+        except Exception:
+            continue
+        if rec_crop_id != int(crop_id) or crop_active != 1 or bird_count <= 0:
+            continue
+        try:
+            placement_epoch = int(rec.get("placement_epoch"))
+        except Exception:
+            continue
+        if earliest is None or placement_epoch < earliest:
+            earliest = placement_epoch
+    return earliest
+
+
 def oldest_bird_age_days(entries):
     oldest_days = None
     now_ts = int(time.time())
@@ -1124,6 +1149,7 @@ def build_allocation_rows(state):
             "bird_count": rec["bird_count"],
             "crop_active": rec["crop_active"],
             "crop_id": rec["crop_id"],
+            "crop_code": fmt_crop_code(rec["crop_id"], rec["placement_epoch"]),
             "updated_ts": rec["updated_ts"],
             "placement_epoch": rec["placement_epoch"],
         })
@@ -1482,12 +1508,26 @@ def fmt_value(value, fmt=None):
         return "--"
 
 
+def fmt_crop_code(crop_id, epoch=None):
+    try:
+        crop_no = int(crop_id)
+        if crop_no <= 0:
+            return "--"
+        if epoch not in [None, ""]:
+            date_part = datetime.fromtimestamp(int(epoch)).strftime("%Y%m%d")
+            return "CDF-%s-%04d" % (date_part, crop_no)
+        return "CDF-%04d" % crop_no
+    except Exception:
+        return "--"
+
+
 def build_home_context():
     cfg = load_config()
     state = load_state()
     entry = get_entry_for_dest(state, cfg["shed_no"])
     total_birds = total_birds_from_entries(state.get("entries", {}))
     active_crop_id = active_crop_id_from_entries(state.get("entries", {}))
+    active_crop_epoch = active_crop_epoch_from_entries(state.get("entries", {}), active_crop_id)
     oldest_age_days = oldest_bird_age_days(state.get("entries", {}))
     allocation_summary = allocation_summary_text(cfg["shed_no"], state.get("entries", {}))
     sensors = state.get("sensors", default_sensor_state())
@@ -1610,6 +1650,7 @@ def build_home_context():
         "oldest_bird_age": fmt_value(oldest_age_days, "i"),
         "allocation_summary": allocation_summary,
         "active_crop_id": active_crop_id,
+        "active_crop_code": fmt_crop_code(active_crop_id, active_crop_epoch),
         "current_datetime": datetime.now().strftime("%d %b %Y %H:%M:%S"),
         "crop_class": crop_class,
         "temp_c": fmt_value(sensors.get("temp_c"), "f1"),
@@ -2123,26 +2164,34 @@ HTML = """
             line-height: 1;
             letter-spacing: 0.02em;
             white-space: nowrap;
+        }
+        h1.active {
             text-shadow:
                 0 0 10px rgba(53,208,127,0.95),
                 0 0 20px rgba(53,208,127,0.65),
                 0 0 34px rgba(53,208,127,0.35);
         }
+        h1.inactive {
+            text-shadow:
+                0 0 10px rgba(255,119,119,0.95),
+                0 0 20px rgba(255,119,119,0.65),
+                0 0 34px rgba(255,119,119,0.35);
+        }
         .title-row {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            gap: 16px;
+            gap: 22px;
             flex-wrap: nowrap;
         }
         .hero-crop-wrap {
             display: flex;
-            flex-direction: column;
-            align-items: flex-end;
-            gap: 6px;
+            align-items: center;
+            justify-content: flex-end;
+            margin-left: auto;
         }
         .hero-crop {
-            font-size: 40px;
+            font-size: 18px;
             font-weight: 700;
             color: var(--text);
             line-height: 1;
@@ -2182,83 +2231,125 @@ HTML = """
                 0 0 28px rgba(255,119,119,0.28);
         }
         .hero-birds {
-            margin-top: 14px;
             display: inline-flex;
             align-items: baseline;
-            gap: 10px;
-            padding: 12px 16px;
+            justify-content: center;
+            gap: 8px;
+            padding: 14px 16px;
             border-radius: 16px;
             background: var(--panel-2);
             border: 1px solid var(--line);
             text-decoration: none;
+            min-height: 52px;
+            box-sizing: border-box;
+        }
+        .hero-birds.active,
+        .hero-age.active,
+        .hero-mortality.active {
+            border-color: rgba(53,208,127,0.90);
+            box-shadow:
+                0 0 10px rgba(53,208,127,0.28),
+                0 0 18px rgba(53,208,127,0.16);
+        }
+        .hero-birds.inactive,
+        .hero-age.inactive,
+        .hero-mortality.inactive {
+            border-color: rgba(255,119,119,0.90);
+            box-shadow:
+                0 0 10px rgba(255,119,119,0.24),
+                0 0 18px rgba(255,119,119,0.14);
         }
         .hero-birds-label {
             color: var(--muted);
-            font-size: 14px;
+            font-size: 13px;
             text-transform: uppercase;
             letter-spacing: 0.08em;
+            line-height: 1;
+            white-space: nowrap;
         }
         .hero-birds-val {
-            font-size: 32px;
+            font-size: 28px;
             font-weight: 700;
             line-height: 1;
             color: var(--text);
+            white-space: nowrap;
         }
         .hero-stat-row {
             display: flex;
-            gap: 12px;
-            flex-wrap: wrap;
+            gap: 16px;
+            flex-wrap: nowrap;
+            align-items: stretch;
+            margin-top: 12px;
         }
         .hero-age {
-            margin-top: 14px;
             display: inline-flex;
             align-items: baseline;
-            gap: 10px;
-            padding: 12px 16px;
+            justify-content: center;
+            gap: 8px;
+            padding: 14px 16px;
             border-radius: 16px;
             background: var(--panel-2);
             border: 1px solid var(--line);
+            min-height: 52px;
+            box-sizing: border-box;
         }
         .hero-age-label {
             color: var(--muted);
-            font-size: 14px;
+            font-size: 13px;
             text-transform: uppercase;
             letter-spacing: 0.08em;
+            line-height: 1;
+            white-space: nowrap;
         }
         .hero-age-val {
-            font-size: 32px;
+            font-size: 28px;
             font-weight: 700;
             line-height: 1;
             color: var(--text);
+            white-space: nowrap;
         }
         .hero-mortality {
-            margin-top: 14px;
             display: inline-flex;
             align-items: baseline;
-            gap: 10px;
-            padding: 12px 16px;
+            justify-content: center;
+            gap: 8px;
+            padding: 14px 16px;
             border-radius: 16px;
             background: var(--panel-2);
             border: 1px solid var(--line);
             text-decoration: none;
             color: var(--text);
+            min-height: 52px;
+            box-sizing: border-box;
         }
         .hero-mortality-label {
             color: var(--muted);
-            font-size: 14px;
+            font-size: 13px;
             text-transform: uppercase;
             letter-spacing: 0.08em;
+            line-height: 1;
+            white-space: nowrap;
         }
         .hero-mortality-val {
-            font-size: 32px;
+            font-size: 28px;
             font-weight: 700;
             line-height: 1;
             color: var(--text);
+            white-space: nowrap;
         }
         .hero-allocations {
-            margin-top: 10px;
+            margin-top: 12px;
             color: var(--muted);
             font-size: 16px;
+        }
+        .hero-datetime-inline {
+            margin-left: auto;
+            display: inline-flex;
+            align-items: center;
+            justify-content: flex-end;
+            min-height: 64px;
+            box-sizing: border-box;
+            padding: 0 8px 0 12px;
         }
         h2 {
             margin: 0 0 14px 0;
@@ -2712,7 +2803,7 @@ HTML = """
 <body>
     <div class="wrap">
         {% if msg %}
-        <div class="msg {% if not ok %}error{% endif %}">{{ msg }}</div>
+        <div class="msg auto-dismiss {% if not ok %}error{% endif %}">{{ msg }}</div>
         {% endif %}
         <div id="offlineBanner" class="msg warn" {% if not offline_banner %}style="display:none"{% endif %}>{{ offline_banner }}</div>
 
@@ -2721,24 +2812,26 @@ HTML = """
                 <div class="hero-main">
                     <div>
                         <div class="title-row">
-                            <h1 id="headerTitle">Shed {{ shed_no }} - Cherry Dene Farm Ltd.</h1>
+                            <h1 id="headerTitle" class="{{ crop_class }}">CDF - SHED {{ shed_no }}</h1>
                             <div class="hero-crop-wrap">
-                                <div id="cropHeader" class="hero-crop {{ crop_class }}">Crop <span id="cropValue">{{ active_crop_id if active_crop_id is not none else "--" }}</span></div>
-                                <div id="cropDateTime" class="hero-datetime {{ crop_class }}">{{ current_datetime }}</div>
+                                <div id="cropHeader" class="hero-crop {{ crop_class }}">Crop <span id="cropValue">{{ active_crop_code }}</span></div>
                             </div>
                         </div>
                         <div class="hero-stat-row">
-                            <a class="hero-birds" href="{{ url_for('allocation_view') }}" id="birdsBox">
+                            <a class="hero-birds {{ crop_class }}" href="{{ url_for('allocation_view') }}" id="birdsBox">
                                 <span class="hero-birds-label">Birds</span>
                                 <span class="hero-birds-val" id="birdsValue">{{ total_birds }}</span>
                             </a>
-                            <a class="hero-mortality" href="{{ url_for('mortality_view') }}" id="mortalityBox">
+                            <a class="hero-mortality {{ crop_class }}" href="{{ url_for('mortality_view') }}" id="mortalityBox">
                                 <span class="hero-mortality-label">Mortality</span>
                                 <span class="hero-mortality-val" id="mortalityValue">{{ mortality_total }}</span>
                             </a>
-                            <div class="hero-age" id="ageBox">
+                            <div class="hero-age {{ crop_class }}" id="ageBox">
                                 <span class="hero-age-label">Bird Age</span>
                                 <span class="hero-age-val" id="birdAgeValue">{{ oldest_bird_age }}</span>
+                            </div>
+                            <div class="hero-datetime-inline">
+                                <div id="cropDateTime" class="hero-datetime {{ crop_class }}">{{ current_datetime }}</div>
                             </div>
                         </div>
                         <div class="hero-allocations" id="allocationSummary" {% if not allocation_summary %}style="display:none"{% endif %}>{{ allocation_summary }}</div>
@@ -2751,7 +2844,7 @@ HTML = """
                         <div id="picoPill" class="pill {{ sensor_class }}"><span class="pill-label">Pico</span><span class="pill-value" id="picoValue">{{ sensor_status_short }}</span></div>
                         <div id="pushPill" class="pill {{ push_class }}"><span class="pill-label">Update</span><span class="pill-value" id="pushValue">{{ push_short }}</span></div>
                         <div id="loggingPill" class="pill {{ log_class }}"><span class="pill-label">Logging</span><span class="pill-value" id="loggingValue">{{ log_short }}</span></div>
-                        <div id="syncPill" class="pill {{ sync_class }}"><span class="pill-label">Sync</span><span class="pill-value" id="syncValue">{{ sync_short }}</span></div>
+                        <div id="syncPill" class="pill {{ sync_class }}"><span class="pill-label">Office Sync</span><span class="pill-value" id="syncValue">{{ sync_short }}</span></div>
                     </div>
                 </div>
             </div>
@@ -2850,7 +2943,7 @@ HTML = """
 
         function setCropClass(activeCropId) {
             const cls = activeCropId === null ? 'inactive' : 'active';
-            ['cropHeader', 'cropDateTime'].forEach(id => {
+            ['headerTitle', 'cropHeader', 'cropDateTime', 'birdsBox', 'mortalityBox', 'ageBox'].forEach(id => {
                 const el = document.getElementById(id);
                 if (!el) return;
                 el.classList.remove('active', 'inactive');
@@ -2861,7 +2954,7 @@ HTML = """
         function renderController(data) {
             setText('birdsValue', data.total_birds);
             setText('birdAgeValue', data.oldest_bird_age);
-            setText('cropValue', data.active_crop_id === null ? '--' : data.active_crop_id);
+            setText('cropValue', data.active_crop_code || '--');
             setText('cropDateTime', data.current_datetime || '--');
             setCropClass(data.active_crop_id);
             setText('syncValue', data.sync_short || '--');
@@ -2935,6 +3028,12 @@ HTML = """
                 }
             }
         }
+
+        setTimeout(() => {
+            document.querySelectorAll('.auto-dismiss').forEach((el) => {
+                el.style.display = 'none';
+            });
+        }, 10000);
 
         async function pollController() {
             try {
@@ -3640,7 +3739,7 @@ HISTORY_HTML = """
         <div class="topbar"><a href="{{ url_for('index') }}">← Back</a></div>
         <div class="panel">
             <h1>Shed {{ shed_no }} {{ metric_title }}</h1>
-            <div class="sub">Current crop {{ crop_id if crop_id is not none else "--" }} hourly {{ metric_title|lower }} history.</div>
+            <div class="sub">Current crop {{ crop_code }} hourly {{ metric_title|lower }} history.</div>
             {% if rows %}
             <div class="chart-wrap">
                 <div class="chart-box"><canvas id="historyChart"></canvas></div>
@@ -4241,12 +4340,13 @@ ALLOCATION_HTML = """
                     <div class="allocation-top">
                         <div>
                             <div class="allocation-title">For Shed {{ row.dest_shed }}</div>
-                            <div class="allocation-meta">Started {{ row.started_at }} • Crop {{ row.crop_id if row.crop_id is not none else "--" }}</div>
+                            <div class="allocation-meta">Started {{ row.started_at }} • Crop {{ row.crop_code }}</div>
                         </div>
                         <div class="allocation-meta">{{ "Active" if row.crop_active == 1 else "Not active" }}</div>
                     </div>
                     <form class="allocation-form" method="post" action="{{ url_for('save_entry_for_dest', dest_shed=row.dest_shed) }}">
-                        <input type="number" name="bird_count" min="0" step="1" inputmode="numeric" enterkeyhint="done" value="{{ row.bird_count }}">
+                        <input type="hidden" name="return_to" value="allocation">
+                        <input type="number" name="bird_count" min="0" step="1" inputmode="numeric" enterkeyhint="done" value="{{ '' if row.bird_count == 0 else row.bird_count }}">
                         <button type="submit">Save</button>
                         <button formaction="{{ url_for('start_entry_for_dest', dest_shed=row.dest_shed) }}" type="submit">Start</button>
                         {% if row.can_move %}
@@ -4398,9 +4498,9 @@ MORTALITY_HTML = """
     <div class="wrap">
         <div class="topbar"><a href="{{ url_for('index') }}">← Back</a></div>
         <h1>Shed {{ shed_no }} Mortality</h1>
-        <div class="sub">Current crop {{ active_crop_id if active_crop_id is not none else "--" }}. Record losses against an active entry shed.</div>
+        <div class="sub">Current crop {{ active_crop_code }}. Record losses against an active entry shed.</div>
         {% if status_msg %}
-        <div class="status {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
+        <div class="status auto-dismiss {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
         {% endif %}
         <div class="grid">
             <div class="card">
@@ -4459,6 +4559,13 @@ MORTALITY_HTML = """
             </div>
         </div>
     </div>
+<script>
+setTimeout(() => {
+    document.querySelectorAll('.auto-dismiss').forEach((el) => {
+        el.style.display = 'none';
+    });
+}, 10000);
+</script>
 </body>
 </html>
 """
@@ -4579,12 +4686,14 @@ def mortality_view():
     maybe_refresh_from_dashboard()
     cfg = load_config()
     payload = fetch_mortality_from_dashboard(cfg["shed_no"])
+    state = load_state()
     status_msg = request.args.get("msg", "")
     status_ok = request.args.get("ok", "1") == "1"
     return render_template_string(
         MORTALITY_HTML,
         shed_no=cfg["shed_no"],
         active_crop_id=payload.get("active_crop_id"),
+        active_crop_code=fmt_crop_code(payload.get("active_crop_id"), active_crop_epoch_from_entries(state.get("entries", {}), payload.get("active_crop_id"))),
         target_rows=payload.get("target_rows", []),
         history_rows=payload.get("history_rows", []),
         mortality_total=fmt_value(payload.get("mortality_total"), "i"),
@@ -5103,6 +5212,7 @@ def render_metric_history(metric_key, metric_title, y_axis_title, color, fmt):
     payload = fetch_current_crop_hourly_history(shed_no)
     rows = payload.get("rows", []) if isinstance(payload, dict) else []
     crop_id = payload.get("crop_id") if isinstance(payload, dict) else None
+    crop_code = payload.get("crop_code") if isinstance(payload, dict) else fmt_crop_code(crop_id)
 
     view_rows = []
     labels = []
@@ -5124,6 +5234,7 @@ def render_metric_history(metric_key, metric_title, y_axis_title, color, fmt):
         HISTORY_HTML,
         shed_no=shed_no,
         crop_id=crop_id,
+        crop_code=crop_code,
         metric_title=metric_title,
         y_axis_title=y_axis_title,
         color=color,
@@ -5131,6 +5242,18 @@ def render_metric_history(metric_key, metric_title, y_axis_title, color, fmt):
         labels=labels,
         values=values,
     )
+
+
+def redirect_back_with_status(default_endpoint, ok, msg):
+    target = str(request.form.get("return_to", "") or request.args.get("return_to", "") or "").strip()
+    allowed = {
+        "index": "index",
+        "allocation": "allocation_view",
+        "mortality": "mortality_view",
+        "settings": "controller_settings_view",
+    }
+    endpoint = allowed.get(target, default_endpoint)
+    return redirect(url_for(endpoint, ok=1 if ok else 0, msg=msg))
 
 
 @app.route("/history/water")
@@ -5171,10 +5294,10 @@ def save_entry_for_dest(dest_shed):
         if bird_count < 0:
             raise ValueError()
     except Exception:
-        return redirect(url_for("index", ok=0, msg="Invalid bird count"))
+        return redirect_back_with_status("index", False, "Invalid bird count")
 
     ok, sync_msg = save_entry_for_dest_impl(dest_shed, bird_count)
-    return redirect(url_for("index", ok=1 if ok else 0, msg=sync_msg if sync_msg else "Saved"))
+    return redirect_back_with_status("index", ok, sync_msg if sync_msg else "Saved")
 
 
 def start_entry_for_dest_impl(dest_shed):
@@ -5203,7 +5326,7 @@ def start_entry_for_dest_impl(dest_shed):
 @app.route("/entry/<int:dest_shed>/start", methods=["POST"])
 def start_entry_for_dest(dest_shed):
     ok, sync_msg = start_entry_for_dest_impl(dest_shed)
-    return redirect(url_for("index", ok=1 if ok else 0, msg=sync_msg if sync_msg else "Started"))
+    return redirect_back_with_status("index", ok, sync_msg if sync_msg else "Started")
 
 
 def move_entry_for_dest_impl(dest_shed):
@@ -5230,7 +5353,7 @@ def move_entry_for_dest_impl(dest_shed):
 @app.route("/entry/<int:dest_shed>/move", methods=["POST"])
 def move_entry_for_dest(dest_shed):
     ok, sync_msg = move_entry_for_dest_impl(dest_shed)
-    return redirect(url_for("allocation_view", ok=1 if ok else 0, msg=sync_msg if sync_msg else "Moved"))
+    return redirect_back_with_status("allocation_view", ok, sync_msg if sync_msg else "Moved")
 
 
 def end_entry_for_dest_impl(dest_shed):
@@ -5249,7 +5372,7 @@ def end_entry_for_dest_impl(dest_shed):
 @app.route("/entry/<int:dest_shed>/end", methods=["POST"])
 def end_entry_for_dest(dest_shed):
     ok, sync_msg = end_entry_for_dest_impl(dest_shed)
-    return redirect(url_for("index", ok=1 if ok else 0, msg=sync_msg if sync_msg else "Ended"))
+    return redirect_back_with_status("index", ok, sync_msg if sync_msg else "Ended")
 
 
 @app.route("/save", methods=["POST"])

@@ -511,6 +511,30 @@ def active_crop_record_for_shed(shed_name):
     }
 
 
+def crop_start_epoch_for_state(state, crop_id):
+    if crop_id in [None, ""]:
+        return None
+    earliest = None
+    for shed_name in state:
+        entries = ensure_shed_entry_bucket(state, shed_name)
+        for key in entries:
+            rec = entries.get(key, {})
+            try:
+                rec_crop_id = int(rec.get("crop_id"))
+            except Exception:
+                continue
+            if rec_crop_id != int(crop_id):
+                continue
+            placement_epoch = rec.get("placement_epoch")
+            try:
+                placement_epoch = int(placement_epoch)
+            except Exception:
+                continue
+            if earliest is None or placement_epoch < earliest:
+                earliest = placement_epoch
+    return earliest
+
+
 def current_active_crop_id_from_state(state):
     highest = None
 
@@ -694,6 +718,7 @@ def mortality_payload_for_shed(shed_no):
                 "dest_shed": dest_shed,
                 "bird_count": rec["bird_count"],
                 "crop_id": rec.get("crop_id"),
+                "crop_code": fmt_crop_code(rec.get("crop_id"), rec.get("placement_epoch")),
             })
         i += 1
 
@@ -713,6 +738,7 @@ def mortality_payload_for_shed(shed_no):
         "shed_no": shed_no,
         "shed_name": shed_name,
         "active_crop_id": active_crop_id,
+        "active_crop_code": fmt_crop_code(active_crop_id, crop_start_epoch_for_state(state, active_crop_id)),
         "target_rows": target_rows,
         "history_rows": list(reversed(history_rows)),
         "mortality_total": mortality_total_for_shed_crop(shed_name, crop_filter),
@@ -1025,6 +1051,19 @@ def fmt_value(v, fmt=None):
         if fmt == "i":
             return f"{int(v):,d}"
         return str(v)
+    except Exception:
+        return "--"
+
+
+def fmt_crop_code(crop_id, epoch=None):
+    try:
+        crop_no = int(crop_id)
+        if crop_no <= 0:
+            return "--"
+        if epoch not in [None, ""]:
+            date_part = datetime.fromtimestamp(int(epoch)).strftime("%Y%m%d")
+            return "CDF-%s-%04d" % (date_part, crop_no)
+        return "CDF-%04d" % crop_no
     except Exception:
         return "--"
 
@@ -1407,6 +1446,7 @@ def get_recent_crops_for_shed(shed_name, max_crops=6):
 
         rows.append({
             "crop_id": rec["crop_id"],
+            "crop_code": fmt_crop_code(rec["crop_id"], rec["first_epoch"]),
             "first_epoch": rec["first_epoch"],
             "last_epoch": rec["last_epoch"],
             "start_label": start_label,
@@ -1693,6 +1733,7 @@ def build_detail_entry_rows(current_shed_no, entries):
             "placement_epoch": placement_epoch,
             "placement_str": placement_str,
             "crop_id": rec.get("crop_id"),
+            "crop_code": fmt_crop_code(rec.get("crop_id"), placement_epoch),
             "pens_text": ", ".join(pens_parts),
             "can_move": can_move,
         })
@@ -1776,13 +1817,12 @@ def build_overall_summary():
     controller_meta_map = load_controller_meta()
     farm_crop = load_farm_crop()
     current_crop_id = farm_crop.get("current_crop_id")
+    current_crop_epoch = crop_start_epoch_for_state(state, current_crop_id)
 
     total_birds_remaining = 0
     total_birds_placed = 0
     total_water = 0.0
     total_feed = 0.0
-    any_online = False
-
     i = 0
     while i < len(SHED_NUMBERS):
         shed_no = SHED_NUMBERS[i]
@@ -1791,9 +1831,6 @@ def build_overall_summary():
         live = effective_live_for_shed(live_map, controller_meta_map, shed_no)
         entries = ensure_shed_entry_bucket(state, shed_name)
         active_entries = active_entries_for_tile(entries)
-
-        if live or has_any_active_entry(entries):
-            any_online = True
 
         birds_remaining = total_birds_from_active_entries(active_entries)
         total_birds_remaining += birds_remaining
@@ -1826,7 +1863,7 @@ def build_overall_summary():
 
         i += 1
 
-    tile_state = "online" if any_online else "offline"
+    tile_state = "online" if current_crop_id not in [None, ""] else "offline"
 
     return {
         "tile_state": tile_state,
@@ -1834,7 +1871,7 @@ def build_overall_summary():
         "birds_remaining": fmt_value(total_birds_remaining if total_birds_remaining > 0 else None, "i"),
         "water": fmt_value(total_water if total_water > 0 else None, "f0"),
         "feed": fmt_value(total_feed if total_feed > 0 else None, "f1"),
-        "farm_crop_id": fmt_value(farm_crop.get("current_crop_id"), "i"),
+        "farm_crop_id": fmt_crop_code(farm_crop.get("current_crop_id"), current_crop_epoch),
     }
 
 
@@ -1847,6 +1884,7 @@ def build_rows():
     state = load_shed_entries_state()
     farm_crop = load_farm_crop()
     current_farm_crop_id = farm_crop.get("current_crop_id")
+    current_farm_crop_epoch = crop_start_epoch_for_state(state, current_farm_crop_id)
 
     rows = []
     i = 0
@@ -1993,13 +2031,13 @@ def build_rows():
             sync_age = None
         if sync_age is None:
             sync_pill_class = "sync-missing"
-            sync_pill_text = "SYNC --"
+            sync_pill_text = "SHED SYNC --"
         elif sync_age <= 30:
             sync_pill_class = "sync-ok"
-            sync_pill_text = "SYNC OK"
+            sync_pill_text = "SHED SYNC OK"
         else:
             sync_pill_class = "sync-stale"
-            sync_pill_text = "SYNC STALE"
+            sync_pill_text = "SHED SYNC STALE"
 
         rows.append({
             "shed": shed,
@@ -2013,8 +2051,8 @@ def build_rows():
             "feed_glow": feed_glow,
             "water_lpm": fmt_value(water_lpm, "f2"),
             "water_glow": water_glow,
-            "crop_id": fmt_value(crop_id),
-            "farm_crop_id": fmt_value(current_farm_crop_id, "i"),
+            "crop_id": fmt_crop_code(crop_id, placement_epoch),
+            "farm_crop_id": fmt_crop_code(current_farm_crop_id, current_farm_crop_epoch),
             "bird_count": fmt_value(birds if birds > 0 else None, "i"),
             "bird_age": fmt_value(bird_age, "i"),
             "water_7to7": fmt_value(yesterday_water, "f0"),
@@ -2040,10 +2078,12 @@ def build_rows():
 
 
 def build_dashboard_context():
+    overall = build_overall_summary()
     return {
         "sheds": build_rows(),
         "borehole": build_borehole_row(),
-        "overall": build_overall_summary(),
+        "overall": overall,
+        "header_class": "active" if str(overall.get("farm_crop_id", "--")) != "--" else "inactive",
     }
 
 
@@ -2135,20 +2175,36 @@ HTML = """
             margin: 0;
             font-size: 28px;
             color: #f0f0f0;
+        }
+        h1.active {
             text-shadow:
                 0 0 10px rgba(53,208,127,0.95),
                 0 0 20px rgba(53,208,127,0.65),
                 0 0 34px rgba(53,208,127,0.35);
         }
+        h1.inactive {
+            text-shadow:
+                0 0 10px rgba(255,119,119,0.95),
+                0 0 20px rgba(255,119,119,0.65),
+                0 0 34px rgba(255,119,119,0.35);
+        }
         .datetime {
             font-size: 18px;
             font-weight: bold;
             color: #efefef;
+            white-space: nowrap;
+        }
+        .datetime.active {
             text-shadow:
                 0 0 10px rgba(53,208,127,0.9),
                 0 0 18px rgba(53,208,127,0.55),
                 0 0 28px rgba(53,208,127,0.28);
-            white-space: nowrap;
+        }
+        .datetime.inactive {
+            text-shadow:
+                0 0 10px rgba(255,119,119,0.90),
+                0 0 18px rgba(255,119,119,0.55),
+                0 0 28px rgba(255,119,119,0.28);
         }
         .grid {
             display: grid;
@@ -2189,11 +2245,11 @@ HTML = """
                 0 0 34px rgba(53,208,127,0.35);
         }
         .card.offline {
-            border-color: #4db6ff;
+            border-color: #ff5b5b;
             box-shadow:
-                0 0 10px rgba(77,182,255,0.95),
-                0 0 20px rgba(77,182,255,0.65),
-                0 0 34px rgba(77,182,255,0.35);
+                0 0 10px rgba(255,91,91,0.95),
+                0 0 20px rgba(255,91,91,0.65),
+                0 0 34px rgba(255,91,91,0.35);
         }
         .card.nodata {
             opacity: 0.90;
@@ -2404,11 +2460,11 @@ HTML = """
                 0 0 34px rgba(53,208,127,0.22);
         }
         .summary-tile.offline {
-            border-color: #4db6ff;
+            border-color: #ff5b5b;
             box-shadow:
-                0 0 10px rgba(77,182,255,0.95),
-                0 0 20px rgba(77,182,255,0.45),
-                0 0 34px rgba(77,182,255,0.22);
+                0 0 10px rgba(255,91,91,0.95),
+                0 0 20px rgba(255,91,91,0.45),
+                0 0 34px rgba(255,91,91,0.22);
         }
         .summary-title {
             font-size: 24px;
@@ -2461,13 +2517,13 @@ HTML = """
     <div class="wrap">
         <div class="topbar">
             <div class="topbar-left">
-                <h1>Cherry Dene Farm Dashboard</h1>
+                <h1 id="headerTitle" class="{{ header_class }}">Cherry Dene Farm Dashboard</h1>
             </div>
             <div class="topbar-center">
                 <a class="settings-link" href="{{ url_for('office_settings_view') }}">⚙ Settings</a>
             </div>
             <div class="topbar-right">
-                <div id="topDateTime" class="datetime">--</div>
+                <div id="topDateTime" class="datetime {{ header_class }}">--</div>
             </div>
         </div>
 
@@ -2705,6 +2761,16 @@ function setDashClass(id, classes, allowed) {
     classes.forEach(name => { if (name) el.classList.add(name); });
 }
 
+function setHeaderClass(active) {
+    const cls = active ? 'active' : 'inactive';
+    ['headerTitle', 'topDateTime'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.classList.remove('active', 'inactive');
+        el.classList.add(cls);
+    });
+}
+
 function renderShed(s) {
     setDashText(`shed-birds-${s.shed_no}`, s.bird_count);
     setDashText(`shed-age-${s.shed_no}`, s.bird_age);
@@ -2767,6 +2833,7 @@ function renderOverall(o) {
     setDashText('overall-birds-remaining', o.birds_remaining);
     setDashText('overall-water', o.water);
     setDashText('overall-feed', o.feed);
+    setHeaderClass(o.farm_crop_id && o.farm_crop_id !== '--');
 }
 
 async function pollDashboard() {
@@ -2895,7 +2962,7 @@ RESTORE_HTML = """
         <h1>Backup Restore</h1>
         <div class="sub">Restore the full office data set or just one shed state from an office backup ZIP.</div>
         {% if status_msg %}
-        <div class="status {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
+        <div class="status auto-dismiss {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
         {% endif %}
         <div class="grid">
             <div class="panel">
@@ -2940,6 +3007,13 @@ RESTORE_HTML = """
             </table>
         </div>
     </div>
+<script>
+setTimeout(() => {
+    document.querySelectorAll('.auto-dismiss').forEach((el) => {
+        el.style.display = 'none';
+    });
+}, 10000);
+</script>
 </body>
 </html>
 """
@@ -2999,7 +3073,7 @@ OFFICE_SETTINGS_HTML = """
         <h1>Office Settings</h1>
         <div class="sub">Backups, restore, event log, and software update for the office dashboard.</div>
         {% if status_msg %}
-        <div class="status {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
+        <div class="status auto-dismiss {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
         {% endif %}
         <div class="grid">
             <div class="panel">
@@ -3052,6 +3126,13 @@ OFFICE_SETTINGS_HTML = """
             </table>
         </div>
     </div>
+<script>
+setTimeout(() => {
+    document.querySelectorAll('.auto-dismiss').forEach((el) => {
+        el.style.display = 'none';
+    });
+}, 10000);
+</script>
 </body>
 </html>
 """
@@ -3226,10 +3307,10 @@ DETAIL_HTML = """
         </div>
 
         <h1>{{ shed_name }}</h1>
-        <div class="sub">Current crop {{ active_crop_id if active_crop_id is not none else "--" }}</div>
+        <div class="sub">Current crop {{ active_crop_code }}</div>
 
         {% if status_msg %}
-        <div class="status {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
+        <div class="status auto-dismiss {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
         {% endif %}
 
         <div class="grid">
@@ -3310,6 +3391,13 @@ DETAIL_HTML = """
             </table>
         </div>
     </div>
+<script>
+setTimeout(() => {
+    document.querySelectorAll('.auto-dismiss').forEach((el) => {
+        el.style.display = 'none';
+    });
+}, 10000);
+</script>
 </body>
 </html>
 """
@@ -3349,9 +3437,9 @@ MORTALITY_HTML = """
     <div class="wrap">
         <div class="topbar"><a href="{{ url_for('shed_detail', shed_no=shed_no) }}">← {{ shed_name }}</a></div>
         <h1>{{ shed_name }} Mortality</h1>
-        <div class="sub">Current crop {{ active_crop_id if active_crop_id is not none else "--" }}. Record losses against an active entry shed.</div>
+        <div class="sub">Current crop {{ active_crop_code }}. Record losses against an active entry shed.</div>
         {% if status_msg %}
-        <div class="status {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
+        <div class="status auto-dismiss {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
         {% endif %}
         <div class="grid">
             <div class="card">
@@ -3410,6 +3498,13 @@ MORTALITY_HTML = """
             </div>
         </div>
     </div>
+<script>
+setTimeout(() => {
+    document.querySelectorAll('.auto-dismiss').forEach((el) => {
+        el.style.display = 'none';
+    });
+}, 10000);
+</script>
 </body>
 </html>
 """
@@ -3602,7 +3697,7 @@ HISTORY_HTML = """
                 <tbody>
                     {% for c in crops %}
                     <tr>
-                        <td>{{ c.crop_id }}</td>
+                        <td>{{ c.crop_code }}</td>
                         <td>{{ c.start_label }}</td>
                         <td>{{ c.end_label }}</td>
                         <td class="actions">
@@ -4428,6 +4523,7 @@ def shed_detail(shed_no):
         shed_name=shed_name,
         shed_no=shed_no,
         active_crop_id=active_crop_id,
+        active_crop_code=fmt_crop_code(active_crop_id, active_crop_record_for_shed(shed_name).get("placement_epoch")),
         entry_rows=entry_rows,
         status_msg=status_msg,
         status_ok=status_ok,
@@ -4446,6 +4542,7 @@ def shed_mortality_view(shed_no):
         shed_no=payload["shed_no"],
         shed_name=payload["shed_name"],
         active_crop_id=payload["active_crop_id"],
+        active_crop_code=payload["active_crop_code"],
         target_rows=payload["target_rows"],
         history_rows=payload["history_rows"],
         mortality_total=fmt_value(payload["mortality_total"], "i"),
@@ -4752,12 +4849,14 @@ def shed_current_crop_hourly_api(shed_no):
 
     shed_name = shed_name_from_number(shed_no)
     active_crop_id = get_active_crop_id_for_shed(shed_name)
+    active_crop = active_crop_record_for_shed(shed_name)
     rows = get_hourly_history_for_shed(shed_name, max_points=168, crop_id=active_crop_id)
 
     return jsonify({
         "shed_no": shed_no,
         "shed": shed_name,
         "crop_id": active_crop_id,
+        "crop_code": fmt_crop_code(active_crop_id, active_crop.get("placement_epoch")),
         "rows": rows,
     })
 
@@ -4832,22 +4931,20 @@ def shed_period_view(shed_no, period):
 
     shed_name = shed_name_from_number(shed_no)
     active_crop_id = get_active_crop_id_for_shed(shed_name)
+    active_crop = active_crop_record_for_shed(shed_name)
+    active_crop_code = fmt_crop_code(active_crop_id, active_crop.get("placement_epoch"))
 
     if period == "hourly":
         rows = get_hourly_history_for_shed(shed_name, max_points=168, crop_id=active_crop_id)
         rows = add_running_totals(rows)
         period_title = "Hourly"
-        period_sub = "Current crop %s hourly list with running totals and separate zoomable feed and water charts." % (
-            str(active_crop_id) if active_crop_id is not None else "--"
-        )
+        period_sub = "Current crop %s hourly list with running totals and separate zoomable feed and water charts." % active_crop_code
         first_col = "Hour"
     else:
         rows = get_daily_history_for_shed(shed_name, max_days=40, crop_id=active_crop_id)
         rows = add_running_totals(rows)
         period_title = "Daily"
-        period_sub = "Current crop %s completed 7am-7am daily list with running totals and separate zoomable feed and water charts." % (
-            str(active_crop_id) if active_crop_id is not None else "--"
-        )
+        period_sub = "Current crop %s completed 7am-7am daily list with running totals and separate zoomable feed and water charts." % active_crop_code
         first_col = "Day"
 
     labels = []
@@ -4886,18 +4983,29 @@ def shed_crop_period_view(shed_no, crop_id, period):
         abort(404)
 
     shed_name = shed_name_from_number(shed_no)
+    crop_start_epoch = None
 
     if period == "hourly":
         rows = get_hourly_history_for_shed(shed_name, max_points=0, crop_id=crop_id)
+        if rows:
+            try:
+                crop_start_epoch = int(rows[0].get("hour_epoch"))
+            except Exception:
+                crop_start_epoch = None
         rows = add_running_totals(rows)
-        period_title = "Crop %d Hourly" % crop_id
-        period_sub = "Historic crop %d hourly list with running totals and separate zoomable feed and water charts." % crop_id
+        period_title = "%s Hourly" % fmt_crop_code(crop_id, crop_start_epoch)
+        period_sub = "Historic crop %s hourly list with running totals and separate zoomable feed and water charts." % fmt_crop_code(crop_id, crop_start_epoch)
         first_col = "Hour"
     else:
         rows = get_daily_history_for_shed(shed_name, max_days=0, crop_id=crop_id)
+        if rows:
+            try:
+                crop_start_epoch = int(rows[0].get("bucket_start_epoch"))
+            except Exception:
+                crop_start_epoch = None
         rows = add_running_totals(rows)
-        period_title = "Crop %d Daily" % crop_id
-        period_sub = "Historic crop %d completed 7am-7am daily list with running totals and separate zoomable feed and water charts." % crop_id
+        period_title = "%s Daily" % fmt_crop_code(crop_id, crop_start_epoch)
+        period_sub = "Historic crop %s completed 7am-7am daily list with running totals and separate zoomable feed and water charts." % fmt_crop_code(crop_id, crop_start_epoch)
         first_col = "Day"
 
     labels = []
