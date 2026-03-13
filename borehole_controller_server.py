@@ -27,6 +27,7 @@ DEFAULT_CONFIG = {
     "backup_keep": 6,
 }
 LOCAL_OFFICE_HEARTBEAT_SECONDS = 10
+LOCAL_BACKGROUND_SYNC_LOOP_SECONDS = 5
 SENSOR_STALE_SECONDS = 30
 NO_FLOW_EPSILON_LPM = 0.01
 
@@ -651,6 +652,15 @@ def maybe_heartbeat_to_dashboard(min_age_seconds=LOCAL_OFFICE_HEARTBEAT_SECONDS)
 
     if last_push_ts is None or (now_ts - last_push_ts) >= int(min_age_seconds):
         push_current_state()
+
+
+def background_sync_loop():
+    while True:
+        try:
+            maybe_heartbeat_to_dashboard()
+        except Exception:
+            pass
+        time.sleep(LOCAL_BACKGROUND_SYNC_LOOP_SECONDS)
 
 
 def require_office_token():
@@ -1792,4 +1802,5 @@ if __name__ == "__main__":
     if not os.path.exists(os.path.join(DATA_DIR, "controller_state.json")):
         save_state(default_state())
     threading.Thread(target=backup_worker, daemon=True).start()
+    threading.Thread(target=background_sync_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=int(load_config().get("listen_port", 8092)))

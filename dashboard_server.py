@@ -2514,6 +2514,11 @@ HTML = """
             justify-self: start;
         }
         .topbar-center { justify-self: center; }
+        .topbar-actions {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+        }
         .topbar-right { justify-self: end; }
         .settings-link {
             color: #ededed;
@@ -2916,7 +2921,10 @@ HTML = """
                 <h1 id="headerTitle" class="{{ header_class }}">Cherry Dene Farm Dashboard</h1>
             </div>
             <div class="topbar-center">
-                <a class="settings-link" href="{{ url_for('office_settings_view') }}">⚙ Settings</a>
+                <div class="topbar-actions">
+                    <a class="settings-link" href="{{ url_for('office_farm_health_view') }}">⚕ Farm Health</a>
+                    <a class="settings-link" href="{{ url_for('office_settings_view') }}">⚙ Settings</a>
+                </div>
             </div>
             <div class="topbar-right">
                 <div id="topDateTime" class="datetime {{ header_class }}">--</div>
@@ -3672,6 +3680,134 @@ VERSIONS_HTML = """
 </body>
 </html>
 """
+
+
+FARM_HEALTH_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Farm Health</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { margin:0; font-family:Arial,sans-serif; background:#5b5b5b; color:#ececec; }
+        .wrap { max-width:1400px; margin:0 auto; padding:16px; }
+        .topbar { margin-bottom:16px; }
+        .topbar a { color:#ececec; text-decoration:none; }
+        h1 { margin:0 0 8px 0; }
+        .sub { color:#d2d2d2; margin-bottom:14px; }
+        .summary-grid { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:12px; margin-bottom:16px; }
+        .panel { background:#737373; border:1px solid #8a8a8a; border-radius:14px; padding:16px; }
+        .health-card { background:#686868; border:1px solid #8a8a8a; border-radius:12px; padding:12px; }
+        .health-label { color:#d2d2d2; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; }
+        .health-value { margin-top:6px; font-size:24px; font-weight:700; }
+        .health-note { margin-top:6px; color:#dcdcdc; font-size:12px; line-height:1.35; }
+        table { width:100%; border-collapse:collapse; font-size:14px; }
+        th, td { padding:10px 8px; border-bottom:1px solid #818181; text-align:left; vertical-align:top; }
+        th { color:#f0f0f0; }
+        .state-ok { color:#8ff0ba; }
+        .state-bad { color:#ffb0b0; }
+        @media (max-width: 1000px) { .summary-grid { grid-template-columns:1fr 1fr; } }
+        @media (max-width: 700px) { .summary-grid { grid-template-columns:1fr; } }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="topbar"><a href="{{ url_for('dashboard') }}">← Back to dashboard</a></div>
+        <h1>Farm Health</h1>
+        <div class="sub">Live controller heartbeat, Pico link, and backup health across sheds and the bore hole.</div>
+        <div class="summary-grid">
+            <div class="health-card">
+                <div class="health-label">Stale Controllers</div>
+                <div class="health-value">{{ farm_health.stale_count }}</div>
+                <div class="health-note">{{ farm_health.stale_labels }}</div>
+            </div>
+            <div class="health-card">
+                <div class="health-label">Pico Offline</div>
+                <div class="health-value">{{ farm_health.pico_offline_count }}</div>
+                <div class="health-note">{{ farm_health.pico_offline_labels }}</div>
+            </div>
+            <div class="health-card">
+                <div class="health-label">Backup Issues</div>
+                <div class="health-value">{{ farm_health.backup_issue_count }}</div>
+                <div class="health-note">{{ farm_health.backup_issue_labels }}</div>
+            </div>
+            <div class="health-card">
+                <div class="health-label">Last Backup Collect</div>
+                <div class="health-value">{{ farm_health.last_collect_age }}</div>
+                <div class="health-note">{{ farm_health.last_collect_note }}</div>
+            </div>
+        </div>
+        <div class="panel">
+            <table>
+                <thead><tr><th>Controller</th><th>Heartbeat</th><th>Pico</th><th>Controller Backup</th><th>Office Copy</th></tr></thead>
+                <tbody>
+                    {% for row in rows %}
+                    <tr>
+                        <td>{{ row.label }}</td>
+                        <td class="{{ 'state-ok' if row.heartbeat_ok else 'state-bad' }}">{{ row.heartbeat }}</td>
+                        <td class="{{ 'state-ok' if row.pico_ok else 'state-bad' }}">{{ row.pico }}</td>
+                        <td class="{{ 'state-ok' if row.backup_ok else 'state-bad' }}">{{ row.backup }}</td>
+                        <td class="{{ 'state-ok' if row.office_copy_ok else 'state-bad' }}">{{ row.office_copy }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+
+def compute_farm_health_summary(controller_meta=None, borehole_meta=None, collector_status=None):
+    controller_meta = controller_meta if isinstance(controller_meta, dict) else load_controller_meta()
+    borehole_meta = borehole_meta if isinstance(borehole_meta, dict) else load_borehole_meta()
+    collector_status = collector_status if isinstance(collector_status, dict) else load_controller_backup_status()
+    stale_labels = []
+    pico_offline_labels = []
+    backup_issue_labels = []
+    collect_ages = []
+
+    def inspect_controller(label, meta, office_copy):
+        try:
+            received_ts = int(meta.get("received_ts")) if meta.get("received_ts") not in [None, ""] else None
+        except Exception:
+            received_ts = None
+        if received_ts is None or (int(time.time()) - received_ts) > 30:
+            stale_labels.append(label)
+        if not bool(meta.get("pico_connected", False)):
+            pico_offline_labels.append(label)
+        backup_status = str(meta.get("last_backup_status", "") or "--")
+        if backup_status == "--" or "fail" in backup_status.lower():
+            backup_issue_labels.append(label)
+        try:
+            collected_ts = int(office_copy.get("last_collected_ts")) if office_copy.get("last_collected_ts") not in [None, ""] else None
+        except Exception:
+            collected_ts = None
+        if collected_ts is not None:
+            collect_ages.append(max(0, int(time.time()) - collected_ts))
+
+    i = 0
+    while i < len(SHED_NUMBERS):
+        shed_no = SHED_NUMBERS[i]
+        inspect_controller(
+            "Shed %s" % shed_no,
+            controller_meta.get(str(int(shed_no)), {}) if isinstance(controller_meta, dict) else {},
+            collector_status.get("shed_%d" % shed_no, {}) if isinstance(collector_status, dict) else {},
+        )
+        i += 1
+    inspect_controller("Bore Hole", borehole_meta, collector_status.get("borehole", {}) if isinstance(collector_status, dict) else {})
+    return {
+        "stale_count": len(stale_labels),
+        "stale_labels": ", ".join(stale_labels) if stale_labels else "All controller heartbeats are current",
+        "pico_offline_count": len(pico_offline_labels),
+        "pico_offline_labels": ", ".join(pico_offline_labels) if pico_offline_labels else "All controller Pico links currently report connected",
+        "backup_issue_count": len(backup_issue_labels),
+        "backup_issue_labels": ", ".join(backup_issue_labels) if backup_issue_labels else "No current controller backup issues reported",
+        "last_collect_age": ("%ss ago" % min(collect_ages)) if collect_ages else "--",
+        "last_collect_note": ("Newest office-collected controller copy" if collect_ages else "No controller copies collected yet"),
+    }
 
 
 DETAIL_HTML = """
@@ -4881,32 +5017,12 @@ def office_settings_view():
     controller_meta = load_controller_meta()
     collector_status = load_controller_backup_status()
     controller_backup_rows = []
-    stale_labels = []
-    pico_offline_labels = []
-    backup_issue_labels = []
-    collect_ages = []
+    farm_health = None
     i = 0
     while i < len(SHED_NUMBERS):
         shed_no = SHED_NUMBERS[i]
         meta = controller_meta.get(str(int(shed_no)), {}) if isinstance(controller_meta, dict) else {}
         office_copy = collector_status.get("shed_%d" % shed_no, {}) if isinstance(collector_status, dict) else {}
-        try:
-            received_ts = int(meta.get("received_ts")) if meta.get("received_ts") not in [None, ""] else None
-        except Exception:
-            received_ts = None
-        if received_ts is None or (int(time.time()) - received_ts) > 30:
-            stale_labels.append("Shed %s" % shed_no)
-        if not bool(meta.get("pico_connected", False)):
-            pico_offline_labels.append("Shed %s" % shed_no)
-        backup_status = str(meta.get("last_backup_status", "") or "--")
-        if backup_status == "--" or "fail" in backup_status.lower():
-            backup_issue_labels.append("Shed %s" % shed_no)
-        try:
-            collected_ts = int(office_copy.get("last_collected_ts")) if office_copy.get("last_collected_ts") not in [None, ""] else None
-        except Exception:
-            collected_ts = None
-        if collected_ts is not None:
-            collect_ages.append(max(0, int(time.time()) - collected_ts))
         controller_backup_rows.append({
             "label": "Shed %s" % shed_no,
             "controller_key": "shed_%d" % shed_no,
@@ -4919,23 +5035,6 @@ def office_settings_view():
         i += 1
     borehole_meta = load_borehole_meta()
     borehole_copy = collector_status.get("borehole", {}) if isinstance(collector_status, dict) else {}
-    try:
-        borehole_received_ts = int(borehole_meta.get("received_ts")) if borehole_meta.get("received_ts") not in [None, ""] else None
-    except Exception:
-        borehole_received_ts = None
-    if borehole_received_ts is None or (int(time.time()) - borehole_received_ts) > 30:
-        stale_labels.append("Bore Hole")
-    if not bool(borehole_meta.get("pico_connected", False)):
-        pico_offline_labels.append("Bore Hole")
-    borehole_backup_status = str(borehole_meta.get("last_backup_status", "") or "--")
-    if borehole_backup_status == "--" or "fail" in borehole_backup_status.lower():
-        backup_issue_labels.append("Bore Hole")
-    try:
-        borehole_collected_ts = int(borehole_copy.get("last_collected_ts")) if borehole_copy.get("last_collected_ts") not in [None, ""] else None
-    except Exception:
-        borehole_collected_ts = None
-    if borehole_collected_ts is not None:
-        collect_ages.append(max(0, int(time.time()) - borehole_collected_ts))
     controller_backup_rows.append({
         "label": "Bore Hole",
         "controller_key": "borehole",
@@ -4945,6 +5044,7 @@ def office_settings_view():
         "office_copy_status": str(borehole_copy.get("last_status", "") or "--"),
         "office_copy_name": os.path.basename(list_controller_backup_files("borehole")[0]) if list_controller_backup_files("borehole") else "--",
     })
+    farm_health = compute_farm_health_summary(controller_meta, borehole_meta, collector_status)
     return render_template_string(
         OFFICE_SETTINGS_HTML,
         update_status=update_status,
@@ -4952,20 +5052,78 @@ def office_settings_view():
         backup_dir=backups_dir(),
         backup_keep_count=OFFICE_BACKUP_KEEP_COUNT,
         latest_backup_name=os.path.basename(latest_backups[0]) if latest_backups else "--",
-        farm_health={
-            "stale_count": len(stale_labels),
-            "stale_labels": ", ".join(stale_labels) if stale_labels else "All controller heartbeats are current",
-            "pico_offline_count": len(pico_offline_labels),
-            "pico_offline_labels": ", ".join(pico_offline_labels) if pico_offline_labels else "All controller Pico links currently report connected",
-            "backup_issue_count": len(backup_issue_labels),
-            "backup_issue_labels": ", ".join(backup_issue_labels) if backup_issue_labels else "No current controller backup issues reported",
-            "last_collect_age": ("%ss ago" % min(collect_ages)) if collect_ages else "--",
-            "last_collect_note": ("Newest office-collected controller copy" if collect_ages else "No controller copies collected yet"),
-        },
+        farm_health=farm_health,
         controller_backup_rows=controller_backup_rows,
         status_msg=request.args.get("msg", ""),
         status_ok=request.args.get("ok", "1") == "1",
     )
+
+
+@app.route("/farm-health")
+def office_farm_health_view():
+    controller_meta = load_controller_meta()
+    borehole_meta = load_borehole_meta()
+    collector_status = load_controller_backup_status()
+    farm_health = compute_farm_health_summary(controller_meta, borehole_meta, collector_status)
+    rows = []
+
+    i = 0
+    while i < len(SHED_NUMBERS):
+        shed_no = SHED_NUMBERS[i]
+        label = "Shed %s" % shed_no
+        meta = controller_meta.get(str(int(shed_no)), {}) if isinstance(controller_meta, dict) else {}
+        office_copy = collector_status.get("shed_%d" % shed_no, {}) if isinstance(collector_status, dict) else {}
+        try:
+            received_ts = int(meta.get("received_ts")) if meta.get("received_ts") not in [None, ""] else None
+        except Exception:
+            received_ts = None
+        heartbeat_ok = received_ts is not None and (int(time.time()) - received_ts) <= 30
+        heartbeat = ("OK • %ss ago" % max(0, int(time.time()) - received_ts)) if heartbeat_ok else "STALE"
+        pico_ok = bool(meta.get("pico_connected", False))
+        pico = "Connected" if pico_ok else "Disconnected"
+        backup_status = str(meta.get("last_backup_status", "") or "--")
+        backup_ok = backup_status != "--" and "fail" not in backup_status.lower()
+        office_copy_status = str(office_copy.get("last_status", "") or "--")
+        office_copy_ok = office_copy_status != "--" and "failed" not in office_copy_status.lower()
+        rows.append({
+            "label": label,
+            "heartbeat": heartbeat,
+            "heartbeat_ok": heartbeat_ok,
+            "pico": pico,
+            "pico_ok": pico_ok,
+            "backup": backup_status,
+            "backup_ok": backup_ok,
+            "office_copy": office_copy_status,
+            "office_copy_ok": office_copy_ok,
+        })
+        i += 1
+
+    office_copy = collector_status.get("borehole", {}) if isinstance(collector_status, dict) else {}
+    try:
+        received_ts = int(borehole_meta.get("received_ts")) if borehole_meta.get("received_ts") not in [None, ""] else None
+    except Exception:
+        received_ts = None
+    heartbeat_ok = received_ts is not None and (int(time.time()) - received_ts) <= 30
+    heartbeat = ("OK • %ss ago" % max(0, int(time.time()) - received_ts)) if heartbeat_ok else "STALE"
+    pico_ok = bool(borehole_meta.get("pico_connected", False))
+    pico = "Connected" if pico_ok else "Disconnected"
+    backup_status = str(borehole_meta.get("last_backup_status", "") or "--")
+    backup_ok = backup_status != "--" and "fail" not in backup_status.lower()
+    office_copy_status = str(office_copy.get("last_status", "") or "--")
+    office_copy_ok = office_copy_status != "--" and "failed" not in office_copy_status.lower()
+    rows.append({
+        "label": "Bore Hole",
+        "heartbeat": heartbeat,
+        "heartbeat_ok": heartbeat_ok,
+        "pico": pico,
+        "pico_ok": pico_ok,
+        "backup": backup_status,
+        "backup_ok": backup_ok,
+        "office_copy": office_copy_status,
+        "office_copy_ok": office_copy_ok,
+    })
+
+    return render_template_string(FARM_HEALTH_HTML, farm_health=farm_health, rows=rows)
 
 
 @app.route("/settings/update/check", methods=["POST"])

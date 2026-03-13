@@ -102,6 +102,7 @@ STALE_LOG_SECONDS = 30
 BACKUP_KEEP_COUNT = 6
 LOCAL_DASHBOARD_PULL_SECONDS = 1
 LOCAL_DASHBOARD_HEARTBEAT_SECONDS = 10
+LOCAL_BACKGROUND_SYNC_LOOP_SECONDS = 5
 
 
 def ensure_data_dir():
@@ -1424,6 +1425,19 @@ def maybe_heartbeat_to_dashboard(min_age_seconds=LOCAL_DASHBOARD_HEARTBEAT_SECON
         push_to_dashboard(state, pull_back=False)
 
 
+def background_sync_loop():
+    while True:
+        try:
+            maybe_refresh_from_dashboard()
+        except Exception:
+            pass
+        try:
+            maybe_heartbeat_to_dashboard()
+        except Exception:
+            pass
+        time.sleep(LOCAL_BACKGROUND_SYNC_LOOP_SECONDS)
+
+
 def require_office_token():
     expected = str(load_config().get("sync_token", "") or "").strip()
     if not expected:
@@ -2164,6 +2178,17 @@ def start_monitor_thread():
     SERIAL_STOP.clear()
     MONITOR_THREAD = threading.Thread(target=auger_monitor_loop, daemon=True)
     MONITOR_THREAD.start()
+
+
+BACKGROUND_SYNC_THREAD = None
+
+
+def start_background_sync_thread():
+    global BACKGROUND_SYNC_THREAD
+    if BACKGROUND_SYNC_THREAD is not None and BACKGROUND_SYNC_THREAD.is_alive():
+        return
+    BACKGROUND_SYNC_THREAD = threading.Thread(target=background_sync_loop, daemon=True)
+    BACKGROUND_SYNC_THREAD.start()
 
 
 HTML = """
@@ -5567,4 +5592,5 @@ if __name__ == "__main__":
     ensure_data_dir()
     start_serial_thread()
     start_monitor_thread()
+    start_background_sync_thread()
     app.run(host="0.0.0.0", port=cfg["listen_port"])
