@@ -1,17 +1,20 @@
 import json
 import time
 
-from machine import ADC, I2C, Pin
+from machine import I2C, Pin
 
 
 SAMPLE_SECONDS = 1.0
 TEMP_RH_MEASURE_SECONDS = 2.5
+DEVICE_NAME = "pico-2-shed"
+DEBUG_ADS1115 = True
 
 # Change these pin numbers to match your wiring.
 I2C_ID = 0
 I2C_SDA_PIN = 4
 I2C_SCL_PIN = 5
 SHT45_ADDR = 0x44
+ADS1115_ADDR = 0x48
 FLOW_PIN = 3
 STATUS_LED_PIN = "LED"
 HX711_DOUT_PIN = 14
@@ -26,23 +29,36 @@ SHT45_MEASURE_HIGH_PRECISION = b"\xFD"
 #   L/min = pulses_per_second / 7.5
 FLOW_HZ_PER_LPM = 7.5
 
-# Keep the CT block if you are also fitting current transformers.
+# ADS1115 current transformer inputs.
+# Assumed channel map:
+#   A0 = cross auger
+#   A1 = auger left
+#   A2 = auger right
 CT_CONFIG = {
-    "cross_auger_on": {"pin": 26, "threshold": 2000},
-    "auger_left_on": {"pin": 27, "threshold": 2000},
-    "auger_right_on": {"pin": 28, "threshold": 2000},
+    "cross_auger_on": {"channel": 0, "threshold": 2000},
+    "auger_left_on": {"channel": 1, "threshold": 2000},
+    "auger_right_on": {"channel": 2, "threshold": 2000},
 }
+
+ADS1115_REG_CONVERSION = 0x00
+ADS1115_REG_CONFIG = 0x01
+ADS1115_CONFIG_OS_SINGLE = 0x8000
+ADS1115_CONFIG_MUX_BASE = 0x4000
+ADS1115_CONFIG_PGA_4V096 = 0x0200
+ADS1115_CONFIG_MODE_SINGLE = 0x0100
+ADS1115_CONFIG_DR_860SPS = 0x00E0
+ADS1115_CONFIG_COMP_DISABLE = 0x0003
 
 
 status_led = Pin(STATUS_LED_PIN, Pin.OUT)
 i2c = I2C(I2C_ID, sda=Pin(I2C_SDA_PIN), scl=Pin(I2C_SCL_PIN), freq=100000)
 flow_pin = Pin(FLOW_PIN, Pin.IN, Pin.PULL_UP)
-ct_inputs = {}
 hx711_dout = Pin(HX711_DOUT_PIN, Pin.IN, Pin.PULL_UP)
 hx711_sck = Pin(HX711_SCK_PIN, Pin.OUT)
 
 flow_pulse_count = 0
 total_flow_pulses = 0
+boot_ms = time.ticks_ms()
 last_flow_calc_ms = time.ticks_ms()
 last_temp_rh_ms = time.ticks_ms() - int(TEMP_RH_MEASURE_SECONDS * 1000)
 last_temp_c = None
@@ -50,9 +66,43 @@ last_rh_pct = None
 
 
 def setup_inputs():
-    for key in CT_CONFIG:
-        ct_inputs[key] = ADC(CT_CONFIG[key]["pin"])
     hx711_sck.value(0)
+
+
+def ads1115_write_config(config_value):
+    payload = bytes([
+        ADS1115_REG_CONFIG,
+        (config_value >> 8) & 0xFF,
+        config_value & 0xFF,
+    ])
+    i2c.writeto(ADS1115_ADDR, payload)
+
+
+def ads1115_read_conversion():
+    i2c.writeto(ADS1115_ADDR, bytes([ADS1115_REG_CONVERSION]))
+    raw = i2c.readfrom(ADS1115_ADDR, 2)
+    value = (raw[0] << 8) | raw[1]
+    if value & 0x8000:
+        value -= 0x10000
+    return value
+
+
+def ads1115_read_channel(channel):
+    if channel < 0 or channel > 3:
+        raise ValueError("ADS1115 channel must be 0-3")
+
+    mux_bits = ADS1115_CONFIG_MUX_BASE + (channel << 12)
+    config = (
+        ADS1115_CONFIG_OS_SINGLE
+        | mux_bits
+        | ADS1115_CONFIG_PGA_4V096
+        | ADS1115_CONFIG_MODE_SINGLE
+        | ADS1115_CONFIG_DR_860SPS
+        | ADS1115_CONFIG_COMP_DISABLE
+    )
+    ads1115_write_config(config)
+    time.sleep_ms(2)
+    return ads1115_read_conversion()
 
 
 def flow_pulse_handler(pin):
@@ -104,11 +154,11 @@ def read_sht45():
     return round(temp_c, 1), round(rh_pct, 1)
 
 
-def read_ct_active(adc_obj, threshold, samples=20):
+def read_ct_active(channel, threshold, samples=12):
     peak = 0
     i = 0
     while i < samples:
-        val = adc_obj.read_u16()
+        val = abs(ads1115_read_channel(channel))
         if val > peak:
             peak = val
         i += 1
@@ -202,40 +252,81 @@ def read_pressure_pa():
     return None
 
 
+def read_value(read_fn, alarm_prefix, alarms, default=None):
+    try:
+        return read_fn()
+    except Exception as exc:
+        alarms.append("%s: %s" % (alarm_prefix, exc))
+        return default
+
+
+def read_ct_block(alarms):
+    ct_payload = {}
+    ct_debug = {}
+
+    for key in CT_CONFIG:
+        channel = CT_CONFIG[key]["channel"]
+        threshold = CT_CONFIG[key]["threshold"]
+        try:
+            active, peak = read_ct_active(channel, threshold)
+            ct_payload[key] = active
+            ct_payload[key + "_peak"] = peak
+            if DEBUG_ADS1115:
+                ct_debug[key] = {
+                    "channel": channel,
+                    "peak": peak,
+                    "threshold": int(threshold),
+                }
+        except Exception as exc:
+            ct_payload[key] = None
+            ct_payload[key + "_peak"] = None
+            alarms.append("%s CT read failed: %s" % (key, exc))
+            if DEBUG_ADS1115:
+                ct_debug[key] = {
+                    "channel": channel,
+                    "peak": None,
+                    "threshold": int(threshold),
+                    "error": str(exc),
+                }
+
+    return ct_payload, ct_debug
+
+
 def build_payload():
     alarms = []
+    ts = time.time()
+    uptime_s = int(time.ticks_diff(time.ticks_ms(), boot_ms) / 1000)
 
-    try:
-        temp_c = read_temp_c()
-        rh_pct = read_rh_pct()
-    except Exception as exc:
-        temp_c = None
-        rh_pct = None
-        alarms.append("Temp/RH read failed: %s" % exc)
-
-    try:
-        water_lpm = read_water_lpm()
-    except Exception as exc:
-        water_lpm = None
-        alarms.append("Flow read failed: %s" % exc)
+    temp_c = read_value(read_temp_c, "Temp read failed", alarms)
+    rh_pct = read_value(read_rh_pct, "Humidity read failed", alarms)
+    water_lpm = read_value(read_water_lpm, "Flow read failed", alarms)
+    total_pulses = read_value(read_total_flow_pulses, "Total flow pulse read failed", alarms)
+    feed_raw_units = read_value(read_feed_raw_units, "Feed raw read failed", alarms)
+    light_lux = read_value(read_light_lux, "Light read failed", alarms)
+    pressure_pa = read_value(read_pressure_pa, "Pressure read failed", alarms)
+    ct_payload, ct_debug = read_ct_block(alarms)
 
     payload = {
+        "device": DEVICE_NAME,
+        "ts": ts,
+        "uptime_s": uptime_s,
         "temp_c": temp_c,
         "rh_pct": rh_pct,
         "water_lpm": water_lpm,
-        "total_flow_pulses": read_total_flow_pulses(),
-        "feed_raw_units": read_feed_raw_units(),
+        "total_flow_pulses": total_pulses,
+        "feed_raw_units": feed_raw_units,
         "feed_kg": None,
-        "light_lux": read_light_lux(),
-        "pressure_pa": read_pressure_pa(),
+        "light_lux": light_lux,
+        "pressure_pa": pressure_pa,
         "status": "Sensors OK" if not alarms else "Sensor warnings",
         "alarms": alarms,
     }
 
-    for key in CT_CONFIG:
-        active, peak = read_ct_active(ct_inputs[key], CT_CONFIG[key]["threshold"])
-        payload[key] = active
-        payload[key + "_peak"] = peak
+    for key in ct_payload:
+        payload[key] = ct_payload[key]
+
+    if DEBUG_ADS1115:
+        payload["ct_debug"] = ct_debug
 
     return payload
 

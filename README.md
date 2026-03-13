@@ -39,7 +39,9 @@ These are created locally and should not be committed:
 ## Deployment Notes
 
 - Office Pi runs `dashboard_server.py`
+- Office Pi can boot the dashboard as a background service with `pi_kiosk/install_office_service.sh`
 - Each shed Pi runs `shed_controller_server.py`
+- Each shed Pi can boot into kiosk mode with `pi_kiosk/install_pi_kiosk.sh`
 - Pico 2 connects to the shed Pi over USB
 - Per-shed controller config comes from `pi_templates/controller_config.template.json`
 - Office-to-shed mapping comes from `pi_templates/controllers.template.json`

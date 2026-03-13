@@ -112,6 +112,60 @@ def create_office_backup_zip(label="manual"):
     return path
 
 
+def backup_path_by_name(name):
+    if not name:
+        return None
+    path = os.path.join(backups_dir(), os.path.basename(name))
+    if os.path.isfile(path) and path.endswith(".zip"):
+        return path
+    return None
+
+
+def zip_json_member(path, member_name, default):
+    try:
+        with zipfile.ZipFile(path, "r") as zf:
+            with zf.open(member_name) as f:
+                return json.load(f)
+    except Exception:
+        return default
+
+
+def restore_full_office_from_backup(path):
+    with zipfile.ZipFile(path, "r") as zf:
+        for name in zf.namelist():
+            if "/" in name or name.endswith("/"):
+                continue
+            target = os.path.join(DATA_DIR, name)
+            with zf.open(name) as src, open(target, "wb") as dst:
+                dst.write(src.read())
+
+
+def restore_shed_from_backup(path, shed_no):
+    shed_name = shed_name_from_number(shed_no)
+
+    backup_entries = zip_json_member(path, "shed_entries.json", {})
+    if isinstance(backup_entries, dict):
+        current_entries = load_shed_entries_state()
+        if shed_name in backup_entries:
+            current_entries[shed_name] = backup_entries[shed_name]
+            save_shed_entries_state(current_entries)
+
+    backup_meta = zip_json_member(path, "controller_meta.json", {})
+    if isinstance(backup_meta, dict):
+        current_meta = load_controller_meta()
+        key = str(int(shed_no))
+        if key in backup_meta:
+            current_meta[key] = backup_meta[key]
+            save_controller_meta(current_meta)
+
+    backup_live = zip_json_member(path, "live_latest.json", {})
+    if isinstance(backup_live, dict):
+        current_live = latest_live_by_shed()
+        if shed_name in backup_live:
+            current_live[shed_name] = backup_live[shed_name]
+            write_json_file_atomic(os.path.join(DATA_DIR, "live_latest.json"), current_live)
+
+
 def latest_live_by_shed():
     data = read_json_file(os.path.join(DATA_DIR, "live_latest.json"), {})
     return data if isinstance(data, dict) else {}
@@ -1650,6 +1704,7 @@ def build_rows():
         shed_no = SHED_NUMBERS[i]
         shed = shed_name_from_number(shed_no)
         live = effective_live_for_shed(live_map, controller_meta_map, shed_no)
+        controller_meta = controller_meta_map.get(str(int(shed_no)), {})
         alarms = list(alarms_map.get(shed, []))
         controller_alarms = controller_alarms_for_shed(controller_meta_map, shed_no)
         if controller_alarms:
@@ -1781,6 +1836,20 @@ def build_rows():
             updated_str = "--"
 
         runout_est = estimate_runout_from_average(feed_kg, avg_feed_day_kg)
+        received_ts = controller_meta.get("received_ts")
+        try:
+            sync_age = int(time.time()) - int(received_ts) if received_ts not in [None, ""] else None
+        except Exception:
+            sync_age = None
+        if sync_age is None:
+            sync_pill_class = "sync-missing"
+            sync_pill_text = "SYNC --"
+        elif sync_age <= 30:
+            sync_pill_class = "sync-ok"
+            sync_pill_text = "SYNC OK"
+        else:
+            sync_pill_class = "sync-stale"
+            sync_pill_text = "SYNC STALE"
 
         rows.append({
             "shed": shed,
@@ -1812,6 +1881,8 @@ def build_rows():
             "total_feed_to_date": fmt_value(total_feed_to_date, "f1"),
             "allocation_text": allocation_text,
             "mortality_total": fmt_value(mortality_total_for_shed_crop(shed, active_crop_id), "i"),
+            "sync_pill_class": sync_pill_class,
+            "sync_pill_text": sync_pill_text,
         })
         i += 1
 
@@ -1926,8 +1997,9 @@ HTML = """
             font-weight: bold;
             color: #efefef;
             text-shadow:
-                0 0 8px rgba(255,255,255,0.24),
-                0 0 16px rgba(255,255,255,0.12);
+                0 0 10px rgba(53,208,127,0.9),
+                0 0 18px rgba(53,208,127,0.55),
+                0 0 28px rgba(53,208,127,0.28);
             white-space: nowrap;
         }
         .grid {
@@ -2024,6 +2096,18 @@ HTML = """
         .badge.active {
             border-color: #35d07f;
             color: #b8ffd2;
+        }
+        .badge.sync-ok {
+            border-color: #35d07f;
+            color: #b8ffd2;
+        }
+        .badge.sync-stale {
+            border-color: #ffd06a;
+            color: #ffe5a0;
+        }
+        .badge.sync-missing {
+            border-color: #d55;
+            color: #ffb1b1;
         }
         .topline {
             display: flex;
@@ -2232,6 +2316,7 @@ HTML = """
                     <a class="top-link" href="{{ url_for('office_events_view') }}">Event Log</a>
                     <a class="top-link" href="{{ url_for('create_office_backup_view') }}">Create Backup</a>
                     <a class="top-link" href="{{ url_for('download_latest_office_backup_view') }}">Download Backup</a>
+                    <a class="top-link" href="{{ url_for('restore_office_backup_view') }}">Restore Backup</a>
                 </div>
             </div>
             <div id="topDateTime" class="datetime">--</div>
@@ -2266,6 +2351,7 @@ HTML = """
                             {% else %}
                                 <div class="badge">NO DATA</div>
                             {% endif %}
+                            <div id="shed-sync-badge-{{ s.shed_no }}" class="badge {{ s.sync_pill_class }}">{{ s.sync_pill_text }}</div>
                         </div>
                     </div>
 
@@ -2485,6 +2571,8 @@ function renderShed(s) {
     setDashClass(`shed-card-${s.shed_no}`, [s.alarm_active ? 'alarm' : s.tile_state, s.has_data ? '' : 'nodata'], ['alarm', 'online', 'offline', 'nodata']);
     setDashClass(`shed-water-tile-${s.shed_no}`, [s.water_glow], ['flow-green', 'flow-red']);
     setDashClass(`shed-feed-tile-${s.shed_no}`, [s.feed_glow], ['feed-green', 'feed-red']);
+    setDashText(`shed-sync-badge-${s.shed_no}`, s.sync_pill_text);
+    setDashClass(`shed-sync-badge-${s.shed_no}`, ['badge', s.sync_pill_class], ['sync-ok', 'sync-stale', 'sync-missing']);
 
     const alloc = document.getElementById(`shed-alloc-${s.shed_no}`);
     if (alloc) {
@@ -2610,6 +2698,94 @@ EVENTS_HTML = """
                         <td>{{ row.message }}</td>
                         <td class="mono">{{ row.detail if row.detail else "--" }}</td>
                     </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+
+RESTORE_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Office Backup Restore</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { margin:0; font-family:Arial, sans-serif; background:#5b5b5b; color:#ececec; }
+        .wrap { max-width:1400px; margin:0 auto; padding:16px; }
+        a { color:#f0f0f0; text-decoration:none; }
+        .topbar { margin-bottom:16px; }
+        .status { margin-bottom:14px; padding:10px 12px; border-radius:10px; background:#737373; border:1px solid #8a8a8a; }
+        .status.ok { border-color:#35d07f; color:#e4ffed; }
+        .status.err { border-color:#c65460; color:#ffdbe1; }
+        .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+        .panel { background:#737373; border:1px solid #8a8a8a; border-radius:14px; padding:16px; }
+        h1 { margin:0 0 8px 0; }
+        h2 { margin:0 0 10px 0; }
+        .sub { color:#d2d2d2; margin-bottom:14px; }
+        .detail { display:flex; justify-content:space-between; gap:12px; padding:10px 0; border-bottom:1px solid #818181; }
+        .detail:last-child { border-bottom:0; }
+        .label { color:#d2d2d2; }
+        select { width:100%; box-sizing:border-box; padding:10px 12px; border-radius:8px; border:1px solid #8a8a8a; background:#686868; color:#ececec; margin-bottom:12px; }
+        button { background:#727272; color:#ececec; border:1px solid #8a8a8a; border-radius:8px; padding:10px 14px; cursor:pointer; width:100%; }
+        button.danger { border-color:#8e3e3e; }
+        table { width:100%; border-collapse:collapse; font-size:14px; }
+        th, td { padding:10px 8px; border-bottom:1px solid #818181; text-align:left; }
+        th { color:#f0f0f0; }
+        @media (max-width: 900px) { .grid { grid-template-columns:1fr; } }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="topbar"><a href="{{ url_for('dashboard') }}">← Back to dashboard</a></div>
+        <h1>Backup Restore</h1>
+        <div class="sub">Restore the full office data set or just one shed state from an office backup ZIP.</div>
+        {% if status_msg %}
+        <div class="status {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
+        {% endif %}
+        <div class="grid">
+            <div class="panel">
+                <h2>Full Office Restore</h2>
+                <div class="sub">Restores the full contents of the selected backup into the office data folder.</div>
+                <form method="post" action="{{ url_for('restore_office_backup_apply_view') }}">
+                    <select name="backup_name">
+                        {% for b in backups %}
+                        <option value="{{ b.name }}">{{ b.name }} ({{ b.mtime }})</option>
+                        {% endfor %}
+                    </select>
+                    <button class="danger" type="submit">Restore Full Backup</button>
+                </form>
+            </div>
+            <div class="panel">
+                <h2>Shed Restore</h2>
+                <div class="sub">Restores just one shed's live state from the selected backup.</div>
+                <form method="post" action="{{ url_for('restore_office_backup_shed_view') }}">
+                    <select name="backup_name">
+                        {% for b in backups %}
+                        <option value="{{ b.name }}">{{ b.name }} ({{ b.mtime }})</option>
+                        {% endfor %}
+                    </select>
+                    <select name="shed_no">
+                        {% for shed_no in shed_numbers %}
+                        <option value="{{ shed_no }}">Shed {{ shed_no }}</option>
+                        {% endfor %}
+                    </select>
+                    <button type="submit">Restore Shed State</button>
+                </form>
+            </div>
+        </div>
+        <div class="panel" style="margin-top:16px;">
+            <h2>Available Backups</h2>
+            <table>
+                <thead><tr><th>Name</th><th>Modified</th></tr></thead>
+                <tbody>
+                    {% for b in backups %}
+                    <tr><td>{{ b.name }}</td><td>{{ b.mtime }}</td></tr>
                     {% endfor %}
                 </tbody>
             </table>
@@ -3820,6 +3996,54 @@ def download_latest_office_backup_view():
     else:
         path = backups[0]
     return send_file(path, as_attachment=True, download_name=os.path.basename(path))
+
+
+@app.route("/backup/restore")
+def restore_office_backup_view():
+    backups = []
+    for path in list_office_backup_files():
+        try:
+            mtime = datetime.fromtimestamp(int(os.path.getmtime(path))).strftime("%d %b %Y %H:%M:%S")
+        except Exception:
+            mtime = "--"
+        backups.append({"name": os.path.basename(path), "mtime": mtime})
+    return render_template_string(
+        RESTORE_HTML,
+        backups=backups,
+        shed_numbers=SHED_NUMBERS,
+        status_msg=request.args.get("msg", ""),
+        status_ok=request.args.get("ok", "1") == "1",
+    )
+
+
+@app.route("/backup/restore/full", methods=["POST"])
+def restore_office_backup_apply_view():
+    path = backup_path_by_name(request.form.get("backup_name", ""))
+    if not path:
+        return redirect(url_for("restore_office_backup_view", ok=0, msg="Backup not found"))
+    try:
+        restore_full_office_from_backup(path)
+        log_event("office", "backup_restored", "Full office backup restored", detail=os.path.basename(path))
+        return redirect(url_for("restore_office_backup_view", ok=1, msg="Full office backup restored"))
+    except Exception as exc:
+        return redirect(url_for("restore_office_backup_view", ok=0, msg="Restore failed: %s" % exc))
+
+
+@app.route("/backup/restore/shed", methods=["POST"])
+def restore_office_backup_shed_view():
+    path = backup_path_by_name(request.form.get("backup_name", ""))
+    try:
+        shed_no = int(request.form.get("shed_no", "0"))
+    except Exception:
+        shed_no = 0
+    if not path or shed_no not in SHED_NUMBERS:
+        return redirect(url_for("restore_office_backup_view", ok=0, msg="Invalid restore request"))
+    try:
+        restore_shed_from_backup(path, shed_no)
+        log_event("office", "shed_restored", "Shed backup restored", shed_no=shed_no, detail=os.path.basename(path))
+        return redirect(url_for("restore_office_backup_view", ok=1, msg="Shed %d restored from backup" % shed_no))
+    except Exception as exc:
+        return redirect(url_for("restore_office_backup_view", ok=0, msg="Shed restore failed: %s" % exc))
 
 
 @app.route("/api/overview")

@@ -1,0 +1,100 @@
+{
+  "office_dashboard_url": "http://192.168.1.10:8090",
+  "sheds": {
+    "1": {
+      "controller_ip": "192.168.1.101",
+      "serial_port": "/dev/ttyACM0",
+      "cross_auger_enabled": false,
+      "auger_left_enabled": true,
+      "auger_right_enabled": false,
+      "cross_auger_label": "Cross Auger",
+      "auger_left_label": "Main Auger",
+      "auger_right_label": "Auger Right"
+    },
+    "2": {
+      "controller_ip": "192.168.1.102",
+      "serial_port": "/dev/ttyACM0",
+      "cross_auger_enabled": true,
+      "auger_left_enabled": true,
+      "auger_right_enabled": false,
+      "cross_auger_label": "Cross Auger",
+      "auger_left_label": "Left Auger",
+      "auger_right_label": "Auger Right"
+    },
+    "3": {
+      "controller_ip": "192.168.1.103",
+      "serial_port": "/dev/ttyACM0",
+      "cross_auger_enabled": true,
+      "auger_left_enabled": true,
+      "auger_right_enabled": true,
+      "cross_auger_label": "Cross Auger",
+      "auger_left_label": "Auger Left",
+      "auger_right_label": "Auger Right"
+    },
+    "4": {
+      "controller_ip": "192.168.1.104",
+      "serial_port": "/dev/ttyACM0",
+      "cross_auger_enabled": false,
+      "auger_left_enabled": true,
+      "auger_right_enabled": false,
+      "cross_auger_label": "Cross Auger",
+      "auger_left_label": "Main Auger",
+      "auger_right_label": "Auger Right"
+    },
+    "6": {
+      "controller_ip": "192.168.1.106",
+      "serial_port": "/dev/ttyACM0",
+      "cross_auger_enabled": true,
+      "auger_left_enabled": true,
+      "auger_right_enabled": false,
+      "cross_auger_label": "Cross Auger",
+      "auger_left_label": "Left Auger",
+      "auger_right_label": "Auger Right"
+    },
+    "7": {
+      "controller_ip": "192.168.1.107",
+      "serial_port": "/dev/ttyACM0",
+      "cross_auger_enabled": true,
+      "auger_left_enabled": true,
+      "auger_right_enabled": true,
+      "cross_auger_label": "Cross Auger",
+      "auger_left_label": "Auger Left",
+      "auger_right_label": "Auger Right"
+    },
+    "8": {
+      "controller_ip": "192.168.1.108",
+      "serial_port": "/dev/ttyACM0",
+      "cross_auger_enabled": false,
+      "auger_left_enabled": true,
+      "auger_right_enabled": false,
+      "cross_auger_label": "Cross Auger",
+      "auger_left_label": "Main Auger",
+      "auger_right_label": "Auger Right"
+    },
+    "9": {
+      "controller_ip": "192.168.1.109",
+      "serial_port": "/dev/ttyACM0",
+      "cross_auger_enabled": true,
+      "auger_left_enabled": true,
+      "auger_right_enabled": false,
+      "cross_auger_label": "Cross Auger",
+      "auger_left_label": "Left Auger",
+      "auger_right_label": "Auger Right"
+    },
+    "10": {
+      "controller_ip": "192.168.1.110",
+      "serial_port": "/dev/ttyACM0",
+      "cross_auger_enabled": true,
+      "auger_left_enabled": true,
+      "auger_right_enabled": true,
+      "cross_auger_label": "Cross Auger",
+      "auger_left_label": "Auger Left",
+      "auger_right_label": "Auger Right"
+    }
+  },
+  "notes": {
+    "controllers": "Copy the matching shed entry into controller_data/controller_config.json on each shed Pi.",
+    "office": "Use the controller_ip values when filling out data/controllers.json on the office Pi.",
+    "borehole": "The bore hole is expected to use a separate custom dashboard because it only needs water flow."
+  }
+}

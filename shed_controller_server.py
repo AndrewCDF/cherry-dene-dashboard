@@ -1,7 +1,11 @@
 from flask import Flask, render_template_string, request, redirect, url_for, jsonify, Response, send_file
+import hashlib
 import json
 import os
+import shutil
 import socket
+import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -19,6 +23,7 @@ except Exception:
 app = Flask(__name__)
 
 DATA_DIR = "controller_data"
+APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 SHED_NUMBERS = [1, 2, 3, 4, 6, 7, 8, 9, 10]
 DEFAULT_CONFIG = {
     "shed_no": 1,
@@ -38,6 +43,12 @@ DEFAULT_CONFIG = {
     "feed_capacity_kg": 16000.0,
     "feed_tare_raw": None,
     "feed_kg_per_raw_unit": None,
+    "cross_auger_enabled": True,
+    "auger_left_enabled": True,
+    "auger_right_enabled": True,
+    "cross_auger_label": "Cross Auger",
+    "auger_left_label": "Auger Left",
+    "auger_right_label": "Auger Right",
 }
 
 SERIAL_THREAD = None
@@ -91,6 +102,202 @@ def append_ndjson(path, payload):
         f.write(json.dumps(payload) + "\n")
 
 
+def update_status_path():
+    ensure_data_dir()
+    return os.path.join(DATA_DIR, "update_status.json")
+
+
+def load_update_status():
+    default = {
+        "checked_at": None,
+        "local_commit": "--",
+        "remote_commit": "--",
+        "branch": "main",
+        "update_available": False,
+        "ok": True,
+        "status": "Not checked yet",
+        "restart_required": False,
+    }
+    data = read_json_file(update_status_path(), default)
+    if not isinstance(data, dict):
+        return dict(default)
+    merged = dict(default)
+    merged.update(data)
+    return merged
+
+
+def save_update_status(payload):
+    status = load_update_status()
+    status.update(payload)
+    write_json_file_atomic(update_status_path(), status)
+
+
+def pico_update_status_path():
+    ensure_data_dir()
+    return os.path.join(DATA_DIR, "pico_update_status.json")
+
+
+def load_pico_update_status():
+    default = {
+        "checked_at": None,
+        "local_hash": "--",
+        "last_deployed_hash": "--",
+        "last_deployed_at": None,
+        "ok": True,
+        "status": "Not deployed yet",
+    }
+    data = read_json_file(pico_update_status_path(), default)
+    if not isinstance(data, dict):
+        return dict(default)
+    merged = dict(default)
+    merged.update(data)
+    return merged
+
+
+def save_pico_update_status(payload):
+    status = load_pico_update_status()
+    status.update(payload)
+    write_json_file_atomic(pico_update_status_path(), status)
+
+
+def pico_firmware_path():
+    return os.path.join(APP_ROOT, "pico_firmware", "main.py")
+
+
+def pico_firmware_hash():
+    path = pico_firmware_path()
+    if not os.path.exists(path):
+        return "--"
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(8192)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()[:10]
+
+
+def run_git_command(args, timeout=20):
+    proc = subprocess.run(
+        ["git"] + args,
+        cwd=APP_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    return proc.returncode, (proc.stdout or "").strip(), (proc.stderr or "").strip()
+
+
+def get_local_git_status():
+    code, branch_out, branch_err = run_git_command(["rev-parse", "--abbrev-ref", "HEAD"])
+    branch = branch_out if code == 0 and branch_out else "main"
+    code, commit_out, commit_err = run_git_command(["rev-parse", "--short", "HEAD"])
+    commit = commit_out if code == 0 and commit_out else "--"
+    ok = code == 0
+    err = branch_err or commit_err
+    return {"branch": branch, "local_commit": commit, "ok": ok, "error": err}
+
+
+def check_for_update():
+    local = get_local_git_status()
+    status = {
+        "checked_at": int(time.time()),
+        "branch": local["branch"],
+        "local_commit": local["local_commit"],
+        "remote_commit": "--",
+        "update_available": False,
+        "ok": local["ok"],
+        "status": "Up to date" if local["ok"] else (local["error"] or "Git status failed"),
+        "restart_required": False,
+    }
+    if not local["ok"]:
+        save_update_status(status)
+        return status
+
+    code, _, fetch_err = run_git_command(["fetch", "origin", local["branch"]], timeout=30)
+    if code != 0:
+        status["ok"] = False
+        status["status"] = fetch_err or "Fetch failed"
+        save_update_status(status)
+        return status
+
+    code, remote_out, remote_err = run_git_command(["rev-parse", "--short", "origin/%s" % local["branch"]])
+    if code != 0 or not remote_out:
+        status["ok"] = False
+        status["status"] = remote_err or "Remote version lookup failed"
+        save_update_status(status)
+        return status
+
+    status["remote_commit"] = remote_out
+    status["update_available"] = remote_out != local["local_commit"]
+    if status["update_available"]:
+        status["status"] = "Update available"
+    else:
+        status["status"] = "Already on latest version"
+    save_update_status(status)
+    return status
+
+
+def restart_self_delayed(delay_seconds=1.0):
+    def _restart():
+        time.sleep(delay_seconds)
+        os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)])
+
+    threading.Thread(target=_restart, daemon=True).start()
+
+
+def deploy_pico_firmware():
+    local_hash = pico_firmware_hash()
+    status = {
+        "checked_at": int(time.time()),
+        "local_hash": local_hash,
+        "ok": False,
+        "status": "Pico deploy failed",
+    }
+    if local_hash == "--":
+        status["status"] = "Local pico_firmware/main.py not found"
+        save_pico_update_status(status)
+        return status
+
+    if not shutil.which("mpremote"):
+        status["status"] = "mpremote is not installed"
+        save_pico_update_status(status)
+        return status
+
+    source_path = pico_firmware_path()
+    code, stdout, stderr = run_git_command(["rev-parse", "--short", "HEAD"])
+    controller_commit = stdout if code == 0 and stdout else "--"
+
+    proc = subprocess.run(
+        ["mpremote", "connect", "auto", "fs", "cp", source_path, ":main.py"],
+        cwd=APP_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if proc.returncode != 0:
+        status["status"] = (proc.stderr or proc.stdout or "Pico copy failed").strip()
+        save_pico_update_status(status)
+        return status
+
+    subprocess.run(
+        ["mpremote", "connect", "auto", "soft-reset"],
+        cwd=APP_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    status.update({
+        "ok": True,
+        "status": "Pico firmware deployed from controller %s" % controller_commit,
+        "last_deployed_hash": local_hash,
+        "last_deployed_at": int(time.time()),
+    })
+    save_pico_update_status(status)
+    return status
+
+
 def load_config():
     ensure_data_dir()
     path = os.path.join(DATA_DIR, "controller_config.json")
@@ -120,6 +327,12 @@ def load_config():
         cfg["touch_refresh_seconds"] = int(cfg.get("touch_refresh_seconds", 1))
     except Exception:
         cfg["touch_refresh_seconds"] = 1
+    cfg["cross_auger_enabled"] = bool(cfg.get("cross_auger_enabled", True))
+    cfg["auger_left_enabled"] = bool(cfg.get("auger_left_enabled", True))
+    cfg["auger_right_enabled"] = bool(cfg.get("auger_right_enabled", True))
+    cfg["cross_auger_label"] = str(cfg.get("cross_auger_label", "Cross Auger") or "Cross Auger").strip()
+    cfg["auger_left_label"] = str(cfg.get("auger_left_label", "Auger Left") or "Auger Left").strip()
+    cfg["auger_right_label"] = str(cfg.get("auger_right_label", "Auger Right") or "Auger Right").strip()
     try:
         cfg["temp_low_c"] = float(cfg.get("temp_low_c", 18.0))
     except Exception:
@@ -160,6 +373,21 @@ def load_config():
     cfg["dashboard_url"] = str(cfg.get("dashboard_url", DEFAULT_CONFIG["dashboard_url"])).rstrip("/")
     cfg["serial_port"] = str(cfg.get("serial_port", DEFAULT_CONFIG["serial_port"]))
     return cfg
+
+
+def enabled_auger_keys(cfg):
+    keys = []
+    if cfg.get("cross_auger_enabled", True):
+        keys.append("cross_auger")
+    if cfg.get("auger_left_enabled", True):
+        keys.append("auger_left")
+    if cfg.get("auger_right_enabled", True):
+        keys.append("auger_right")
+    return keys
+
+
+def auger_label_for(cfg, auger_key, default_label):
+    return str(cfg.get("%s_label" % auger_key, default_label) or default_label).strip()
 
 
 def save_config(cfg):
@@ -1309,18 +1537,26 @@ def build_home_context():
     feed_glow = "feed-red" if (feed_kg_f is None or feed_kg_f < feed_low_kg) else "feed-green"
 
     auger_tiles = []
+    auger_slots = []
+    active_auger_keys = enabled_auger_keys(cfg)
     i = 0
     while i < len(AUGER_DEFS):
         auger_key, label = AUGER_DEFS[i]
-        auger = augers.get(auger_key, {})
-        auger_tiles.append({
-            "key": auger_key,
-            "label": label,
-            "status": auger_status_text(auger),
-            "runtime": auger_runtime_text(auger, now_ts=now_ts),
-            "last_run": auger_last_run_text(auger),
-            "glow": auger_glow_class(auger),
-        })
+        label = auger_label_for(cfg, auger_key, label)
+        if auger_key in active_auger_keys:
+            auger = augers.get(auger_key, {})
+            tile = {
+                "key": auger_key,
+                "label": label,
+                "status": auger_status_text(auger),
+                "runtime": auger_runtime_text(auger, now_ts=now_ts),
+                "last_run": auger_last_run_text(auger),
+                "glow": auger_glow_class(auger),
+            }
+            auger_tiles.append(tile)
+            auger_slots.append(tile)
+        else:
+            auger_slots.append(None)
         i += 1
 
     alarm_rows = build_alarm_rows(state)
@@ -1372,6 +1608,7 @@ def build_home_context():
         "oldest_bird_age": fmt_value(oldest_age_days, "i"),
         "allocation_summary": allocation_summary,
         "active_crop_id": active_crop_id,
+        "current_datetime": datetime.now().strftime("%d %b %Y %H:%M:%S"),
         "crop_class": crop_class,
         "temp_c": fmt_value(sensors.get("temp_c"), "f1"),
         "rh_pct": fmt_value(sensors.get("rh_pct"), "f0"),
@@ -1380,7 +1617,7 @@ def build_home_context():
         "feed_kg": fmt_value(sensors.get("feed_kg"), "f0"),
         "water_7to7": fmt_value(dashboard_summary.get("water_7to7"), "f0"),
         "feed_7to7": fmt_value(dashboard_summary.get("feed_7to7"), "f1"),
-        "mortality_total": fmt_value(dashboard_summary.get("mortality_total"), "i"),
+        "mortality_total": fmt_value(dashboard_summary.get("mortality_total") if total_birds > 0 else None, "i"),
         "water_glow": water_glow,
         "feed_glow": feed_glow,
         "light_lux": fmt_value(sensors.get("light_lux"), "f0"),
@@ -1389,6 +1626,7 @@ def build_home_context():
         "sensors": sensors,
         "entry": entry,
         "auger_tiles": auger_tiles,
+        "auger_slots": auger_slots,
         "controller_alerts": controller_alerts,
         "alarm_count": len(alarm_rows),
         "alarm_class": alarm_class,
@@ -1895,8 +2133,22 @@ HTML = """
             gap: 16px;
             flex-wrap: nowrap;
         }
+        .hero-crop-wrap {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 6px;
+        }
         .hero-crop {
             font-size: 40px;
+            font-weight: 700;
+            color: var(--text);
+            line-height: 1;
+            text-align: right;
+            white-space: nowrap;
+        }
+        .hero-datetime {
+            font-size: 18px;
             font-weight: 700;
             color: var(--text);
             line-height: 1;
@@ -1910,10 +2162,16 @@ HTML = """
                 0 0 34px rgba(53,208,127,0.35);
         }
         .hero-crop.inactive {
+            text-shadow: none;
+        }
+        .hero-datetime.active {
             text-shadow:
-                0 0 10px rgba(255,119,119,0.95),
-                0 0 20px rgba(255,119,119,0.65),
-                0 0 34px rgba(255,119,119,0.35);
+                0 0 10px rgba(53,208,127,0.90),
+                0 0 18px rgba(53,208,127,0.55),
+                0 0 28px rgba(53,208,127,0.28);
+        }
+        .hero-datetime.inactive {
+            text-shadow: none;
         }
         .hero-birds {
             margin-top: 14px;
@@ -2067,6 +2325,11 @@ HTML = """
             text-decoration: none;
             color: inherit;
             height: 100%;
+        }
+        .metric-spacer {
+            visibility: hidden;
+            pointer-events: none;
+            box-shadow: none;
         }
         .metric.flow-green {
             border-color: #35d07f;
@@ -2276,6 +2539,9 @@ HTML = """
             display: grid;
             gap: 10px;
         }
+        .full-panel {
+            margin-top: 16px;
+        }
         .detail {
             display: flex;
             justify-content: space-between;
@@ -2448,7 +2714,10 @@ HTML = """
                     <div>
                         <div class="title-row">
                             <h1 id="headerTitle">Shed {{ shed_no }} - Cherry Dene Farm Ltd.</h1>
-                            <div id="cropHeader" class="hero-crop {{ crop_class }}">Crop <span id="cropValue">{{ active_crop_id if active_crop_id is not none else "--" }}</span></div>
+                            <div class="hero-crop-wrap">
+                                <div id="cropHeader" class="hero-crop {{ crop_class }}">Crop <span id="cropValue">{{ active_crop_id if active_crop_id is not none else "--" }}</span></div>
+                                <div id="cropDateTime" class="hero-datetime {{ crop_class }}">{{ current_datetime }}</div>
+                            </div>
                         </div>
                         <div class="hero-stat-row">
                             <a class="hero-birds" href="{{ url_for('allocation_view') }}" id="birdsBox">
@@ -2470,11 +2739,11 @@ HTML = """
                 <div class="hero-pills">
                     <div class="pill-grid">
                         <div id="alarmPill" class="pill {{ alarm_class }}"><span class="pill-label">Alarm</span><span class="pill-value" id="alarmValue">{{ alarm_short }}</span></div>
-                        <div id="syncPill" class="pill {{ sync_class }}"><span class="pill-label">Sync</span><span class="pill-value" id="syncValue">{{ sync_short }}</span></div>
+                        <div id="ethernetPill" class="pill {{ ethernet_class }}"><span class="pill-label">Office Link</span><span class="pill-value" id="ethernetValue">{{ ethernet_short }}</span></div>
                         <div id="picoPill" class="pill {{ sensor_class }}"><span class="pill-label">Pico</span><span class="pill-value" id="picoValue">{{ sensor_status_short }}</span></div>
+                        <div id="pushPill" class="pill {{ push_class }}"><span class="pill-label">Update</span><span class="pill-value" id="pushValue">{{ push_short }}</span></div>
                         <div id="loggingPill" class="pill {{ log_class }}"><span class="pill-label">Logging</span><span class="pill-value" id="loggingValue">{{ log_short }}</span></div>
-                        <div id="ethernetPill" class="pill {{ ethernet_class }}"><span class="pill-label">Ethernet</span><span class="pill-value" id="ethernetValue">{{ ethernet_short }}</span></div>
-                        <div id="pushPill" class="pill {{ push_class }}"><span class="pill-label">Push</span><span class="pill-value" id="pushValue">{{ push_short }}</span></div>
+                        <div id="syncPill" class="pill {{ sync_class }}"><span class="pill-label">Sync</span><span class="pill-value" id="syncValue">{{ sync_short }}</span></div>
                     </div>
                 </div>
             </div>
@@ -2517,13 +2786,17 @@ HTML = """
                     <div class="metric-sub">Litres</div>
                 </div>
             </a>
-            {% for auger in auger_tiles %}
+            {% for auger in auger_slots %}
+            {% if auger %}
             <div id="auger-{{ auger.key }}" class="metric {{ auger.glow }}">
                 <div class="metric-label">{{ auger.label }}</div>
                 <div class="metric-val" style="font-size:30px;" data-auger-status>{{ auger.status }}</div>
                 <div class="metric-sub" data-auger-runtime>{{ auger.runtime }}</div>
                 <div class="metric-sub" data-auger-last-run>{{ auger.last_run }}</div>
             </div>
+            {% else %}
+            <div class="metric metric-spacer" aria-hidden="true"></div>
+            {% endif %}
             {% endfor %}
             <a class="metric-link" href="{{ url_for('feed_history_view') }}">
                 <div class="metric">
@@ -2568,16 +2841,20 @@ HTML = """
         }
 
         function setCropClass(activeCropId) {
-            const el = document.getElementById('cropHeader');
-            if (!el) return;
-            el.classList.remove('active', 'inactive');
-            el.classList.add(activeCropId === null ? 'inactive' : 'active');
+            const cls = activeCropId === null ? 'inactive' : 'active';
+            ['cropHeader', 'cropDateTime'].forEach(id => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                el.classList.remove('active', 'inactive');
+                el.classList.add(cls);
+            });
         }
 
         function renderController(data) {
             setText('birdsValue', data.total_birds);
             setText('birdAgeValue', data.oldest_bird_age);
             setText('cropValue', data.active_crop_id === null ? '--' : data.active_crop_id);
+            setText('cropDateTime', data.current_datetime || '--');
             setCropClass(data.active_crop_id);
             setText('syncValue', data.sync_short || '--');
             setText('picoValue', data.sensor_status_short || '--');
@@ -2754,6 +3031,9 @@ SETTINGS_HTML = """
             line-height: 74px;
             white-space: nowrap;
         }
+        .full-panel {
+            margin-top: 16px;
+        }
         .detail-list {
             display: grid;
             gap: 10px;
@@ -2772,8 +3052,59 @@ SETTINGS_HTML = """
         .label {
             color: var(--muted);
         }
+        .status-note {
+            margin: 12px 0 0;
+            color: var(--muted);
+            font-size: 16px;
+        }
+        .button-row {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 12px;
+            margin-top: 14px;
+            max-width: 560px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        .update-split {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-top: 12px;
+        }
+        .update-box {
+            background: var(--panel-2);
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            padding: 16px;
+        }
+        .update-box h2 {
+            margin: 0 0 10px 0;
+            font-size: 24px;
+        }
+        .button-row form {
+            width: 100%;
+            margin: 0;
+        }
+        button {
+            min-height: 74px;
+            width: 100%;
+            border-radius: 16px;
+            border: 1px solid #8a8a8a;
+            background: linear-gradient(180deg, #7a7a7a, #676767);
+            color: var(--text);
+            font-size: 20px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        button.secondary {
+            background: linear-gradient(180deg, #737373, #626262);
+        }
         @media (max-width: 900px) {
             .grid {
+                grid-template-columns: 1fr;
+            }
+            .update-split {
                 grid-template-columns: 1fr;
             }
         }
@@ -2805,6 +3136,49 @@ SETTINGS_HTML = """
                     <div class="detail"><span class="label">Updated At</span><span>{{ updated_at }}</span></div>
                     <div class="detail"><span class="label">Sync</span><span>{{ sync_short }}</span></div>
                     <div class="detail"><span class="label">Pico</span><span>{{ sensor_status_short }}</span></div>
+                </div>
+            </div>
+        </div>
+        <div class="panel full-panel">
+            <h1 style="font-size:28px;">Software Update</h1>
+            <div class="sub">Check the controller version against GitHub and apply a newer version when one is available.</div>
+            <div class="update-split">
+                <div class="update-box">
+                    <h2>Controller Update</h2>
+                    <div class="detail-list">
+                        <div class="detail"><span class="label">Branch</span><span>{{ update_status.branch }}</span></div>
+                        <div class="detail"><span class="label">Current Version</span><span>{{ update_status.local_commit }}</span></div>
+                        <div class="detail"><span class="label">Latest Version</span><span>{{ update_status.remote_commit }}</span></div>
+                        <div class="detail"><span class="label">Last Check</span><span>{{ update_checked_at }}</span></div>
+                    </div>
+                    <div class="status-note">{{ update_status.status }}</div>
+                    <div class="button-row">
+                        <form method="post" action="{{ url_for('check_update_view') }}">
+                            <button class="secondary" type="submit">Check for Update</button>
+                        </form>
+                        {% if update_status.update_available %}
+                        <form method="post" action="{{ url_for('apply_update_view') }}">
+                            <button type="submit">Update Now</button>
+                        </form>
+                        {% endif %}
+                    </div>
+                    {% if update_status.restart_required %}
+                    <div class="status-note">Latest code has been pulled. A controller restart is required to run the new version.</div>
+                    {% endif %}
+                </div>
+                <div class="update-box">
+                    <h2>Pico Update</h2>
+                    <div class="detail-list">
+                        <div class="detail"><span class="label">Local Firmware</span><span>{{ pico_update_status.local_hash }}</span></div>
+                        <div class="detail"><span class="label">Last Deployed</span><span>{{ pico_update_status.last_deployed_hash }}</span></div>
+                        <div class="detail"><span class="label">Deployed At</span><span>{{ pico_deployed_at }}</span></div>
+                    </div>
+                    <div class="status-note">{{ pico_update_status.status }}</div>
+                    <div class="button-row">
+                        <form method="post" action="{{ url_for('apply_pico_update_view') }}">
+                            <button type="submit">Deploy Pico Firmware</button>
+                        </form>
+                    </div>
                 </div>
             </div>
         </div>
@@ -4096,7 +4470,77 @@ def index():
 @app.route("/settings")
 def controller_settings_view():
     maybe_refresh_from_dashboard()
-    return render_template_string(SETTINGS_HTML, **build_home_context())
+    ctx = build_home_context()
+    update_status = load_update_status()
+    pico_update_status = load_pico_update_status()
+    checked_at = update_status.get("checked_at")
+    ctx["update_status"] = update_status
+    ctx["update_checked_at"] = fmt_ts(checked_at) if checked_at else "--"
+    ctx["pico_update_status"] = pico_update_status
+    ctx["pico_deployed_at"] = fmt_ts(pico_update_status.get("last_deployed_at"))
+    return render_template_string(SETTINGS_HTML, **ctx)
+
+
+@app.route("/settings/update/check", methods=["POST"])
+def check_update_view():
+    check_for_update()
+    return redirect(url_for("controller_settings_view"))
+
+
+@app.route("/settings/update/apply", methods=["POST"])
+def apply_update_view():
+    status = check_for_update()
+    if not status.get("update_available"):
+        return redirect(url_for("controller_settings_view"))
+
+    branch = status.get("branch") or "main"
+    code, stdout, stderr = run_git_command(["pull", "--ff-only", "origin", branch], timeout=60)
+    save_update_status({
+        "checked_at": int(time.time()),
+        "ok": code == 0,
+        "status": "Update applied. Restarting controller..." if code == 0 else (stderr or stdout or "Update failed"),
+        "restart_required": code == 0,
+        "update_available": False if code == 0 else True,
+    })
+
+    if code != 0:
+        return redirect(url_for("controller_settings_view"))
+
+    restart_self_delayed(1.0)
+    return render_template_string(
+        """
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Updating Controller</title>
+    <meta http-equiv="refresh" content="6; url={{ url_for('controller_settings_view') }}">
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <style>
+        body { margin:0; background:#5b5b5b; color:#ececec; font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; }
+        .wrap { max-width:760px; margin:0 auto; padding:32px 18px; }
+        .panel { background:rgba(115,115,115,0.96); border:1px solid #8a8a8a; border-radius:20px; padding:24px; }
+        h1 { margin:0 0 12px 0; font-size:34px; }
+        .sub { color:#d2d2d2; font-size:18px; }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="panel">
+            <h1>Updating Controller</h1>
+            <div class="sub">The latest code has been pulled. This controller is restarting now and will return to settings automatically.</div>
+        </div>
+    </div>
+</body>
+</html>
+        """
+    )
+
+
+@app.route("/settings/update/pico", methods=["POST"])
+def apply_pico_update_view():
+    deploy_pico_firmware()
+    return redirect(url_for("controller_settings_view"))
 
 
 @app.route("/allocation")
@@ -4174,6 +4618,7 @@ def controller_health_view():
     i = 0
     while i < len(AUGER_DEFS):
         auger_key, label = AUGER_DEFS[i]
+        label = auger_label_for(cfg, auger_key, label)
         auger = augers.get(auger_key, {})
         auger_rows.append({
             "label": label,

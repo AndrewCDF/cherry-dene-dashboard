@@ -7,7 +7,7 @@ Current hardware this starter now targets:
 - Sensirion SHT45 temp / humidity sensor over I2C
 - 3-wire hall-effect pulse flow meter
 - 4 shear beam load cells into a 4-in-1 junction box, then HX711, then Pico
-- optional current transformers for:
+- current transformers through an ADS1115 for:
   - cross_auger_on
   - auger_left_on
   - auger_right_on
@@ -17,6 +17,11 @@ Current assumptions:
 - SDA is GPIO 4
 - SCL is GPIO 5
 - SHT45 address is 0x44
+- ADS1115 address is 0x48
+- ADS1115 channel map is:
+  - A0 = cross auger
+  - A1 = auger left
+  - A2 = auger right
 - flow meter pulse wire is on GPIO 3
 - HX711 DOUT is on GPIO 14
 - HX711 SCK is on GPIO 15
@@ -25,6 +30,9 @@ Current assumptions:
   which is common for YF-S201-style meters
 
 What the firmware sends over USB serial:
+- device
+- ts
+- uptime_s
 - temp_c
 - rh_pct
 - water_lpm
@@ -36,8 +44,12 @@ What the firmware sends over USB serial:
 - cross_auger_on
 - auger_left_on
 - auger_right_on
+- cross_auger_on_peak
+- auger_left_on_peak
+- auger_right_on_peak
 - status
 - alarms
+- ct_debug
 
 What you need to edit:
 1. Change I2C_ID, I2C_SDA_PIN, and I2C_SCL_PIN if your SHT45 is wired differently.
@@ -45,10 +57,12 @@ What you need to edit:
 3. Change FLOW_PIN if your hall-effect flow meter pulse wire is on another GPIO.
 4. Change FLOW_HZ_PER_LPM to match your actual flow meter calibration.
 5. Change HX711_DOUT_PIN and HX711_SCK_PIN if your HX711 is wired differently.
-6. Change the CT pin numbers and thresholds if you are fitting CTs.
+6. Change the ADS1115 CT channels and thresholds if your auger wiring differs.
 7. Replace the placeholder functions if you later add:
    - light sensor
    - pressure sensor
+8. Set `DEVICE_NAME` so the shed Pi can identify the Pico cleanly.
+9. Set `DEBUG_ADS1115 = False` later if you do not want CT debug data in the JSON output.
 
 Wiring notes:
 - SHT45:
@@ -73,6 +87,15 @@ Wiring notes:
   - firmware sends raw averaged counts as `feed_raw_units`
   - the shed controller uses that raw value for tare, known-weight calibration, and live KG
 
+- auger current transformers:
+  - CT outputs go into the ADS1115 analog inputs
+  - ADS1115 shares the Pico I2C bus
+  - default firmware assumption is `0x48` on the same bus as the SHT45
+  - firmware reads:
+    - `A0` for `cross_auger_on`
+    - `A1` for `auger_left_on`
+    - `A2` for `auger_right_on`
+
 Deployment:
 1. Flash MicroPython to the Pico 2.
 2. Copy main.py to the Pico as /main.py.
@@ -84,3 +107,6 @@ Important:
 - if your flow meter calibration is different, the displayed L/min will be wrong until FLOW_HZ_PER_LPM is adjusted
 - the shed controller can now use `total_flow_pulses` for a 5 minute calibration against the physical water meter
 - the shed controller feed settings page expects `feed_raw_units`, not pre-calculated feed KG
+- the auger threshold values in `main.py` are starting values and will likely need tuning from live ADS1115 readings
+- each sensor path now fails independently, so a feed or CT issue should not stop temp, humidity, or flow data being sent
+- `ct_debug` includes the live ADS1115 channel, peak, and threshold for each auger input, which is useful while tuning thresholds

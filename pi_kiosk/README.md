@@ -1,20 +1,20 @@
-# Raspberry Pi 5 Shed Controller Setup
+# Raspberry Pi 5 Startup Setup
 
-## What this installs
+## Shed controller install
 
 - `shed_controller_server.py`: local Flask controller UI on the Pi
 - `pi_kiosk/shed-controller.service`: runs the Flask app at boot
 - `pi_kiosk/kiosk.sh`: launches Chromium in fullscreen kiosk mode
 - `pi_kiosk/shed-kiosk.desktop`: autostarts the browser into the touch UI
 
-## Expected hardware
+## Shed expected hardware
 
 - Raspberry Pi 5
 - Raspberry Pi OS with desktop
 - 7 inch LCD touch screen
 - Pico 2 connected over USB
 
-## Serial protocol from the Pico 2
+## Shed serial protocol from the Pico 2
 
 The controller expects one JSON object per line over USB serial, for example:
 
@@ -22,7 +22,7 @@ The controller expects one JSON object per line over USB serial, for example:
 {"temp_c": 21.4, "rh_pct": 64.1, "water_lpm": 3.22, "feed_kg": 1840, "light_lux": 320, "pressure_pa": 101233, "status": "Sensors OK", "alarms": []}
 ```
 
-## First run
+## Shed first run
 
 1. Copy this project to `/home/pi/shed-controller`
 2. Install Python dependencies:
@@ -64,10 +64,29 @@ cd /home/pi/shed-controller
 sudo ./pi_kiosk/install_pi_kiosk.sh /home/pi/shed-controller pi
 ```
 
-## Notes
+## Shed notes
 
 - The Flask app listens on the configured `listen_port`, default `8091`
 - The Chromium kiosk opens `http://127.0.0.1:8091`
 - `onboard` is started by the kiosk script so numeric fields can bring up an on-screen keyboard on the touchscreen
 - If your Pico appears on another port, update `serial_port`
 - If the dashboard must allocate crop IDs for controller-started crops, keep the updated `dashboard_server.py` running on the farm side
+
+## Office dashboard boot service
+
+If the office Pi should run the dashboard on boot but not launch a kiosk browser, install only the systemd service:
+
+```bash
+cd /home/pi/cherry-dene-dashboard
+sudo ./pi_kiosk/install_office_service.sh /home/pi/cherry-dene-dashboard
+```
+
+This installs:
+
+- `pi_kiosk/office-dashboard.service`
+
+Office notes:
+
+- The office dashboard runs in the background at boot
+- No Chromium kiosk is started
+- PCs and the smart TV should open `http://OFFICE_PI_IP:8090` over the network
