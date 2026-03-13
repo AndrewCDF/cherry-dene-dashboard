@@ -1,4 +1,5 @@
 from flask import Flask, Response, jsonify, redirect, render_template_string, request, send_file, url_for
+import hashlib
 import json
 import os
 import shutil
@@ -18,6 +19,7 @@ STATE_LOCK = threading.Lock()
 
 DEFAULT_CONFIG = {
     "dashboard_url": "http://127.0.0.1:8090",
+    "sync_token": "",
     "listen_port": 8092,
     "touch_refresh_seconds": 1,
     "water_low_lpm": 0.1,
@@ -181,6 +183,7 @@ def default_state():
         },
         "state_version": 0,
         "state_updated_ts": None,
+        "last_pico_deployed_hash": "--",
     }
 
 
@@ -216,6 +219,24 @@ def mutate_state(mutator):
         state["state_updated_ts"] = int(time.time())
         save_state(state)
         return state
+
+
+def pico_firmware_path():
+    return os.path.join(APP_ROOT, "pico_firmware", "main.py")
+
+
+def pico_firmware_hash():
+    path = pico_firmware_path()
+    if not os.path.exists(path):
+        return "--"
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(8192)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()[:10]
 
 
 def build_controller_alarms(state, cfg=None):
@@ -502,6 +523,15 @@ def check_for_update():
     }
 
 
+def local_version_info():
+    code, branch, _ = run_git(["branch", "--show-current"])
+    code2, commit, _ = run_git(["rev-parse", "--short", "HEAD"])
+    return {
+        "branch": branch if code == 0 and branch else "main",
+        "local_commit": commit if code2 == 0 and commit else "--",
+    }
+
+
 def apply_update():
     status = check_for_update()
     if not status.get("update_available"):
@@ -519,6 +549,7 @@ def push_to_dashboard_payload(payload, state=None):
         state = load_state()
     sensors = state.get("sensors", {})
     merged_payload = dict(payload)
+    version = local_version_info()
     merged_payload["controller_meta"] = {
         "last_sensor_ts": sensors.get("last_sensor_ts"),
         "device_status": sensors.get("device_status"),
@@ -528,11 +559,19 @@ def push_to_dashboard_payload(payload, state=None):
         "controller_state_updated_ts": state.get("state_updated_ts"),
         "last_backup_ts": state.get("last_backup_ts"),
         "last_backup_status": state.get("last_backup_status"),
+        "app_branch": version.get("branch", "main"),
+        "app_version": version.get("local_commit", "--"),
+        "pico_local_hash": pico_firmware_hash(),
+        "pico_deployed_hash": str(state.get("last_pico_deployed_hash", "") or "--"),
     }
+    headers = {"Content-Type": "application/json"}
+    token = str(cfg.get("sync_token", "") or "").strip()
+    if token:
+        headers["X-Controller-Token"] = token
     req = urllib.request.Request(
         base_url + "/api/borehole/sync",
         data=json.dumps(merged_payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     try:
@@ -585,6 +624,16 @@ def maybe_heartbeat_to_dashboard(min_age_seconds=LOCAL_OFFICE_HEARTBEAT_SECONDS)
 
     if last_push_ts is None or (now_ts - last_push_ts) >= int(min_age_seconds):
         push_current_state()
+
+
+def require_office_token():
+    expected = str(load_config().get("sync_token", "") or "").strip()
+    if not expected:
+        return None
+    provided = str(request.headers.get("X-Controller-Token", "") or "").strip()
+    if provided != expected:
+        return jsonify({"ok": False, "error": "Unauthorized"}), 401
+    return None
 
 
 def home_context():
@@ -1587,6 +1636,9 @@ def create_backup_view():
 
 @app.route("/backup/latest")
 def download_backup_view():
+    auth_error = require_office_token()
+    if auth_error:
+        return auth_error
     rows = list_backup_files()
     if not rows:
         path = create_backup_zip("manual")
@@ -1617,7 +1669,8 @@ def pico_update_view():
             timeout=60,
         )
         if proc.returncode == 0:
-            mutate_state(lambda state: state.update({"last_pico_update_status": "Pico update OK"}))
+            local_hash = pico_firmware_hash()
+            mutate_state(lambda state: state.update({"last_pico_update_status": "Pico update OK", "last_pico_deployed_hash": local_hash}))
             return redirect(url_for("settings_view", msg="Pico update OK"))
         msg = proc.stderr.strip() or proc.stdout.strip() or "Pico update failed"
     except Exception as exc:

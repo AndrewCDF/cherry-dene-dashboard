@@ -1,6 +1,7 @@
 {
   "shed_no": 1,
   "dashboard_url": "http://192.168.1.10:8090",
+  "sync_token": "CHANGE_ME_SHARED_TOKEN",
   "listen_port": 8091,
   "serial_port": "/dev/ttyACM0",
   "serial_baudrate": 115200,

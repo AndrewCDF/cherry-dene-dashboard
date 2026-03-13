@@ -226,15 +226,19 @@ def controller_backup_url_map():
                 urls[controller_key] = {
                     "label": label,
                     "url": sync_url + "/backup/latest",
+                    "token": str(rec.get("sync_token", "") or ""),
                 }
     return urls
 
 
-def collect_controller_backup(controller_key, label, url):
+def collect_controller_backup(controller_key, label, url, token=""):
     status_map = load_controller_backup_status()
     now_ts = int(time.time())
     try:
-        req = urllib.request.Request(url, method="GET")
+        headers = {}
+        if token:
+            headers["X-Controller-Token"] = token
+        req = urllib.request.Request(url, headers=headers, method="GET")
         with urllib.request.urlopen(req, timeout=10) as resp:
             if not (200 <= int(resp.status) < 300):
                 raise RuntimeError("HTTP %d" % int(resp.status))
@@ -272,7 +276,7 @@ def maybe_collect_controller_backups():
             last_ts = None
         if last_ts is not None and (int(time.time()) - last_ts) < OFFICE_AUTO_BACKUP_INTERVAL_SECONDS:
             continue
-        collect_controller_backup(controller_key, rec.get("label", controller_key), rec.get("url", ""))
+        collect_controller_backup(controller_key, rec.get("label", controller_key), rec.get("url", ""), str(rec.get("token", "") or ""))
 
 
 def controller_backup_worker():
@@ -411,6 +415,24 @@ def zip_json_member(path, member_name, default):
         return default
 
 
+def zip_ndjson_member(path, member_name):
+    try:
+        rows = []
+        with zipfile.ZipFile(path, "r") as zf:
+            with zf.open(member_name) as f:
+                for raw in f:
+                    line = raw.decode("utf-8").strip()
+                    if not line:
+                        continue
+                    try:
+                        rows.append(json.loads(line))
+                    except Exception:
+                        pass
+        return rows
+    except Exception:
+        return []
+
+
 def restore_full_office_from_backup(path):
     with zipfile.ZipFile(path, "r") as zf:
         for name in zf.namelist():
@@ -457,6 +479,61 @@ def restore_borehole_from_backup(path):
         save_borehole_meta(backup_meta)
 
 
+def restore_shed_from_controller_backup(path, shed_no):
+    shed_name = shed_name_from_number(shed_no)
+    controller_state = zip_json_member(path, "controller_state.json", {})
+    if not isinstance(controller_state, dict):
+        raise RuntimeError("Controller backup missing controller_state.json")
+
+    incoming_entries = controller_state.get("entries", {})
+    if not isinstance(incoming_entries, dict):
+        incoming_entries = {}
+
+    state = load_shed_entries_state()
+    bucket = ensure_shed_entry_bucket(state, shed_name)
+    bucket.clear()
+    for key, rec in incoming_entries.items():
+        try:
+            dest_shed = int(key)
+        except Exception:
+            continue
+        bucket[str(dest_shed)] = clean_entry_record(rec)
+    save_shed_entries_state(state)
+    refresh_farm_crop_current_id(state)
+
+
+def restore_borehole_from_controller_backup(path):
+    live_rows = zip_ndjson_member(path, "live.ndjson")
+    hourly_rows = zip_ndjson_member(path, "hourly.ndjson")
+    controller_state = zip_json_member(path, "controller_state.json", {})
+
+    latest_live = {}
+    if live_rows:
+        latest_live = live_rows[-1]
+    elif isinstance(controller_state, dict):
+        sensors = controller_state.get("sensors", {})
+        if isinstance(sensors, dict):
+            latest_live = {
+                "water_lpm": sensors.get("water_lpm"),
+                "ts": sensors.get("last_sensor_ts"),
+                "source": "borehole_controller_backup",
+            }
+    if latest_live:
+        save_borehole_live(latest_live)
+
+    hourly_path = os.path.join(DATA_DIR, "borehole_hourly.ndjson")
+    with open(hourly_path, "w") as f:
+        for row in hourly_rows:
+            f.write(json.dumps(row) + "\n")
+
+    if isinstance(controller_state, dict):
+        meta = load_borehole_meta()
+        meta["last_backup_ts"] = controller_state.get("last_backup_ts")
+        meta["last_backup_status"] = controller_state.get("last_backup_status")
+        meta["received_ts"] = int(time.time())
+        save_borehole_meta(meta)
+
+
 def latest_live_by_shed():
     data = read_json_file(os.path.join(DATA_DIR, "live_latest.json"), {})
     return data if isinstance(data, dict) else {}
@@ -494,6 +571,10 @@ def clean_borehole_meta(meta):
         "controller_state_updated_ts": meta.get("controller_state_updated_ts"),
         "last_backup_ts": meta.get("last_backup_ts"),
         "last_backup_status": meta.get("last_backup_status"),
+        "app_branch": meta.get("app_branch"),
+        "app_version": meta.get("app_version"),
+        "pico_local_hash": meta.get("pico_local_hash"),
+        "pico_deployed_hash": meta.get("pico_deployed_hash"),
         "controller_alarms": meta.get("controller_alarms", []) if isinstance(meta.get("controller_alarms", []), list) else [],
     }
 
@@ -506,6 +587,27 @@ def load_farm_crop():
 def load_controller_config():
     data = read_json_file(os.path.join(DATA_DIR, "controllers.json"), {})
     return data if isinstance(data, dict) else {}
+
+
+def controller_config_record(controller_key):
+    config = load_controller_config()
+    rec = config.get(str(controller_key))
+    return rec if isinstance(rec, dict) else {}
+
+
+def controller_token_for_key(controller_key):
+    rec = controller_config_record(controller_key)
+    return str(rec.get("sync_token", "") or "").strip()
+
+
+def require_controller_token(controller_key):
+    expected = controller_token_for_key(controller_key)
+    if not expected:
+        return None
+    provided = str(request.headers.get("X-Controller-Token", "") or "").strip()
+    if provided != expected:
+        return jsonify({"ok": False, "error": "Unauthorized"}), 401
+    return None
 
 
 def load_controller_meta():
@@ -570,6 +672,10 @@ def clean_controller_meta(meta):
         "last_seen_office_sync_version": meta.get("last_seen_office_sync_version"),
         "last_backup_ts": meta.get("last_backup_ts"),
         "last_backup_status": meta.get("last_backup_status"),
+        "app_branch": meta.get("app_branch"),
+        "app_version": meta.get("app_version"),
+        "pico_local_hash": meta.get("pico_local_hash"),
+        "pico_deployed_hash": meta.get("pico_deployed_hash"),
         "controller_alarms": [],
         "augers": {},
     }
@@ -1070,6 +1176,19 @@ def controller_url_for_shed(shed_no):
     return None
 
 
+def controller_token_for_shed(shed_no):
+    config = load_controller_config()
+    keys = [str(shed_no), shed_name_from_number(shed_no)]
+
+    for key in keys:
+        rec = config.get(key)
+        if isinstance(rec, dict):
+            token = rec.get("sync_token")
+            if token:
+                return str(token).strip()
+    return ""
+
+
 def shed_sync_version_for_entries(entries):
     latest_ts = 0
     for key in entries:
@@ -1128,10 +1247,14 @@ def push_shed_state_to_controller(shed_no):
 
     payload = shed_sync_payload(shed_no)
     body = json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    token = controller_token_for_shed(shed_no)
+    if token:
+        headers["X-Controller-Token"] = token
     req = urllib.request.Request(
         base_url + "/api/dashboard-sync",
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
 
@@ -3209,7 +3332,7 @@ RESTORE_HTML = """
     <div class="wrap">
         <div class="topbar"><a href="{{ url_for('dashboard') }}">← Back to dashboard</a></div>
         <h1>Backup Restore</h1>
-        <div class="sub">Restore the full office data set or just one shed state from an office backup ZIP.</div>
+        <div class="sub">Restore the full office data set, office backup state, or latest collected controller copies.</div>
         {% if status_msg %}
         <div class="status auto-dismiss {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
         {% endif %}
@@ -3255,6 +3378,37 @@ RESTORE_HTML = """
                     <button type="submit">Restore Bore Hole State</button>
                 </form>
             </div>
+        </div>
+        <div class="panel" style="margin-top:16px;">
+            <h2>Restore From Collected Controller Copies</h2>
+            <div class="sub">Use the latest backup ZIP collected from each controller by the office.</div>
+            <table>
+                <thead><tr><th>Controller</th><th>Latest Office Copy</th><th>Action</th></tr></thead>
+                <tbody>
+                    {% for row in controller_copy_rows %}
+                    <tr>
+                        <td>{{ row.label }}</td>
+                        <td>{{ row.latest_name }}</td>
+                        <td>
+                            {% if row.restore_kind == 'shed' %}
+                            <form method="post" action="{{ url_for('restore_controller_copy_shed_view') }}">
+                                <input type="hidden" name="controller_key" value="{{ row.controller_key }}">
+                                <input type="hidden" name="shed_no" value="{{ row.shed_no }}">
+                                <button type="submit">Restore {{ row.label }}</button>
+                            </form>
+                            {% elif row.restore_kind == 'borehole' %}
+                            <form method="post" action="{{ url_for('restore_controller_copy_borehole_view') }}">
+                                <input type="hidden" name="controller_key" value="{{ row.controller_key }}">
+                                <button type="submit">Restore Bore Hole</button>
+                            </form>
+                            {% else %}
+                            --
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
         </div>
         <div class="panel" style="margin-top:16px;">
             <h2>Available Backups</h2>
@@ -3345,6 +3499,7 @@ OFFICE_SETTINGS_HTML = """
                 <div class="detail"><span class="label">Latest Backup</span><span>{{ latest_backup_name }}</span></div>
                 <div class="action-grid">
                     <a class="action-link" href="{{ url_for('office_events_view') }}">Event Log</a>
+                    <a class="action-link" href="{{ url_for('office_versions_view') }}">Versions</a>
                     <a class="action-link" href="{{ url_for('restore_office_backup_view') }}">Restore Backup</a>
                     <a class="action-link" href="{{ url_for('create_office_backup_view') }}">Create Backup</a>
                     <a class="action-link" href="{{ url_for('download_latest_office_backup_view') }}">Download Backup</a>
@@ -3396,6 +3551,65 @@ setTimeout(() => {
     });
 }, 10000);
 </script>
+</body>
+</html>
+"""
+
+
+VERSIONS_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Versions</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { margin:0; font-family:Arial,sans-serif; background:#5b5b5b; color:#ececec; }
+        .wrap { max-width:1180px; margin:0 auto; padding:24px; }
+        .topbar a { color:#ececec; text-decoration:none; }
+        .panel { background:#737373; border:1px solid #8a8a8a; border-radius:14px; padding:16px; margin-top:16px; }
+        .detail { display:flex; justify-content:space-between; gap:12px; padding:10px 0; border-bottom:1px solid #818181; }
+        .detail:last-child { border-bottom:0; }
+        .label { color:#d2d2d2; }
+        .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+        .sub { color:#d2d2d2; margin-bottom:14px; }
+        table { width:100%; border-collapse:collapse; font-size:14px; }
+        th, td { padding:10px 8px; border-bottom:1px solid #818181; text-align:left; }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="topbar"><a href="{{ url_for('office_settings_view') }}">← Back to settings</a></div>
+        <h1>Versions</h1>
+        <div class="sub">Office, shed controller, bore hole controller, and Pico version visibility.</div>
+        <div class="panel">
+            <h2>Office Dashboard</h2>
+            <div class="detail"><span class="label">Branch</span><span class="mono">{{ office.branch }}</span></div>
+            <div class="detail"><span class="label">Current Commit</span><span class="mono">{{ office.local_commit }}</span></div>
+            <div class="detail"><span class="label">Latest Commit</span><span class="mono">{{ office.remote_commit }}</span></div>
+            <div class="detail"><span class="label">Status</span><span>{{ office.status }}</span></div>
+            <div class="detail"><span class="label">Last Checked</span><span>{{ office.checked_at }}</span></div>
+        </div>
+        <div class="panel">
+            <h2>Controllers</h2>
+            <table>
+                <thead><tr><th>Controller</th><th>App Version</th><th>Pico Local</th><th>Pico Deployed</th><th>Last Seen</th><th>State Ver</th><th>Office Sync Ver</th></tr></thead>
+                <tbody>
+                    {% for row in controller_rows %}
+                    <tr>
+                        <td>{{ row.label }}</td>
+                        <td class="mono">{{ row.app_version }}</td>
+                        <td class="mono">{{ row.pico_local }}</td>
+                        <td class="mono">{{ row.pico_deployed }}</td>
+                        <td>{{ row.last_seen }}</td>
+                        <td>{{ row.state_version }}</td>
+                        <td>{{ row.office_sync_version }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
 </body>
 </html>
 """
@@ -4722,10 +4936,25 @@ def restore_office_backup_view():
         except Exception:
             mtime = "--"
         backups.append({"name": os.path.basename(path), "mtime": mtime})
+    controller_copy_rows = []
+    config = load_controller_config()
+    for key, rec in config.items():
+        label = "Shed %s" % key if str(key).isdigit() else str(rec.get("label", key) if isinstance(rec, dict) else key).replace("_", " ").title()
+        latest_files = list_controller_backup_files("shed_%s" % key) if str(key).isdigit() else list_controller_backup_files(str(key).strip().lower().replace(" ", "_"))
+        latest_name = os.path.basename(latest_files[0]) if latest_files else "--"
+        row = {
+            "controller_key": "shed_%s" % key if str(key).isdigit() else str(key).strip().lower().replace(" ", "_"),
+            "label": label,
+            "latest_name": latest_name,
+            "restore_kind": "shed" if str(key).isdigit() else ("borehole" if str(key).strip().lower() == "borehole" else ""),
+            "shed_no": int(key) if str(key).isdigit() else None,
+        }
+        controller_copy_rows.append(row)
     return render_template_string(
         RESTORE_HTML,
         backups=backups,
         shed_numbers=SHED_NUMBERS,
+        controller_copy_rows=controller_copy_rows,
         status_msg=request.args.get("msg", ""),
         status_ok=request.args.get("ok", "1") == "1",
     )
@@ -4772,6 +5001,72 @@ def restore_office_backup_borehole_view():
         return redirect(url_for("restore_office_backup_view", ok=1, msg="Bore hole restored from backup"))
     except Exception as exc:
         return redirect(url_for("restore_office_backup_view", ok=0, msg="Bore hole restore failed: %s" % exc))
+
+
+@app.route("/backup/restore/controller-copy/shed", methods=["POST"])
+def restore_controller_copy_shed_view():
+    controller_key = str(request.form.get("controller_key", "") or "").strip()
+    try:
+        shed_no = int(request.form.get("shed_no", "0"))
+    except Exception:
+        shed_no = 0
+    files = list_controller_backup_files(controller_key)
+    if shed_no not in SHED_NUMBERS or not files:
+        return redirect(url_for("restore_office_backup_view", ok=0, msg="Controller copy not found"))
+    try:
+        restore_shed_from_controller_backup(files[0], shed_no)
+        log_event("office", "shed_restored", "Shed restored from office-collected controller copy", shed_no=shed_no, detail=os.path.basename(files[0]))
+        return redirect(url_for("restore_office_backup_view", ok=1, msg="Shed %d restored from collected controller copy" % shed_no))
+    except Exception as exc:
+        return redirect(url_for("restore_office_backup_view", ok=0, msg="Controller copy restore failed: %s" % exc))
+
+
+@app.route("/backup/restore/controller-copy/borehole", methods=["POST"])
+def restore_controller_copy_borehole_view():
+    controller_key = str(request.form.get("controller_key", "") or "borehole").strip()
+    files = list_controller_backup_files(controller_key)
+    if not files:
+        return redirect(url_for("restore_office_backup_view", ok=0, msg="Controller copy not found"))
+    try:
+        restore_borehole_from_controller_backup(files[0])
+        log_event("office", "borehole_restored", "Bore hole restored from office-collected controller copy", detail=os.path.basename(files[0]))
+        return redirect(url_for("restore_office_backup_view", ok=1, msg="Bore hole restored from collected controller copy"))
+    except Exception as exc:
+        return redirect(url_for("restore_office_backup_view", ok=0, msg="Controller copy restore failed: %s" % exc))
+
+
+@app.route("/versions")
+def office_versions_view():
+    office = load_office_update_status()
+    checked_at = office.get("checked_at")
+    office["checked_at"] = datetime.fromtimestamp(int(checked_at)).strftime("%d %b %Y %H:%M:%S") if checked_at else "--"
+    controller_rows = []
+    controller_meta = load_controller_meta()
+    i = 0
+    while i < len(SHED_NUMBERS):
+        shed_no = SHED_NUMBERS[i]
+        meta = controller_meta.get(str(shed_no), {}) if isinstance(controller_meta, dict) else {}
+        controller_rows.append({
+            "label": "Shed %d" % shed_no,
+            "app_version": str(meta.get("app_version", "") or "--"),
+            "pico_local": str(meta.get("pico_local_hash", "") or "--"),
+            "pico_deployed": str(meta.get("pico_deployed_hash", "") or "--"),
+            "last_seen": fmt_ts(meta.get("received_ts")),
+            "state_version": str(meta.get("controller_sync_version", "") or "--"),
+            "office_sync_version": str(meta.get("last_seen_office_sync_version", "") or "--"),
+        })
+        i += 1
+    borehole_meta = load_borehole_meta()
+    controller_rows.append({
+        "label": "Bore Hole",
+        "app_version": str(borehole_meta.get("app_version", "") or "--"),
+        "pico_local": str(borehole_meta.get("pico_local_hash", "") or "--"),
+        "pico_deployed": str(borehole_meta.get("pico_deployed_hash", "") or "--"),
+        "last_seen": fmt_ts(borehole_meta.get("received_ts")),
+        "state_version": str(borehole_meta.get("controller_sync_version", "") or "--"),
+        "office_sync_version": str(borehole_meta.get("last_seen_office_sync_version", "") or "--"),
+    })
+    return render_template_string(VERSIONS_HTML, office=office, controller_rows=controller_rows)
 
 
 @app.route("/api/overview")
@@ -5090,6 +5385,9 @@ def shed_entry_move(shed_no, dest_shed):
 def shed_sync_get(shed_no):
     if shed_no not in SHED_NUMBERS:
         abort(404)
+    auth_error = require_controller_token(str(shed_no))
+    if auth_error:
+        return auth_error
     return jsonify(shed_sync_payload(shed_no))
 
 
@@ -5097,6 +5395,9 @@ def shed_sync_get(shed_no):
 def shed_sync_post(shed_no):
     if shed_no not in SHED_NUMBERS:
         abort(404)
+    auth_error = require_controller_token(str(shed_no))
+    if auth_error:
+        return auth_error
 
     payload = request.get_json(silent=True) or {}
     incoming_entries = payload.get("entries", {})
@@ -5117,6 +5418,20 @@ def shed_sync_post(shed_no):
 @app.route("/api/event", methods=["POST"])
 def office_event_api():
     payload = request.get_json(silent=True) or {}
+    source = str(payload.get("source", "controller") or "controller").strip().lower()
+    if source == "borehole_controller":
+        auth_error = require_controller_token("borehole")
+        if auth_error:
+            return auth_error
+    else:
+        try:
+            auth_shed_no = int(payload.get("shed_no")) if payload.get("shed_no") not in [None, ""] else None
+        except Exception:
+            auth_shed_no = None
+        if auth_shed_no in SHED_NUMBERS:
+            auth_error = require_controller_token(str(auth_shed_no))
+            if auth_error:
+                return auth_error
     try:
         shed_no = int(payload.get("shed_no")) if payload.get("shed_no") not in [None, ""] else None
     except Exception:
@@ -5133,6 +5448,9 @@ def office_event_api():
 
 @app.route("/api/borehole/sync", methods=["GET"])
 def borehole_sync_api_get():
+    auth_error = require_controller_token("borehole")
+    if auth_error:
+        return auth_error
     days = get_borehole_daily_history(max_days=40)
     yesterday_water = days[-1].get("water") if days else None
     return jsonify({
@@ -5147,6 +5465,9 @@ def borehole_sync_api_get():
 
 @app.route("/api/borehole/sync", methods=["POST"])
 def borehole_sync_api_post():
+    auth_error = require_controller_token("borehole")
+    if auth_error:
+        return auth_error
     payload = request.get_json(silent=True) or {}
     incoming_controller_meta = payload.get("controller_meta")
     if isinstance(incoming_controller_meta, dict):

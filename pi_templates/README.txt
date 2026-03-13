@@ -13,6 +13,7 @@ Use on each shed Pi:
 3. Change:
    - shed_no
    - dashboard_url
+   - sync_token
    - serial_port if needed
 
 Example:
@@ -45,6 +46,7 @@ Use on the office Pi:
    data/controllers.json
 3. Replace each sync_url with the actual IP address of that shed Pi.
 4. Add the bore hole controller to the same file under key "borehole".
+5. Set the same shared sync_token on the office and controller configs so office/controller sync and backup collection are authenticated.
 
 How sync works:
 - Shed Pi 4 pushes to /api/shed/4/sync on the office dashboard

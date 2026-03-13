@@ -28,6 +28,7 @@ SHED_NUMBERS = [1, 2, 3, 4, 6, 7, 8, 9, 10]
 DEFAULT_CONFIG = {
     "shed_no": 1,
     "dashboard_url": "http://127.0.0.1:8090",
+    "sync_token": "",
     "listen_port": 8091,
     "serial_port": "/dev/ttyACM0",
     "serial_baudrate": 115200,
@@ -1186,6 +1187,8 @@ def allocation_summary_text(current_shed_no, entries):
 def sync_payload(state):
     cfg = load_config()
     shed_no = cfg["shed_no"]
+    version = get_local_git_status()
+    pico_status = load_pico_update_status()
     entries = {}
     for key in state.get("entries", {}):
         entries[str(key)] = clean_entry_record(state["entries"].get(key, {}))
@@ -1210,6 +1213,10 @@ def sync_payload(state):
         "last_seen_office_sync_version": state.get("last_seen_office_sync_version", 0),
         "last_backup_ts": state.get("last_backup_ts"),
         "last_backup_status": state.get("last_backup_status"),
+        "app_branch": version.get("branch", "main"),
+        "app_version": version.get("local_commit", "--"),
+        "pico_local_hash": pico_status.get("local_hash", "--"),
+        "pico_deployed_hash": pico_status.get("last_deployed_hash", "--"),
     }
     return payload
 
@@ -1228,6 +1235,9 @@ def dashboard_request(path, method="GET", payload=None, timeout=4):
     if payload is not None:
         body = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"
+    token = str(cfg.get("sync_token", "") or "").strip()
+    if token:
+        headers["X-Controller-Token"] = token
 
     req = urllib.request.Request(
         cfg["dashboard_url"] + path,
@@ -1385,6 +1395,16 @@ def maybe_heartbeat_to_dashboard(min_age_seconds=LOCAL_DASHBOARD_HEARTBEAT_SECON
 
     if last_push_ts is None or (now_ts - last_push_ts) >= int(min_age_seconds):
         push_to_dashboard(state, pull_back=False)
+
+
+def require_office_token():
+    expected = str(load_config().get("sync_token", "") or "").strip()
+    if not expected:
+        return None
+    provided = str(request.headers.get("X-Controller-Token", "") or "").strip()
+    if provided != expected:
+        return jsonify({"ok": False, "error": "Unauthorized"}), 401
+    return None
 
 
 def push_to_dashboard(state, pull_back=True):
@@ -4917,6 +4937,9 @@ def create_backup_view():
 
 @app.route("/backup/latest")
 def download_latest_backup_view():
+    auth_error = require_office_token()
+    if auth_error:
+        return auth_error
     backups = list_backup_files()
     if not backups:
         path = create_backup_zip("manual")
@@ -5429,6 +5452,9 @@ def push_now():
 
 @app.route("/api/dashboard-sync", methods=["POST"])
 def dashboard_sync():
+    auth_error = require_office_token()
+    if auth_error:
+        return auth_error
     payload = request.get_json(silent=True) or {}
     cfg = load_config()
 
