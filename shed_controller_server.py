@@ -71,7 +71,7 @@ BACKUP_INTERVAL_SECONDS = 3600
 STALE_SENSOR_SECONDS = 30
 STALE_OFFICE_SECONDS = 60
 STALE_LOG_SECONDS = 30
-BACKUP_KEEP_COUNT = 48
+BACKUP_KEEP_COUNT = 6
 LOCAL_DASHBOARD_PULL_SECONDS = 1
 
 
@@ -1181,6 +1181,8 @@ def sync_payload(state):
         "controller_sync_version": state.get("state_version", 0),
         "controller_state_updated_ts": state.get("state_updated_ts"),
         "last_seen_office_sync_version": state.get("last_seen_office_sync_version", 0),
+        "last_backup_ts": state.get("last_backup_ts"),
+        "last_backup_status": state.get("last_backup_status"),
     }
     return payload
 
@@ -2162,7 +2164,10 @@ HTML = """
                 0 0 34px rgba(53,208,127,0.35);
         }
         .hero-crop.inactive {
-            text-shadow: none;
+            text-shadow:
+                0 0 10px rgba(255,119,119,0.95),
+                0 0 20px rgba(255,119,119,0.65),
+                0 0 34px rgba(255,119,119,0.35);
         }
         .hero-datetime.active {
             text-shadow:
@@ -2171,7 +2176,10 @@ HTML = """
                 0 0 28px rgba(53,208,127,0.28);
         }
         .hero-datetime.inactive {
-            text-shadow: none;
+            text-shadow:
+                0 0 10px rgba(255,119,119,0.90),
+                0 0 18px rgba(255,119,119,0.55),
+                0 0 28px rgba(255,119,119,0.28);
         }
         .hero-birds {
             margin-top: 14px;

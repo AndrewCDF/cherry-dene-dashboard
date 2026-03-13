@@ -36,6 +36,16 @@ These are created locally and should not be committed:
 - `data/`
 - `controller_data/`
 
+Office backup notes:
+
+- the office dashboard now creates automatic hourly backup ZIPs
+- it keeps the newest 6 backups
+- default location is `data/backups/`
+- to move backups to an SSD later, create `data/office_config.json` with:
+  - `{"backup_dir": "/mnt/your-ssd/cherry-dene-backups"}`
+- shed controllers also keep automatic hourly local backups and now keep the newest 6
+- the office settings page shows the latest synced shed backup status for each controller
+
 ## Deployment Notes
 
 - Office Pi runs `dashboard_server.py`

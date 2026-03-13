@@ -1,6 +1,8 @@
 from flask import Flask, render_template_string, abort, url_for, request, redirect, jsonify, Response, send_file
 import json
 import os
+import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -11,12 +13,15 @@ app = Flask(__name__)
 
 DATA_DIR = "data"
 SHED_NUMBERS = [1, 2, 3, 4, 6, 7, 8, 9, 10]
-OFFICE_BACKUP_KEEP_COUNT = 48
+OFFICE_BACKUP_KEEP_COUNT = 6
+OFFICE_AUTO_BACKUP_INTERVAL_SECONDS = 3600
+OFFICE_AUTO_BACKUP_CHECK_SECONDS = 60
+_office_backup_lock = threading.Lock()
 
 
 def ensure_data_dir():
     os.makedirs(DATA_DIR, exist_ok=True)
-    os.makedirs(os.path.join(DATA_DIR, "backups"), exist_ok=True)
+    os.makedirs(backups_dir(), exist_ok=True)
 
 
 def read_json_file(path, default):
@@ -68,7 +73,13 @@ def append_named_json_line(filename, payload):
 
 
 def backups_dir():
-    ensure_data_dir()
+    cfg = read_json_file(os.path.join(DATA_DIR, "office_config.json"), {})
+    if isinstance(cfg, dict):
+        backup_dir = str(cfg.get("backup_dir", "") or "").strip()
+        if backup_dir:
+            if os.path.isabs(backup_dir):
+                return backup_dir
+            return os.path.join(office_repo_dir(), backup_dir)
     return os.path.join(DATA_DIR, "backups")
 
 
@@ -90,26 +101,61 @@ def list_office_backup_files():
 
 def create_office_backup_zip(label="manual"):
     ensure_data_dir()
-    stamp = datetime.fromtimestamp(int(time.time())).strftime("%Y%m%d_%H%M%S")
-    path = os.path.join(backups_dir(), "office_%s_%s.zip" % (label, stamp))
-    names = sorted(os.listdir(DATA_DIR))
-    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        i = 0
-        while i < len(names):
-            name = names[i]
-            src = os.path.join(DATA_DIR, name)
-            if os.path.isfile(src) and name != os.path.basename(path):
-                zf.write(src, arcname=name)
+    with _office_backup_lock:
+        stamp = datetime.fromtimestamp(int(time.time())).strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(backups_dir(), "office_%s_%s.zip" % (label, stamp))
+        names = sorted(os.listdir(DATA_DIR))
+        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            i = 0
+            while i < len(names):
+                name = names[i]
+                src = os.path.join(DATA_DIR, name)
+                if os.path.isfile(src) and name != os.path.basename(path):
+                    zf.write(src, arcname=name)
+                i += 1
+        backups = list_office_backup_files()
+        i = OFFICE_BACKUP_KEEP_COUNT
+        while i < len(backups):
+            try:
+                os.remove(backups[i])
+            except Exception:
+                pass
             i += 1
+        return path
+
+
+def latest_office_backup_mtime():
     backups = list_office_backup_files()
-    i = OFFICE_BACKUP_KEEP_COUNT
-    while i < len(backups):
-        try:
-            os.remove(backups[i])
-        except Exception:
-            pass
-        i += 1
+    if not backups:
+        return None
+    try:
+        return int(os.path.getmtime(backups[0]))
+    except Exception:
+        return None
+
+
+def ensure_recent_auto_backup():
+    last_mtime = latest_office_backup_mtime()
+    now_ts = int(time.time())
+    if last_mtime is not None and (now_ts - last_mtime) < OFFICE_AUTO_BACKUP_INTERVAL_SECONDS:
+        return None
+    path = create_office_backup_zip("auto")
+    log_event("office", "backup_created", "Automatic office backup created", detail=os.path.basename(path))
     return path
+
+
+def office_backup_worker():
+    while True:
+        try:
+            ensure_recent_auto_backup()
+        except Exception as exc:
+            log_event("office", "backup_failed", "Automatic office backup failed", detail=str(exc))
+        time.sleep(OFFICE_AUTO_BACKUP_CHECK_SECONDS)
+
+
+def start_office_background_workers():
+    th = threading.Thread(target=office_backup_worker, daemon=True)
+    th.start()
 
 
 def backup_path_by_name(name):
@@ -119,6 +165,108 @@ def backup_path_by_name(name):
     if os.path.isfile(path) and path.endswith(".zip"):
         return path
     return None
+
+
+def office_update_status_path():
+    ensure_data_dir()
+    return os.path.join(DATA_DIR, "office_update_status.json")
+
+
+def load_office_update_status():
+    default = {
+        "checked_at": None,
+        "status": "Not checked",
+        "branch": "main",
+        "local_commit": "--",
+        "remote_commit": "--",
+        "update_available": False,
+    }
+    data = read_json_file(office_update_status_path(), default)
+    merged = dict(default)
+    if isinstance(data, dict):
+        merged.update(data)
+    return merged
+
+
+def save_office_update_status(payload):
+    status = load_office_update_status()
+    status.update(payload)
+    write_json_file_atomic(office_update_status_path(), status)
+
+
+def office_repo_dir():
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def run_office_git_command(args, timeout=20):
+    try:
+        proc = subprocess.run(
+            ["git", "-C", office_repo_dir()] + list(args),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return proc.returncode, (proc.stdout or "").strip(), (proc.stderr or "").strip()
+    except Exception as exc:
+        return 1, "", str(exc)
+
+
+def get_office_git_status():
+    code, branch_out, branch_err = run_office_git_command(["branch", "--show-current"])
+    if code != 0:
+        return {"ok": False, "error": branch_err or branch_out or "Git branch lookup failed"}
+
+    code, local_out, local_err = run_office_git_command(["rev-parse", "HEAD"])
+    if code != 0:
+        return {"ok": False, "error": local_err or local_out or "Git commit lookup failed"}
+
+    return {
+        "ok": True,
+        "branch": branch_out or "main",
+        "local_commit": local_out[:7] if local_out else "--",
+    }
+
+
+def check_office_update():
+    local = get_office_git_status()
+    status = {
+        "checked_at": int(time.time()),
+        "branch": local.get("branch", "main"),
+        "local_commit": local.get("local_commit", "--"),
+        "remote_commit": "--",
+        "update_available": False,
+        "status": "Up to date" if local.get("ok") else (local.get("error") or "Git status failed"),
+    }
+    if not local.get("ok"):
+        save_office_update_status(status)
+        return status
+
+    code, _, fetch_err = run_office_git_command(["fetch", "origin", local["branch"]], timeout=30)
+    if code != 0:
+        status["status"] = fetch_err or "Fetch failed"
+        save_office_update_status(status)
+        return status
+
+    code, remote_out, remote_err = run_office_git_command(["rev-parse", "origin/%s" % local["branch"]])
+    if code != 0:
+        status["status"] = remote_err or remote_out or "Remote commit lookup failed"
+        save_office_update_status(status)
+        return status
+
+    status["remote_commit"] = remote_out[:7] if remote_out else "--"
+    status["update_available"] = remote_out != local["local_commit"]
+    status["status"] = "Update available" if status["update_available"] else "Up to date"
+    save_office_update_status(status)
+    return status
+
+
+def restart_office_delayed(delay_seconds=1.0):
+    def _restart():
+        time.sleep(delay_seconds)
+        os._exit(0)
+
+    th = threading.Thread(target=_restart, daemon=True)
+    th.start()
 
 
 def zip_json_member(path, member_name, default):
@@ -246,6 +394,8 @@ def clean_controller_meta(meta):
         "controller_sync_version": meta.get("controller_sync_version"),
         "controller_state_updated_ts": meta.get("controller_state_updated_ts"),
         "last_seen_office_sync_version": meta.get("last_seen_office_sync_version"),
+        "last_backup_ts": meta.get("last_backup_ts"),
+        "last_backup_status": meta.get("last_backup_status"),
         "controller_alarms": [],
         "augers": {},
     }
@@ -1956,25 +2106,20 @@ HTML = """
             padding: 12px;
         }
         .topbar {
-            display: flex;
-            justify-content: space-between;
+            display: grid;
+            grid-template-columns: 1fr auto 1fr;
             align-items: center;
             margin-bottom: 12px;
             gap: 12px;
-            flex-wrap: wrap;
         }
         .topbar-left {
             display: flex;
             align-items: center;
-            gap: 12px;
-            flex-wrap: wrap;
+            justify-self: start;
         }
-        .top-links {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-        }
-        .top-link {
+        .topbar-center { justify-self: center; }
+        .topbar-right { justify-self: end; }
+        .settings-link {
             color: #ededed;
             text-decoration: none;
             font-size: 13px;
@@ -1982,6 +2127,9 @@ HTML = """
             border: 1px solid #7c7c7c;
             border-radius: 10px;
             background: #6a6a6a;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
         }
         h1 {
             margin: 0;
@@ -2304,6 +2452,8 @@ HTML = """
             .grid { grid-template-columns: 1fr; }
             .datetime { font-size: 16px; }
             .summary-grid { grid-template-columns: 1fr; }
+            .topbar { grid-template-columns: 1fr; }
+            .topbar-left, .topbar-center, .topbar-right { justify-self: center; }
         }
     </style>
 </head>
@@ -2312,14 +2462,13 @@ HTML = """
         <div class="topbar">
             <div class="topbar-left">
                 <h1>Cherry Dene Farm Dashboard</h1>
-                <div class="top-links">
-                    <a class="top-link" href="{{ url_for('office_events_view') }}">Event Log</a>
-                    <a class="top-link" href="{{ url_for('create_office_backup_view') }}">Create Backup</a>
-                    <a class="top-link" href="{{ url_for('download_latest_office_backup_view') }}">Download Backup</a>
-                    <a class="top-link" href="{{ url_for('restore_office_backup_view') }}">Restore Backup</a>
-                </div>
             </div>
-            <div id="topDateTime" class="datetime">--</div>
+            <div class="topbar-center">
+                <a class="settings-link" href="{{ url_for('office_settings_view') }}">⚙ Settings</a>
+            </div>
+            <div class="topbar-right">
+                <div id="topDateTime" class="datetime">--</div>
+            </div>
         </div>
 
         <div class="grid">
@@ -2786,6 +2935,118 @@ RESTORE_HTML = """
                 <tbody>
                     {% for b in backups %}
                     <tr><td>{{ b.name }}</td><td>{{ b.mtime }}</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+
+OFFICE_SETTINGS_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Office Settings</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { margin:0; font-family:Arial, sans-serif; background:#5b5b5b; color:#ececec; }
+        .wrap { max-width:1400px; margin:0 auto; padding:16px; }
+        a { color:#f0f0f0; text-decoration:none; }
+        .topbar { margin-bottom:16px; }
+        h1 { margin:0 0 8px 0; }
+        .sub { color:#d2d2d2; margin-bottom:14px; }
+        .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+        .panel { background:#737373; border:1px solid #8a8a8a; border-radius:14px; padding:16px; }
+        .action-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+        .action-link, button {
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            width:100%;
+            box-sizing:border-box;
+            min-height:46px;
+            padding:10px 14px;
+            border-radius:10px;
+            border:1px solid #8a8a8a;
+            background:#686868;
+            color:#ececec;
+            text-decoration:none;
+            font-size:14px;
+            cursor:pointer;
+        }
+        .action-link.wide, button.wide { grid-column:1 / -1; }
+        .detail { display:flex; justify-content:space-between; gap:12px; padding:10px 0; border-bottom:1px solid #818181; }
+        .detail:last-child { border-bottom:0; }
+        .label { color:#d2d2d2; }
+        .status { margin:0 0 14px 0; padding:10px 12px; border-radius:10px; background:#686868; border:1px solid #8a8a8a; }
+        .status.ok { border-color:#35d07f; color:#e4ffed; }
+        .status.err { border-color:#c65460; color:#ffdbe1; }
+        .mono { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; }
+        .update-actions { display:grid; grid-template-columns:1fr; gap:10px; margin-top:14px; }
+        table { width:100%; border-collapse:collapse; font-size:14px; }
+        th, td { padding:10px 8px; border-bottom:1px solid #818181; text-align:left; vertical-align:top; }
+        th { color:#f0f0f0; }
+        @media (max-width: 900px) { .grid, .action-grid { grid-template-columns:1fr; } }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="topbar"><a href="{{ url_for('dashboard') }}">← Back to dashboard</a></div>
+        <h1>Office Settings</h1>
+        <div class="sub">Backups, restore, event log, and software update for the office dashboard.</div>
+        {% if status_msg %}
+        <div class="status {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
+        {% endif %}
+        <div class="grid">
+            <div class="panel">
+                <h2>Actions</h2>
+                <div class="sub">Open office tools and backup actions.</div>
+                <div class="detail"><span class="label">Backup Path</span><span class="mono">{{ backup_dir }}</span></div>
+                <div class="detail"><span class="label">Auto Backup</span><span>Hourly, keep newest {{ backup_keep_count }}</span></div>
+                <div class="detail"><span class="label">Latest Backup</span><span>{{ latest_backup_name }}</span></div>
+                <div class="action-grid">
+                    <a class="action-link" href="{{ url_for('office_events_view') }}">Event Log</a>
+                    <a class="action-link" href="{{ url_for('restore_office_backup_view') }}">Restore Backup</a>
+                    <a class="action-link" href="{{ url_for('create_office_backup_view') }}">Create Backup</a>
+                    <a class="action-link" href="{{ url_for('download_latest_office_backup_view') }}">Download Backup</a>
+                </div>
+            </div>
+            <div class="panel">
+                <h2>Software Update</h2>
+                <div class="sub">Check GitHub for a newer office dashboard version, then apply it when ready.</div>
+                <div class="detail"><span class="label">Branch</span><span class="mono">{{ update_status.branch }}</span></div>
+                <div class="detail"><span class="label">Current Commit</span><span class="mono">{{ update_status.local_commit }}</span></div>
+                <div class="detail"><span class="label">Latest Commit</span><span class="mono">{{ update_status.remote_commit }}</span></div>
+                <div class="detail"><span class="label">Last Checked</span><span>{{ update_checked_at }}</span></div>
+                <div class="detail"><span class="label">Status</span><span>{{ update_status.status }}</span></div>
+                <div class="update-actions">
+                    <form method="post" action="{{ url_for('office_check_update_view') }}">
+                        <button class="wide" type="submit">Check for Update</button>
+                    </form>
+                    {% if update_status.update_available %}
+                    <form method="post" action="{{ url_for('office_apply_update_view') }}">
+                        <button class="wide" type="submit">Update Now</button>
+                    </form>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        <div class="panel" style="margin-top:16px;">
+            <h2>Shed Controller Backups</h2>
+            <div class="sub">Latest synced backup status reported by each shed controller.</div>
+            <table>
+                <thead><tr><th>Shed</th><th>Last Backup</th><th>Status</th></tr></thead>
+                <tbody>
+                    {% for row in controller_backup_rows %}
+                    <tr>
+                        <td>Shed {{ row.shed_no }}</td>
+                        <td>{{ row.last_backup }}</td>
+                        <td>{{ row.last_backup_status }}</td>
+                    </tr>
                     {% endfor %}
                 </tbody>
             </table>
@@ -3981,6 +4242,89 @@ def office_events_view():
     return render_template_string(EVENTS_HTML, rows=get_recent_events(250))
 
 
+@app.route("/settings")
+def office_settings_view():
+    update_status = load_office_update_status()
+    checked_at = update_status.get("checked_at")
+    latest_backups = list_office_backup_files()
+    controller_meta = load_controller_meta()
+    controller_backup_rows = []
+    i = 0
+    while i < len(SHED_NUMBERS):
+        shed_no = SHED_NUMBERS[i]
+        meta = controller_meta.get(str(int(shed_no)), {}) if isinstance(controller_meta, dict) else {}
+        controller_backup_rows.append({
+            "shed_no": shed_no,
+            "last_backup": datetime.fromtimestamp(int(meta.get("last_backup_ts"))).strftime("%d %b %Y %H:%M:%S") if meta.get("last_backup_ts") not in [None, ""] else "--",
+            "last_backup_status": str(meta.get("last_backup_status", "") or "--"),
+        })
+        i += 1
+    return render_template_string(
+        OFFICE_SETTINGS_HTML,
+        update_status=update_status,
+        update_checked_at=datetime.fromtimestamp(int(checked_at)).strftime("%d %b %Y %H:%M:%S") if checked_at else "--",
+        backup_dir=backups_dir(),
+        backup_keep_count=OFFICE_BACKUP_KEEP_COUNT,
+        latest_backup_name=os.path.basename(latest_backups[0]) if latest_backups else "--",
+        controller_backup_rows=controller_backup_rows,
+        status_msg=request.args.get("msg", ""),
+        status_ok=request.args.get("ok", "1") == "1",
+    )
+
+
+@app.route("/settings/update/check", methods=["POST"])
+def office_check_update_view():
+    check_office_update()
+    return redirect(url_for("office_settings_view"))
+
+
+@app.route("/settings/update/apply", methods=["POST"])
+def office_apply_update_view():
+    status = check_office_update()
+    if not status.get("update_available"):
+        return redirect(url_for("office_settings_view", ok=1, msg="Office dashboard is already up to date"))
+
+    branch = status.get("branch", "main")
+    code, stdout, stderr = run_office_git_command(["pull", "--ff-only", "origin", branch], timeout=60)
+    save_office_update_status({
+        "checked_at": int(time.time()),
+        "status": "Update applied. Restarting office dashboard..." if code == 0 else (stderr or stdout or "Update failed"),
+        "local_commit": get_office_git_status().get("local_commit", "--"),
+        "update_available": False if code == 0 else True,
+    })
+    if code == 0:
+        log_event("office", "office_updated", "Office dashboard updated", detail="Branch %s" % branch)
+        restart_office_delayed(1.0)
+        return render_template_string(
+            """
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta charset="utf-8">
+                <title>Restarting Office Dashboard</title>
+                <meta http-equiv="refresh" content="6;url={{ url_for('office_settings_view') }}">
+                <style>
+                    body { margin:0; font-family:Arial, sans-serif; background:#5b5b5b; color:#ececec; }
+                    .wrap { max-width:900px; margin:0 auto; padding:30px 16px; }
+                    .panel { background:#737373; border:1px solid #8a8a8a; border-radius:14px; padding:24px; }
+                    h1 { margin:0 0 8px 0; }
+                    .sub { color:#d2d2d2; }
+                </style>
+            </head>
+            <body>
+                <div class="wrap">
+                    <div class="panel">
+                        <h1>Restarting office dashboard</h1>
+                        <div class="sub">The latest code has been pulled. The office dashboard is restarting now and will return to settings automatically.</div>
+                    </div>
+                </div>
+            </body>
+            </html>
+            """
+        )
+    return redirect(url_for("office_settings_view", ok=0, msg=stderr or stdout or "Update failed"))
+
+
 @app.route("/backup/create")
 def create_office_backup_view():
     path = create_office_backup_zip("manual")
@@ -4585,4 +4929,5 @@ def shed_crop_period_view(shed_no, crop_id, period):
 
 if __name__ == "__main__":
     ensure_data_dir()
+    start_office_background_workers()
     app.run(host="0.0.0.0", port=8090)
