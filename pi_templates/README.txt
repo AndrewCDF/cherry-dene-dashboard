@@ -37,17 +37,21 @@ Master planning file:
 3. Then derive:
    - each shed's controller_config.json
    - the office data/controllers.json
+   - the bore hole controller entry in office data/controllers.json
 
 Use on the office Pi:
 1. Copy dashboard_server.py onto the office Pi.
 2. Copy controllers.template.json to:
    data/controllers.json
 3. Replace each sync_url with the actual IP address of that shed Pi.
+4. Add the bore hole controller to the same file under key "borehole".
 
 How sync works:
 - Shed Pi 4 pushes to /api/shed/4/sync on the office dashboard
 - Office edits for Shed 4 push back to the URL listed under key "4"
 - Each shed only syncs its own corresponding shed entry
+- The bore hole controller also lives in data/controllers.json under key "borehole"
+  for office-side backup collection and controller status tracking
 
 Note:
-- The bore hole is expected to use its own custom dashboard because it only needs water flow and does not follow the shed controller layout.
+- The bore hole uses its own simpler dashboard, but it is still treated as a controller-class device in office configuration and backups.

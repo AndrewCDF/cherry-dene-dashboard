@@ -5,6 +5,7 @@ __pycache__/
 
 data/
 controller_data/
+borehole_controller_data/
 *.zip
 
 .pycache/

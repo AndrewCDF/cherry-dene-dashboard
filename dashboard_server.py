@@ -83,6 +83,61 @@ def backups_dir():
     return os.path.join(DATA_DIR, "backups")
 
 
+def load_office_config():
+    data = read_json_file(os.path.join(DATA_DIR, "office_config.json"), {})
+    return data if isinstance(data, dict) else {}
+
+
+def controller_backup_root():
+    path = os.path.join(DATA_DIR, "controller_backups")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def controller_backup_status_path():
+    return os.path.join(DATA_DIR, "controller_backup_status.json")
+
+
+def load_controller_backup_status():
+    data = read_json_file(controller_backup_status_path(), {})
+    return data if isinstance(data, dict) else {}
+
+
+def save_controller_backup_status(data):
+    write_json_file_atomic(controller_backup_status_path(), data if isinstance(data, dict) else {})
+
+
+def controller_backup_dir(controller_key):
+    path = os.path.join(controller_backup_root(), controller_key)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def list_controller_backup_files(controller_key):
+    base = controller_backup_dir(controller_key)
+    rows = []
+    try:
+        for name in os.listdir(base):
+            path = os.path.join(base, name)
+            if os.path.isfile(path) and name.endswith(".zip"):
+                rows.append(path)
+    except Exception:
+        return []
+    rows.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    return rows
+
+
+def prune_controller_backup_files(controller_key, keep=6):
+    rows = list_controller_backup_files(controller_key)
+    i = keep
+    while i < len(rows):
+        try:
+            os.remove(rows[i])
+        except Exception:
+            pass
+        i += 1
+
+
 def list_office_backup_files():
     base = backups_dir()
     out = []
@@ -153,9 +208,87 @@ def office_backup_worker():
         time.sleep(OFFICE_AUTO_BACKUP_CHECK_SECONDS)
 
 
+def controller_backup_url_map():
+    urls = {}
+    controllers = load_controller_config()
+    if isinstance(controllers, dict):
+        for key, rec in controllers.items():
+            if not isinstance(rec, dict):
+                continue
+            sync_url = str(rec.get("sync_url", "") or "").strip().rstrip("/")
+            if sync_url:
+                if str(key).isdigit():
+                    controller_key = "shed_%s" % key
+                    label = "Shed %s" % key
+                else:
+                    controller_key = str(key).strip().lower().replace(" ", "_")
+                    label = str(rec.get("label", "") or str(key).replace("_", " ").title()).strip()
+                urls[controller_key] = {
+                    "label": label,
+                    "url": sync_url + "/backup/latest",
+                }
+    return urls
+
+
+def collect_controller_backup(controller_key, label, url):
+    status_map = load_controller_backup_status()
+    now_ts = int(time.time())
+    try:
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if not (200 <= int(resp.status) < 300):
+                raise RuntimeError("HTTP %d" % int(resp.status))
+            content = resp.read()
+        stamp = datetime.fromtimestamp(now_ts).strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(controller_backup_dir(controller_key), "%s_%s.zip" % (controller_key, stamp))
+        with open(path, "wb") as f:
+            f.write(content)
+        prune_controller_backup_files(controller_key, keep=6)
+        status_map[controller_key] = {
+            "label": label,
+            "last_collected_ts": now_ts,
+            "last_status": "Office copy OK: %s" % os.path.basename(path),
+        }
+        save_controller_backup_status(status_map)
+        return True
+    except Exception as exc:
+        status_map[controller_key] = {
+            "label": label,
+            "last_collected_ts": now_ts,
+            "last_status": "Office copy failed: %s" % exc,
+        }
+        save_controller_backup_status(status_map)
+        return False
+
+
+def maybe_collect_controller_backups():
+    status_map = load_controller_backup_status()
+    urls = controller_backup_url_map()
+    for controller_key, rec in urls.items():
+        last_ts = None
+        try:
+            last_ts = int(status_map.get(controller_key, {}).get("last_collected_ts"))
+        except Exception:
+            last_ts = None
+        if last_ts is not None and (int(time.time()) - last_ts) < OFFICE_AUTO_BACKUP_INTERVAL_SECONDS:
+            continue
+        collect_controller_backup(controller_key, rec.get("label", controller_key), rec.get("url", ""))
+
+
+def controller_backup_worker():
+    while True:
+        try:
+            maybe_collect_controller_backups()
+        except Exception as exc:
+            log_event("office", "controller_backup_failed", "Automatic controller backup collection failed", detail=str(exc))
+        time.sleep(OFFICE_AUTO_BACKUP_CHECK_SECONDS)
+
+
 def start_office_background_workers():
     th = threading.Thread(target=office_backup_worker, daemon=True)
     th.start()
+    th2 = threading.Thread(target=controller_backup_worker, daemon=True)
+    th2.start()
 
 
 def backup_path_by_name(name):
@@ -314,6 +447,16 @@ def restore_shed_from_backup(path, shed_no):
             write_json_file_atomic(os.path.join(DATA_DIR, "live_latest.json"), current_live)
 
 
+def restore_borehole_from_backup(path):
+    backup_live = zip_json_member(path, "borehole_live_latest.json", {})
+    if isinstance(backup_live, dict):
+        save_borehole_live(backup_live)
+
+    backup_meta = zip_json_member(path, "borehole_meta.json", {})
+    if isinstance(backup_meta, dict):
+        save_borehole_meta(backup_meta)
+
+
 def latest_live_by_shed():
     data = read_json_file(os.path.join(DATA_DIR, "live_latest.json"), {})
     return data if isinstance(data, dict) else {}
@@ -322,6 +465,37 @@ def latest_live_by_shed():
 def latest_borehole_live():
     data = read_json_file(os.path.join(DATA_DIR, "borehole_live_latest.json"), {})
     return data if isinstance(data, dict) else {}
+
+
+def save_borehole_live(data):
+    path = os.path.join(DATA_DIR, "borehole_live_latest.json")
+    write_json_file_atomic(path, data if isinstance(data, dict) else {})
+
+
+def load_borehole_meta():
+    data = read_json_file(os.path.join(DATA_DIR, "borehole_meta.json"), {})
+    return data if isinstance(data, dict) else {}
+
+
+def save_borehole_meta(data):
+    path = os.path.join(DATA_DIR, "borehole_meta.json")
+    write_json_file_atomic(path, data if isinstance(data, dict) else {})
+
+
+def clean_borehole_meta(meta):
+    if not isinstance(meta, dict):
+        meta = {}
+    return {
+        "last_sensor_ts": meta.get("last_sensor_ts"),
+        "device_status": meta.get("device_status"),
+        "pico_connected": bool(meta.get("pico_connected", False)),
+        "received_ts": int(time.time()),
+        "controller_sync_version": meta.get("controller_sync_version"),
+        "controller_state_updated_ts": meta.get("controller_state_updated_ts"),
+        "last_backup_ts": meta.get("last_backup_ts"),
+        "last_backup_status": meta.get("last_backup_status"),
+        "controller_alarms": meta.get("controller_alarms", []) if isinstance(meta.get("controller_alarms", []), list) else [],
+    }
 
 
 def load_farm_crop():
@@ -941,7 +1115,7 @@ def shed_sync_payload(shed_no):
         "summary": {
             "water_7to7": yesterday_water,
             "feed_7to7": yesterday_feed,
-            "mortality_total": mortality_total_for_shed_crop(shed_name, active_crop_id if active_crop_id is not None else None),
+            "mortality_total": mortality_total_for_shed_crop(shed_name, active_crop_id) if active_crop_id is not None else None,
         },
         "generated_ts": int(time.time()),
     }
@@ -1574,6 +1748,19 @@ def get_borehole_daily_history(max_days=40):
     return rows
 
 
+def borehole_hour_exists(hour_epoch):
+    rows = read_all_json_lines("borehole_hourly.ndjson")
+    i = 0
+    while i < len(rows):
+        try:
+            if int(rows[i].get("hour_epoch")) == int(hour_epoch):
+                return True
+        except Exception:
+            pass
+        i += 1
+    return False
+
+
 def load_shed_entries_state():
     path = os.path.join(DATA_DIR, "shed_entries.json")
     raw = read_json_file(path, {})
@@ -1743,6 +1930,7 @@ def build_detail_entry_rows(current_shed_no, entries):
 
 def build_borehole_row():
     live = latest_borehole_live()
+    meta = load_borehole_meta()
     alarms = active_borehole_alarms()
     days = get_borehole_daily_history(max_days=40)
 
@@ -1795,6 +1983,21 @@ def build_borehole_row():
     else:
         updated_str = "--"
 
+    received_ts = meta.get("received_ts")
+    try:
+        sync_age = int(time.time()) - int(received_ts) if received_ts not in [None, ""] else None
+    except Exception:
+        sync_age = None
+    if sync_age is None:
+        sync_pill_class = "sync-missing"
+        sync_pill_text = "SHED SYNC --"
+    elif sync_age <= 30:
+        sync_pill_class = "sync-ok"
+        sync_pill_text = "SHED SYNC OK"
+    else:
+        sync_pill_class = "sync-stale"
+        sync_pill_text = "SHED SYNC STALE"
+
     return {
         "name": "Bore Hole",
         "has_data": bool(live) or bool(days),
@@ -1805,6 +2008,8 @@ def build_borehole_row():
         "weekly_water": fmt_value(weekly_water if weekly_water > 0 else None, "f0"),
         "last_7_days": last_7_days,
         "updated": updated_str,
+        "sync_pill_class": sync_pill_class,
+        "sync_pill_text": sync_pill_text,
         "alarm_active": alarm_active,
         "alarm_key": alarm_key,
         "alarm_msg": alarm_msg,
@@ -1835,7 +2040,8 @@ def build_overall_summary():
         birds_remaining = total_birds_from_active_entries(active_entries)
         total_birds_remaining += birds_remaining
         total_birds_placed += birds_remaining
-        total_birds_placed += mortality_total_for_shed_crop(shed_name, current_crop_id if current_crop_id not in [None, ""] else None)
+        if current_crop_id not in [None, ""]:
+            total_birds_placed += mortality_total_for_shed_crop(shed_name, current_crop_id)
 
         crop = active_crop_record_for_shed(shed_name)
         try:
@@ -2068,7 +2274,7 @@ def build_rows():
             "total_water_to_date": fmt_value(total_water_to_date, "f0"),
             "total_feed_to_date": fmt_value(total_feed_to_date, "f1"),
             "allocation_text": allocation_text,
-            "mortality_total": fmt_value(mortality_total_for_shed_crop(shed, active_crop_id), "i"),
+            "mortality_total": fmt_value(mortality_total_for_shed_crop(shed, active_crop_id) if active_crop_id is not None else None, "i"),
             "sync_pill_class": sync_pill_class,
             "sync_pill_text": sync_pill_text,
         })
@@ -2251,6 +2457,20 @@ HTML = """
                 0 0 20px rgba(255,91,91,0.65),
                 0 0 34px rgba(255,91,91,0.35);
         }
+        .card.flow-green {
+            border-color: #35d07f;
+            box-shadow:
+                0 0 10px rgba(53,208,127,0.95),
+                0 0 20px rgba(53,208,127,0.65),
+                0 0 34px rgba(53,208,127,0.35);
+        }
+        .card.flow-red {
+            border-color: #ff5b5b;
+            box-shadow:
+                0 0 10px rgba(255,91,91,0.95),
+                0 0 20px rgba(255,91,91,0.65),
+                0 0 34px rgba(255,91,91,0.35);
+        }
         .card.nodata {
             opacity: 0.90;
         }
@@ -2293,17 +2513,40 @@ HTML = """
             color: #f0f0f0;
             background: transparent;
         }
+        .badge.online {
+            border-color: #35d07f;
+            color: #b8ffd2;
+            box-shadow:
+                0 0 8px rgba(53,208,127,0.75),
+                0 0 16px rgba(53,208,127,0.35);
+        }
+        .badge.nodata {
+            border-color: #d55;
+            color: #ffb1b1;
+            box-shadow:
+                0 0 8px rgba(255,91,91,0.75),
+                0 0 16px rgba(255,91,91,0.35);
+        }
         .badge.alarm {
             border-color: #d55;
             color: #ff8a8a;
+            box-shadow:
+                0 0 8px rgba(255,91,91,0.75),
+                0 0 16px rgba(255,91,91,0.35);
         }
         .badge.active {
             border-color: #35d07f;
             color: #b8ffd2;
+            box-shadow:
+                0 0 8px rgba(53,208,127,0.75),
+                0 0 16px rgba(53,208,127,0.35);
         }
         .badge.sync-ok {
             border-color: #35d07f;
             color: #b8ffd2;
+            box-shadow:
+                0 0 8px rgba(53,208,127,0.75),
+                0 0 16px rgba(53,208,127,0.35);
         }
         .badge.sync-stale {
             border-color: #ffd06a;
@@ -2312,6 +2555,9 @@ HTML = """
         .badge.sync-missing {
             border-color: #d55;
             color: #ffb1b1;
+            box-shadow:
+                0 0 8px rgba(255,91,91,0.75),
+                0 0 16px rgba(255,91,91,0.35);
         }
         .topline {
             display: flex;
@@ -2534,7 +2780,7 @@ HTML = """
                     <div class="head">
                         <div class="head-left">
                             <div class="shed">{{ s.shed }}</div>
-                            <div class="birds-top">Birds: <span id="shed-birds-{{ s.shed_no }}">{{ s.bird_count }}</span> • Age: <span id="shed-age-{{ s.shed_no }}">{{ s.bird_age }}</span> • Crop: <span id="shed-farm-crop-{{ s.shed_no }}">{{ s.farm_crop_id }}</span></div>
+                            <div class="birds-top">Birds: <span id="shed-birds-{{ s.shed_no }}">{{ s.bird_count }}</span> • Age: <span id="shed-age-{{ s.shed_no }}">{{ s.bird_age }}</span></div>
                             {% if s.allocation_text %}
                             <div id="shed-alloc-{{ s.shed_no }}" class="alloc-top">{{ s.allocation_text }}</div>
                             {% endif %}
@@ -2548,13 +2794,13 @@ HTML = """
                                 <div class="badge alarm">ALARM</div>
                             {% elif s.has_active_entry and not s.has_data %}
                                 <div class="badge active">ACTIVE</div>
-                                <div class="badge">NO DATA</div>
+                                <div class="badge nodata">NO DATA</div>
                             {% elif s.tile_state == 'online' and s.has_data %}
-                                <div class="badge">ONLINE</div>
+                                <div class="badge online">ONLINE</div>
                             {% elif s.has_active_entry %}
                                 <div class="badge active">ACTIVE</div>
                             {% else %}
-                                <div class="badge">NO DATA</div>
+                                <div class="badge nodata">NO DATA</div>
                             {% endif %}
                             <div id="shed-sync-badge-{{ s.shed_no }}" class="badge {{ s.sync_pill_class }}">{{ s.sync_pill_text }}</div>
                         </div>
@@ -2637,7 +2883,7 @@ HTML = """
             {% endfor %}
 
             <a class="card-link" href="{{ url_for('borehole_detail') }}">
-                <div id="borehole-card" class="card {% if borehole.alarm_active %}alarm{% elif borehole.tile_state == 'online' %}online{% else %}offline{% endif %} {% if not borehole.has_data %}nodata{% endif %}">
+                <div id="borehole-card" class="card {% if borehole.alarm_active %}alarm{% else %}{{ borehole.water_glow }}{% endif %} {% if not borehole.has_data %}nodata{% endif %}">
                     <div class="head">
                         <div class="head-left">
                             <div class="shed">Bore Hole</div>
@@ -2647,10 +2893,11 @@ HTML = """
                             {% if borehole.alarm_active %}
                                 <div class="badge alarm">ALARM</div>
                             {% elif borehole.has_data and borehole.tile_state == 'online' %}
-                                <div class="badge">ONLINE</div>
+                                <div class="badge online">ONLINE</div>
                             {% else %}
-                                <div class="badge">NO DATA</div>
+                                <div class="badge nodata">NO DATA</div>
                             {% endif %}
+                            <div id="borehole-sync-badge" class="badge {{ borehole.sync_pill_class }}">{{ borehole.sync_pill_text }}</div>
                         </div>
                     </div>
 
@@ -2808,12 +3055,14 @@ function renderShed(s) {
 }
 
 function renderBorehole(b) {
-    setDashClass('borehole-card', [b.alarm_active ? 'alarm' : b.tile_state, b.has_data ? '' : 'nodata'], ['alarm', 'online', 'offline', 'nodata']);
+    setDashClass('borehole-card', [b.alarm_active ? 'alarm' : b.water_glow, b.has_data ? '' : 'nodata'], ['alarm', 'online', 'offline', 'flow-green', 'flow-red', 'nodata']);
     setDashClass('borehole-water-tile', [b.water_glow], ['flow-green', 'flow-red']);
     setDashText('borehole-water', b.water_lpm);
     setDashText('borehole-daily', b.daily_water);
     setDashText('borehole-weekly', b.weekly_water);
     setDashText('borehole-updated', b.updated);
+    setDashText('borehole-sync-badge', b.sync_pill_text);
+    setDashClass('borehole-sync-badge', ['badge', b.sync_pill_class], ['sync-ok', 'sync-stale', 'sync-missing']);
     const alarm = document.getElementById('borehole-alarm');
     if (alarm) {
         if (b.alarm_active) {
@@ -2994,6 +3243,18 @@ RESTORE_HTML = """
                     <button type="submit">Restore Shed State</button>
                 </form>
             </div>
+            <div class="panel">
+                <h2>Bore Hole Restore</h2>
+                <div class="sub">Restores the bore hole live/meta state from the selected backup.</div>
+                <form method="post" action="{{ url_for('restore_office_backup_borehole_view') }}">
+                    <select name="backup_name">
+                        {% for b in backups %}
+                        <option value="{{ b.name }}">{{ b.name }} ({{ b.mtime }})</option>
+                        {% endfor %}
+                    </select>
+                    <button type="submit">Restore Bore Hole State</button>
+                </form>
+            </div>
         </div>
         <div class="panel" style="margin-top:16px;">
             <h2>Available Backups</h2>
@@ -3111,15 +3372,17 @@ OFFICE_SETTINGS_HTML = """
         </div>
         <div class="panel" style="margin-top:16px;">
             <h2>Shed Controller Backups</h2>
-            <div class="sub">Latest synced backup status reported by each shed controller.</div>
+            <div class="sub">Latest controller-reported backup status plus the office-side collected ZIP copy.</div>
             <table>
-                <thead><tr><th>Shed</th><th>Last Backup</th><th>Status</th></tr></thead>
+                <thead><tr><th>Controller</th><th>Controller Backup</th><th>Controller Status</th><th>Office Copy</th><th>Office Copy Status</th></tr></thead>
                 <tbody>
                     {% for row in controller_backup_rows %}
                     <tr>
-                        <td>Shed {{ row.shed_no }}</td>
+                        <td>{{ row.label }}</td>
                         <td>{{ row.last_backup }}</td>
                         <td>{{ row.last_backup_status }}</td>
+                        <td>{{ row.office_copy_at }}</td>
+                        <td>{{ row.office_copy_status }}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -4343,17 +4606,30 @@ def office_settings_view():
     checked_at = update_status.get("checked_at")
     latest_backups = list_office_backup_files()
     controller_meta = load_controller_meta()
+    collector_status = load_controller_backup_status()
     controller_backup_rows = []
     i = 0
     while i < len(SHED_NUMBERS):
         shed_no = SHED_NUMBERS[i]
         meta = controller_meta.get(str(int(shed_no)), {}) if isinstance(controller_meta, dict) else {}
+        office_copy = collector_status.get("shed_%d" % shed_no, {}) if isinstance(collector_status, dict) else {}
         controller_backup_rows.append({
-            "shed_no": shed_no,
+            "label": "Shed %s" % shed_no,
             "last_backup": datetime.fromtimestamp(int(meta.get("last_backup_ts"))).strftime("%d %b %Y %H:%M:%S") if meta.get("last_backup_ts") not in [None, ""] else "--",
             "last_backup_status": str(meta.get("last_backup_status", "") or "--"),
+            "office_copy_at": datetime.fromtimestamp(int(office_copy.get("last_collected_ts"))).strftime("%d %b %Y %H:%M:%S") if office_copy.get("last_collected_ts") not in [None, ""] else "--",
+            "office_copy_status": str(office_copy.get("last_status", "") or "--"),
         })
         i += 1
+    borehole_meta = load_borehole_meta()
+    borehole_copy = collector_status.get("borehole", {}) if isinstance(collector_status, dict) else {}
+    controller_backup_rows.append({
+        "label": "Bore Hole",
+        "last_backup": datetime.fromtimestamp(int(borehole_meta.get("last_backup_ts"))).strftime("%d %b %Y %H:%M:%S") if borehole_meta.get("last_backup_ts") not in [None, ""] else "--",
+        "last_backup_status": str(borehole_meta.get("last_backup_status", "") or "--"),
+        "office_copy_at": datetime.fromtimestamp(int(borehole_copy.get("last_collected_ts"))).strftime("%d %b %Y %H:%M:%S") if borehole_copy.get("last_collected_ts") not in [None, ""] else "--",
+        "office_copy_status": str(borehole_copy.get("last_status", "") or "--"),
+    })
     return render_template_string(
         OFFICE_SETTINGS_HTML,
         update_status=update_status,
@@ -4483,6 +4759,19 @@ def restore_office_backup_shed_view():
         return redirect(url_for("restore_office_backup_view", ok=1, msg="Shed %d restored from backup" % shed_no))
     except Exception as exc:
         return redirect(url_for("restore_office_backup_view", ok=0, msg="Shed restore failed: %s" % exc))
+
+
+@app.route("/backup/restore/borehole", methods=["POST"])
+def restore_office_backup_borehole_view():
+    path = backup_path_by_name(request.form.get("backup_name", ""))
+    if not path:
+        return redirect(url_for("restore_office_backup_view", ok=0, msg="Backup not found"))
+    try:
+        restore_borehole_from_backup(path)
+        log_event("office", "borehole_restored", "Bore hole backup restored", detail=os.path.basename(path))
+        return redirect(url_for("restore_office_backup_view", ok=1, msg="Bore hole restored from backup"))
+    except Exception as exc:
+        return redirect(url_for("restore_office_backup_view", ok=0, msg="Bore hole restore failed: %s" % exc))
 
 
 @app.route("/api/overview")
@@ -4840,6 +5129,83 @@ def office_event_api():
         detail=payload.get("detail", ""),
     )
     return jsonify({"ok": True})
+
+
+@app.route("/api/borehole/sync", methods=["GET"])
+def borehole_sync_api_get():
+    days = get_borehole_daily_history(max_days=40)
+    yesterday_water = days[-1].get("water") if days else None
+    return jsonify({
+        "ok": True,
+        "live": latest_borehole_live(),
+        "summary": {
+            "water_7to7": yesterday_water,
+        },
+        "generated_ts": int(time.time()),
+    })
+
+
+@app.route("/api/borehole/sync", methods=["POST"])
+def borehole_sync_api_post():
+    payload = request.get_json(silent=True) or {}
+    incoming_controller_meta = payload.get("controller_meta")
+    if isinstance(incoming_controller_meta, dict):
+        save_borehole_meta(clean_borehole_meta(incoming_controller_meta))
+    else:
+        current_meta = load_borehole_meta()
+        current_meta["received_ts"] = int(time.time())
+        save_borehole_meta(current_meta)
+
+    live = payload.get("live")
+    if isinstance(live, dict):
+        merged_live = latest_borehole_live()
+        merged_live.update({
+            "water_lpm": live.get("water_lpm"),
+            "ts": live.get("ts") if live.get("ts") not in [None, ""] else int(time.time()),
+            "device": live.get("device"),
+            "source": "borehole_controller",
+        })
+        save_borehole_live(merged_live)
+
+    hourly = payload.get("hourly")
+    if isinstance(hourly, dict):
+        try:
+            hour_epoch = int(hourly.get("hour_epoch"))
+            water_hour_liters = float(hourly.get("water_hour_liters"))
+        except Exception:
+            hour_epoch = None
+            water_hour_liters = None
+        if hour_epoch is not None and water_hour_liters is not None and not borehole_hour_exists(hour_epoch):
+            append_named_json_line("borehole_hourly.ndjson", {
+                "ts": int(time.time()),
+                "hour_epoch": hour_epoch,
+                "water_hour_liters": water_hour_liters,
+                "source": "borehole_controller",
+            })
+
+    alarms = payload.get("alarms")
+    if isinstance(alarms, list):
+        i = 0
+        while i < len(alarms):
+            rec = alarms[i]
+            if isinstance(rec, dict):
+                append_named_json_line("borehole_alarm.ndjson", {
+                    "ts": int(rec.get("ts") or time.time()),
+                    "alarm_key": str(rec.get("alarm_key") or ""),
+                    "active": 1 if int(rec.get("active", 1) or 0) == 1 else 0,
+                    "message": str(rec.get("message") or ""),
+                })
+            i += 1
+
+    days = get_borehole_daily_history(max_days=40)
+    yesterday_water = days[-1].get("water") if days else None
+    return jsonify({
+        "ok": True,
+        "summary": {
+            "water_7to7": yesterday_water,
+        },
+        "generated_ts": int(time.time()),
+    })
 
 
 @app.route("/api/shed/<int:shed_no>/current-crop/hourly", methods=["GET"])

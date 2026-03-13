@@ -73,6 +73,7 @@ STALE_OFFICE_SECONDS = 60
 STALE_LOG_SECONDS = 30
 BACKUP_KEEP_COUNT = 6
 LOCAL_DASHBOARD_PULL_SECONDS = 1
+LOCAL_DASHBOARD_HEARTBEAT_SECONDS = 10
 
 
 def ensure_data_dir():
@@ -1371,6 +1372,19 @@ def maybe_refresh_from_dashboard(min_age_seconds=LOCAL_DASHBOARD_PULL_SECONDS):
 
     if last_contact_ts is None or (now_ts - last_contact_ts) >= int(min_age_seconds):
         pull_from_dashboard(state)
+
+
+def maybe_heartbeat_to_dashboard(min_age_seconds=LOCAL_DASHBOARD_HEARTBEAT_SECONDS):
+    state = load_state()
+    last_push_ts = state.get("last_push_ts")
+    now_ts = int(time.time())
+    try:
+        last_push_ts = int(last_push_ts) if last_push_ts not in [None, ""] else None
+    except Exception:
+        last_push_ts = None
+
+    if last_push_ts is None or (now_ts - last_push_ts) >= int(min_age_seconds):
+        push_to_dashboard(state, pull_back=False)
 
 
 def push_to_dashboard(state, pull_back=True):
@@ -4284,30 +4298,37 @@ ALLOCATION_HTML = """
         }
         .allocation-form {
             display: grid;
-            grid-template-columns: 1fr repeat(4, minmax(0, 1fr));
-            gap: 10px;
+            grid-template-columns: minmax(140px, 1.15fr) repeat(4, minmax(92px, 0.88fr));
+            gap: 8px;
+            align-items: stretch;
+        }
+        .allocation-form > * {
+            min-width: 0;
         }
         input[type="number"] {
             width: 100%;
-            min-height: 72px;
+            min-height: 64px;
             border-radius: 16px;
             border: 1px solid var(--line);
             background: #686868;
             color: var(--text);
-            font-size: 30px;
-            padding: 12px 16px;
+            font-size: 28px;
+            padding: 10px 14px;
+            box-sizing: border-box;
         }
         button {
-            min-height: 72px;
+            min-height: 64px;
             width: 100%;
             border-radius: 16px;
             border: 1px solid #8a8a8a;
             background: linear-gradient(180deg, #7d7d7d, #696969);
             color: var(--text);
-            font-size: 22px;
+            font-size: 19px;
             font-weight: 700;
-            padding: 0 18px;
+            padding: 0 12px;
             cursor: pointer;
+            white-space: nowrap;
+            box-sizing: border-box;
         }
         .secondary {
             border-color: #8f8f8f;
@@ -4574,6 +4595,7 @@ setTimeout(() => {
 @app.route("/")
 def index():
     maybe_refresh_from_dashboard()
+    maybe_heartbeat_to_dashboard()
     ctx = build_home_context()
     msg = request.args.get("msg", "")
     ok = request.args.get("ok", "1") == "1"
@@ -4585,6 +4607,7 @@ def index():
 @app.route("/settings")
 def controller_settings_view():
     maybe_refresh_from_dashboard()
+    maybe_heartbeat_to_dashboard()
     ctx = build_home_context()
     update_status = load_update_status()
     pico_update_status = load_pico_update_status()
@@ -5468,6 +5491,7 @@ def api_state():
 @app.route("/api/home-state", methods=["GET"])
 def api_home_state():
     maybe_refresh_from_dashboard()
+    maybe_heartbeat_to_dashboard()
     return jsonify(build_home_context())
 
 

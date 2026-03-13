@@ -157,6 +157,6 @@
     "controller_port": 8092,
     "serial_port": "/dev/ttyACM0",
     "device_type": "borehole_flow_only",
-    "notes": "Separate custom dashboard expected. Only flow sensing required here."
+    "notes": "Controller-class device. Put it in office data/controllers.json under key borehole. Only flow sensing required here."
   }
 }
