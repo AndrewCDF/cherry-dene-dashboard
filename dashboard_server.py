@@ -11,6 +11,33 @@ from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
+CDF_FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<rect width="64" height="64" rx="12" fill="#4f4f4f"/>
+<rect x="4" y="4" width="56" height="56" rx="10" fill="none" stroke="#35d07f" stroke-width="2.5"/>
+<text x="32" y="39" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="700" fill="#f1f1f1">CDF</text>
+</svg>"""
+
+
+@app.route("/favicon.ico")
+@app.route("/favicon.svg")
+def favicon_view():
+    return Response(CDF_FAVICON_SVG, mimetype="image/svg+xml")
+
+
+@app.after_request
+def inject_favicon(response):
+    try:
+        content_type = str(response.headers.get("Content-Type", "")).lower()
+        if "text/html" in content_type and response.direct_passthrough is False:
+            body = response.get_data(as_text=True)
+            if "<head>" in body and 'rel="icon"' not in body:
+                body = body.replace('<head>', '<head><link rel="icon" type="image/svg+xml" href="/favicon.svg">', 1)
+                response.set_data(body)
+                response.headers["Content-Length"] = str(len(response.get_data()))
+    except Exception:
+        pass
+    return response
+
 DATA_DIR = "data"
 SHED_NUMBERS = [1, 2, 3, 4, 6, 7, 8, 9, 10]
 OFFICE_BACKUP_KEEP_COUNT = 6
@@ -2116,10 +2143,10 @@ def build_borehole_row():
         sync_pill_text = "SHED SYNC --"
     elif sync_age <= 30:
         sync_pill_class = "sync-ok"
-        sync_pill_text = "SHED SYNC OK"
+        sync_pill_text = "SHED SYNC OK • %ss" % sync_age
     else:
         sync_pill_class = "sync-stale"
-        sync_pill_text = "SHED SYNC STALE"
+        sync_pill_text = "SHED SYNC STALE • %ss" % sync_age
 
     return {
         "name": "Bore Hole",
@@ -2363,10 +2390,10 @@ def build_rows():
             sync_pill_text = "SHED SYNC --"
         elif sync_age <= 30:
             sync_pill_class = "sync-ok"
-            sync_pill_text = "SHED SYNC OK"
+            sync_pill_text = "SHED SYNC OK • %ss" % sync_age
         else:
             sync_pill_class = "sync-stale"
-            sync_pill_text = "SHED SYNC STALE"
+            sync_pill_text = "SHED SYNC STALE • %ss" % sync_age
 
         rows.append({
             "shed": shed,
@@ -3340,7 +3367,7 @@ RESTORE_HTML = """
             <div class="panel">
                 <h2>Full Office Restore</h2>
                 <div class="sub">Restores the full contents of the selected backup into the office data folder.</div>
-                <form method="post" action="{{ url_for('restore_office_backup_apply_view') }}">
+                <form method="post" action="{{ url_for('restore_office_backup_apply_view') }}" onsubmit="return confirm('Restore the full office backup? This will overwrite current office data.');">
                     <select name="backup_name">
                         {% for b in backups %}
                         <option value="{{ b.name }}">{{ b.name }} ({{ b.mtime }})</option>
@@ -3352,7 +3379,7 @@ RESTORE_HTML = """
             <div class="panel">
                 <h2>Shed Restore</h2>
                 <div class="sub">Restores just one shed's live state from the selected backup.</div>
-                <form method="post" action="{{ url_for('restore_office_backup_shed_view') }}">
+                <form method="post" action="{{ url_for('restore_office_backup_shed_view') }}" onsubmit="return confirm('Restore this shed from the selected office backup?');">
                     <select name="backup_name">
                         {% for b in backups %}
                         <option value="{{ b.name }}">{{ b.name }} ({{ b.mtime }})</option>
@@ -3369,7 +3396,7 @@ RESTORE_HTML = """
             <div class="panel">
                 <h2>Bore Hole Restore</h2>
                 <div class="sub">Restores the bore hole live/meta state from the selected backup.</div>
-                <form method="post" action="{{ url_for('restore_office_backup_borehole_view') }}">
+                <form method="post" action="{{ url_for('restore_office_backup_borehole_view') }}" onsubmit="return confirm('Restore the bore hole state from the selected office backup?');">
                     <select name="backup_name">
                         {% for b in backups %}
                         <option value="{{ b.name }}">{{ b.name }} ({{ b.mtime }})</option>
@@ -3391,13 +3418,13 @@ RESTORE_HTML = """
                         <td>{{ row.latest_name }}</td>
                         <td>
                             {% if row.restore_kind == 'shed' %}
-                            <form method="post" action="{{ url_for('restore_controller_copy_shed_view') }}">
+                            <form method="post" action="{{ url_for('restore_controller_copy_shed_view') }}" onsubmit="return confirm('Restore this shed from the latest office-collected controller copy?');">
                                 <input type="hidden" name="controller_key" value="{{ row.controller_key }}">
                                 <input type="hidden" name="shed_no" value="{{ row.shed_no }}">
                                 <button type="submit">Restore {{ row.label }}</button>
                             </form>
                             {% elif row.restore_kind == 'borehole' %}
-                            <form method="post" action="{{ url_for('restore_controller_copy_borehole_view') }}">
+                            <form method="post" action="{{ url_for('restore_controller_copy_borehole_view') }}" onsubmit="return confirm('Restore the bore hole from the latest office-collected controller copy?');">
                                 <input type="hidden" name="controller_key" value="{{ row.controller_key }}">
                                 <button type="submit">Restore Bore Hole</button>
                             </form>
@@ -3450,6 +3477,11 @@ OFFICE_SETTINGS_HTML = """
         .sub { color:#d2d2d2; margin-bottom:14px; }
         .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
         .panel { background:#737373; border:1px solid #8a8a8a; border-radius:14px; padding:16px; }
+        .health-grid { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:12px; margin-top:12px; }
+        .health-card { background:#686868; border:1px solid #8a8a8a; border-radius:12px; padding:12px; }
+        .health-label { color:#d2d2d2; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; }
+        .health-value { margin-top:6px; font-size:24px; font-weight:700; }
+        .health-note { margin-top:6px; color:#dcdcdc; font-size:12px; line-height:1.35; }
         .action-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
         .action-link, button {
             display:inline-flex;
@@ -3479,7 +3511,7 @@ OFFICE_SETTINGS_HTML = """
         table { width:100%; border-collapse:collapse; font-size:14px; }
         th, td { padding:10px 8px; border-bottom:1px solid #818181; text-align:left; vertical-align:top; }
         th { color:#f0f0f0; }
-        @media (max-width: 900px) { .grid, .action-grid { grid-template-columns:1fr; } }
+        @media (max-width: 900px) { .grid, .action-grid, .health-grid { grid-template-columns:1fr; } }
     </style>
 </head>
 <body>
@@ -3490,6 +3522,32 @@ OFFICE_SETTINGS_HTML = """
         {% if status_msg %}
         <div class="status auto-dismiss {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
         {% endif %}
+        <div class="panel" style="margin-bottom:16px;">
+            <h2>Farm Health</h2>
+            <div class="sub">Current controller freshness, backup status, and Pico link summary across the farm.</div>
+            <div class="health-grid">
+                <div class="health-card">
+                    <div class="health-label">Stale Controllers</div>
+                    <div class="health-value">{{ farm_health.stale_count }}</div>
+                    <div class="health-note">{{ farm_health.stale_labels }}</div>
+                </div>
+                <div class="health-card">
+                    <div class="health-label">Pico Offline</div>
+                    <div class="health-value">{{ farm_health.pico_offline_count }}</div>
+                    <div class="health-note">{{ farm_health.pico_offline_labels }}</div>
+                </div>
+                <div class="health-card">
+                    <div class="health-label">Backup Issues</div>
+                    <div class="health-value">{{ farm_health.backup_issue_count }}</div>
+                    <div class="health-note">{{ farm_health.backup_issue_labels }}</div>
+                </div>
+                <div class="health-card">
+                    <div class="health-label">Last Backup Collect</div>
+                    <div class="health-value">{{ farm_health.last_collect_age }}</div>
+                    <div class="health-note">{{ farm_health.last_collect_note }}</div>
+                </div>
+            </div>
+        </div>
         <div class="grid">
             <div class="panel">
                 <h2>Actions</h2>
@@ -3503,6 +3561,7 @@ OFFICE_SETTINGS_HTML = """
                     <a class="action-link" href="{{ url_for('restore_office_backup_view') }}">Restore Backup</a>
                     <a class="action-link" href="{{ url_for('create_office_backup_view') }}">Create Backup</a>
                     <a class="action-link" href="{{ url_for('download_latest_office_backup_view') }}">Download Backup</a>
+                    <a class="action-link" href="{{ url_for('collect_controller_backups_now_view') }}">Collect Controller Backups</a>
                 </div>
             </div>
             <div class="panel">
@@ -3537,7 +3596,7 @@ OFFICE_SETTINGS_HTML = """
                         <td>{{ row.last_backup }}</td>
                         <td>{{ row.last_backup_status }}</td>
                         <td>{{ row.office_copy_at }}</td>
-                        <td>{{ row.office_copy_status }}</td>
+                        <td>{{ row.office_copy_status }}{% if row.office_copy_name != '--' %} · <a href="{{ url_for('download_collected_controller_backup_view', controller_key=row.controller_key) }}">Download</a>{% endif %}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -4822,27 +4881,69 @@ def office_settings_view():
     controller_meta = load_controller_meta()
     collector_status = load_controller_backup_status()
     controller_backup_rows = []
+    stale_labels = []
+    pico_offline_labels = []
+    backup_issue_labels = []
+    collect_ages = []
     i = 0
     while i < len(SHED_NUMBERS):
         shed_no = SHED_NUMBERS[i]
         meta = controller_meta.get(str(int(shed_no)), {}) if isinstance(controller_meta, dict) else {}
         office_copy = collector_status.get("shed_%d" % shed_no, {}) if isinstance(collector_status, dict) else {}
+        try:
+            received_ts = int(meta.get("received_ts")) if meta.get("received_ts") not in [None, ""] else None
+        except Exception:
+            received_ts = None
+        if received_ts is None or (int(time.time()) - received_ts) > 30:
+            stale_labels.append("Shed %s" % shed_no)
+        if not bool(meta.get("pico_connected", False)):
+            pico_offline_labels.append("Shed %s" % shed_no)
+        backup_status = str(meta.get("last_backup_status", "") or "--")
+        if backup_status == "--" or "fail" in backup_status.lower():
+            backup_issue_labels.append("Shed %s" % shed_no)
+        try:
+            collected_ts = int(office_copy.get("last_collected_ts")) if office_copy.get("last_collected_ts") not in [None, ""] else None
+        except Exception:
+            collected_ts = None
+        if collected_ts is not None:
+            collect_ages.append(max(0, int(time.time()) - collected_ts))
         controller_backup_rows.append({
             "label": "Shed %s" % shed_no,
+            "controller_key": "shed_%d" % shed_no,
             "last_backup": datetime.fromtimestamp(int(meta.get("last_backup_ts"))).strftime("%d %b %Y %H:%M:%S") if meta.get("last_backup_ts") not in [None, ""] else "--",
             "last_backup_status": str(meta.get("last_backup_status", "") or "--"),
             "office_copy_at": datetime.fromtimestamp(int(office_copy.get("last_collected_ts"))).strftime("%d %b %Y %H:%M:%S") if office_copy.get("last_collected_ts") not in [None, ""] else "--",
             "office_copy_status": str(office_copy.get("last_status", "") or "--"),
+            "office_copy_name": os.path.basename(list_controller_backup_files("shed_%d" % shed_no)[0]) if list_controller_backup_files("shed_%d" % shed_no) else "--",
         })
         i += 1
     borehole_meta = load_borehole_meta()
     borehole_copy = collector_status.get("borehole", {}) if isinstance(collector_status, dict) else {}
+    try:
+        borehole_received_ts = int(borehole_meta.get("received_ts")) if borehole_meta.get("received_ts") not in [None, ""] else None
+    except Exception:
+        borehole_received_ts = None
+    if borehole_received_ts is None or (int(time.time()) - borehole_received_ts) > 30:
+        stale_labels.append("Bore Hole")
+    if not bool(borehole_meta.get("pico_connected", False)):
+        pico_offline_labels.append("Bore Hole")
+    borehole_backup_status = str(borehole_meta.get("last_backup_status", "") or "--")
+    if borehole_backup_status == "--" or "fail" in borehole_backup_status.lower():
+        backup_issue_labels.append("Bore Hole")
+    try:
+        borehole_collected_ts = int(borehole_copy.get("last_collected_ts")) if borehole_copy.get("last_collected_ts") not in [None, ""] else None
+    except Exception:
+        borehole_collected_ts = None
+    if borehole_collected_ts is not None:
+        collect_ages.append(max(0, int(time.time()) - borehole_collected_ts))
     controller_backup_rows.append({
         "label": "Bore Hole",
+        "controller_key": "borehole",
         "last_backup": datetime.fromtimestamp(int(borehole_meta.get("last_backup_ts"))).strftime("%d %b %Y %H:%M:%S") if borehole_meta.get("last_backup_ts") not in [None, ""] else "--",
         "last_backup_status": str(borehole_meta.get("last_backup_status", "") or "--"),
         "office_copy_at": datetime.fromtimestamp(int(borehole_copy.get("last_collected_ts"))).strftime("%d %b %Y %H:%M:%S") if borehole_copy.get("last_collected_ts") not in [None, ""] else "--",
         "office_copy_status": str(borehole_copy.get("last_status", "") or "--"),
+        "office_copy_name": os.path.basename(list_controller_backup_files("borehole")[0]) if list_controller_backup_files("borehole") else "--",
     })
     return render_template_string(
         OFFICE_SETTINGS_HTML,
@@ -4851,6 +4952,16 @@ def office_settings_view():
         backup_dir=backups_dir(),
         backup_keep_count=OFFICE_BACKUP_KEEP_COUNT,
         latest_backup_name=os.path.basename(latest_backups[0]) if latest_backups else "--",
+        farm_health={
+            "stale_count": len(stale_labels),
+            "stale_labels": ", ".join(stale_labels) if stale_labels else "All controller heartbeats are current",
+            "pico_offline_count": len(pico_offline_labels),
+            "pico_offline_labels": ", ".join(pico_offline_labels) if pico_offline_labels else "All controller Pico links currently report connected",
+            "backup_issue_count": len(backup_issue_labels),
+            "backup_issue_labels": ", ".join(backup_issue_labels) if backup_issue_labels else "No current controller backup issues reported",
+            "last_collect_age": ("%ss ago" % min(collect_ages)) if collect_ages else "--",
+            "last_collect_note": ("Newest office-collected controller copy" if collect_ages else "No controller copies collected yet"),
+        },
         controller_backup_rows=controller_backup_rows,
         status_msg=request.args.get("msg", ""),
         status_ok=request.args.get("ok", "1") == "1",
@@ -4908,6 +5019,21 @@ def office_apply_update_view():
             """
         )
     return redirect(url_for("office_settings_view", ok=0, msg=stderr or stdout or "Update failed"))
+
+
+@app.route("/settings/collect-backups")
+def collect_controller_backups_now_view():
+    maybe_collect_controller_backups()
+    return redirect(url_for("office_settings_view", ok=1, msg="Collected controller backups"))
+
+
+@app.route("/controller-backups/<controller_key>/latest")
+def download_collected_controller_backup_view(controller_key):
+    rows = list_controller_backup_files(controller_key)
+    if not rows:
+        abort(404)
+    path = rows[0]
+    return send_file(path, as_attachment=True, download_name=os.path.basename(path))
 
 
 @app.route("/backup/create")

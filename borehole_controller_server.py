@@ -33,6 +33,33 @@ NO_FLOW_EPSILON_LPM = 0.01
 
 app = Flask(__name__)
 
+CDF_FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<rect width="64" height="64" rx="12" fill="#4f4f4f"/>
+<rect x="4" y="4" width="56" height="56" rx="10" fill="none" stroke="#35d07f" stroke-width="2.5"/>
+<text x="32" y="39" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="700" fill="#f1f1f1">CDF</text>
+</svg>"""
+
+
+@app.route("/favicon.ico")
+@app.route("/favicon.svg")
+def favicon_view():
+    return Response(CDF_FAVICON_SVG, mimetype="image/svg+xml")
+
+
+@app.after_request
+def inject_favicon(response):
+    try:
+        content_type = str(response.headers.get("Content-Type", "")).lower()
+        if "text/html" in content_type and response.direct_passthrough is False:
+            body = response.get_data(as_text=True)
+            if "<head>" in body and 'rel="icon"' not in body:
+                body = body.replace('<head>', '<head><link rel="icon" type="image/svg+xml" href="/favicon.svg">', 1)
+                response.set_data(body)
+                response.headers["Content-Length"] = str(len(response.get_data()))
+    except Exception:
+        pass
+    return response
+
 
 def ensure_data_dir():
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -661,6 +688,8 @@ def home_context():
     log_class = "ok" if "OK" in log_status else "bad"
     sync_status = state.get("last_sync_status", "No sync yet")
     sync_class = "ok" if "OK" in sync_status else "bad"
+    office_age = fmt_age_seconds(state.get("last_dashboard_contact_ts"))
+    sync_age = fmt_age_seconds(state.get("last_sync_ts"))
     last_sensor_ts = sensors.get("last_sensor_ts")
     try:
         sensor_age = int(time.time()) - int(last_sensor_ts) if last_sensor_ts not in [None, ""] else None
@@ -676,9 +705,9 @@ def home_context():
         "alarm_class": alarm_class,
         "alarm_short": alarm_short,
         "office_class": office_class,
-        "office_short": "OK" if office_class == "ok" else "WAIT",
+        "office_short": ("OK • %s" % office_age) if office_class == "ok" else ("WAIT • %s" % office_age),
         "sync_class": sync_class,
-        "sync_short": "OK" if sync_class == "ok" else "WAIT",
+        "sync_short": ("OK • %s" % sync_age) if sync_class == "ok" else ("WAIT • %s" % sync_age),
         "pico_class": pico_class,
         "pico_short": pico_short,
         "push_class": push_class,
@@ -1009,6 +1038,7 @@ SETTINGS_HTML = """
         <div class="action-grid">
           <a class="button-link" href="{{ url_for('water_settings_view') }}">Water Settings</a>
           <a class="button-link" href="{{ url_for('water_history_view') }}">Water History</a>
+          <a class="button-link" href="{{ url_for('commissioning_view') }}">Commissioning</a>
           <a class="button-link" href="{{ url_for('alarms_view') }}">Alarms{% if alarm_count %} ({{ alarm_count }}){% endif %}</a>
           <a class="button-link" href="{{ url_for('events_view') }}">Event Log</a>
           <a class="button-link" href="{{ url_for('config_view') }}">Controller Config</a>
@@ -1175,6 +1205,58 @@ WATER_SETTINGS_HTML = """
 """
 
 
+BOREHOLE_COMMISSIONING_HTML = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Bore Hole Commissioning</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin:0; font-family:Arial,sans-serif; background:#5b5b5b; color:#ececec; }
+    .wrap { max-width:1040px; margin:0 auto; padding:24px; }
+    .topbar a { color:#ececec; text-decoration:none; }
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:16px; }
+    .panel { background:#737373; border:1px solid #8a8a8a; border-radius:14px; padding:16px; }
+    .detail { display:flex; justify-content:space-between; gap:12px; padding:10px 0; border-bottom:1px solid #818181; }
+    .detail:last-child { border-bottom:0; }
+    .label { color:#d2d2d2; }
+    .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-all; }
+    pre { background:#656565; border:1px solid #8a8a8a; border-radius:12px; padding:12px; white-space:pre-wrap; word-break:break-word; }
+    @media (max-width:900px) { .grid { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar"><a href="{{ url_for('settings_view') }}">← Back to settings</a></div>
+    <h1>Bore Hole Commissioning</h1>
+    <div class="grid">
+      <div class="panel">
+        <div class="detail"><span class="label">Water L/PM</span><span>{{ water_lpm }}</span></div>
+        <div class="detail"><span class="label">Flow Total Pulses</span><span>{{ flow_total_pulses }}</span></div>
+        <div class="detail"><span class="label">Low Flow Threshold</span><span>{{ water_low_lpm }}</span></div>
+        <div class="detail"><span class="label">Pulses Per Litre</span><span>{{ water_ppl }}</span></div>
+        <div class="detail"><span class="label">Last Sensor</span><span>{{ last_sensor }} • {{ last_sensor_age }}</span></div>
+        <div class="detail"><span class="label">Office Sync</span><span>{{ sync_short }}</span></div>
+      </div>
+      <div class="panel">
+        <div class="detail"><span class="label">Controller Version</span><span class="mono">{{ app_version }}</span></div>
+        <div class="detail"><span class="label">Pico Local</span><span class="mono">{{ pico_local }}</span></div>
+        <div class="detail"><span class="label">Pico Deployed</span><span class="mono">{{ pico_deployed }}</span></div>
+        <div class="detail"><span class="label">State Version</span><span>{{ state_version }}</span></div>
+        <div class="detail"><span class="label">Alarm Count</span><span>{{ alarm_count }}</span></div>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:16px;">
+      <h2>Raw Packet</h2>
+      <pre>{{ raw_json }}</pre>
+    </div>
+  </div>
+</body>
+</html>
+"""
+
+
 HISTORY_HTML = """
 <!doctype html>
 <html lang="en">
@@ -1323,6 +1405,30 @@ def settings_view():
         log_short=ctx.get("log_short", "--"),
         office_short=ctx.get("office_short", "--"),
         alarm_short=ctx.get("alarm_short", "--"),
+    )
+
+
+@app.route("/commissioning")
+def commissioning_view():
+    state = load_state()
+    sensors = state.get("sensors", {})
+    cfg = load_config()
+    ctx = home_context()
+    return render_template_string(
+        BOREHOLE_COMMISSIONING_HTML,
+        water_lpm=fmt_value(sensors.get("water_lpm"), "f2"),
+        flow_total_pulses=fmt_value(sensors.get("flow_total_pulses"), "i"),
+        water_low_lpm=fmt_value(cfg.get("water_low_lpm", 0.1), "f2"),
+        water_ppl=fmt_value(cfg.get("water_pulses_per_litre", 450.0), "f1"),
+        last_sensor=fmt_ts(sensors.get("last_sensor_ts")),
+        last_sensor_age=fmt_age_seconds(sensors.get("last_sensor_ts")),
+        sync_short=ctx.get("sync_short", "--"),
+        app_version=local_version_info().get("local_commit", "--"),
+        pico_local=pico_firmware_hash(),
+        pico_deployed=str(state.get("last_pico_deployed_hash", "") or "--"),
+        state_version=state.get("state_version", 0),
+        alarm_count=len(sensors.get("controller_alarms", [])),
+        raw_json=json.dumps(sensors.get("raw", {}), indent=2, sort_keys=True),
     )
 
 

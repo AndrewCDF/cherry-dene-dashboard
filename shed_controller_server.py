@@ -22,6 +22,33 @@ except Exception:
 
 app = Flask(__name__)
 
+CDF_FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<rect width="64" height="64" rx="12" fill="#4f4f4f"/>
+<rect x="4" y="4" width="56" height="56" rx="10" fill="none" stroke="#35d07f" stroke-width="2.5"/>
+<text x="32" y="39" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="700" fill="#f1f1f1">CDF</text>
+</svg>"""
+
+
+@app.route("/favicon.ico")
+@app.route("/favicon.svg")
+def favicon_view():
+    return Response(CDF_FAVICON_SVG, mimetype="image/svg+xml")
+
+
+@app.after_request
+def inject_favicon(response):
+    try:
+        content_type = str(response.headers.get("Content-Type", "")).lower()
+        if "text/html" in content_type and response.direct_passthrough is False:
+            body = response.get_data(as_text=True)
+            if "<head>" in body and 'rel="icon"' not in body:
+                body = body.replace('<head>', '<head><link rel="icon" type="image/svg+xml" href="/favicon.svg">', 1)
+                response.set_data(body)
+                response.headers["Content-Length"] = str(len(response.get_data()))
+    except Exception:
+        pass
+    return response
+
 DATA_DIR = "controller_data"
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 SHED_NUMBERS = [1, 2, 3, 4, 6, 7, 8, 9, 10]
@@ -1658,7 +1685,7 @@ def build_home_context():
         "refresh_seconds": max(1, cfg["touch_refresh_seconds"]),
         "sync_status": sync_status,
         "sync_class": sync_class,
-        "sync_short": short_status_text("sync", sync_status),
+        "sync_short": "%s • %s" % (short_status_text("sync", sync_status), fmt_age_seconds(state.get("last_sync_ts"))),
         "push_status": push_status,
         "push_class": push_class,
         "push_short": short_status_text("push", push_status),
