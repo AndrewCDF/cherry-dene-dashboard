@@ -31,6 +31,7 @@ fi
 "$BROWSER_BIN" \
   --kiosk \
   --incognito \
+  --password-store=basic \
   --noerrdialogs \
   --disable-infobars \
   --disable-session-crashed-bubble \
