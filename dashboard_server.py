@@ -2,6 +2,7 @@ from flask import Flask, render_template_string, abort, url_for, request, redire
 import json
 import os
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
@@ -62,8 +63,10 @@ def read_json_file(path, default):
 
 
 def write_json_file_atomic(path, payload):
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
+    parent = os.path.dirname(path) or "."
+    os.makedirs(parent, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".", suffix=".tmp", dir=parent)
+    with os.fdopen(fd, "w") as f:
         json.dump(payload, f, indent=2)
     os.replace(tmp, path)
 
