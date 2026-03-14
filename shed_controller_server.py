@@ -3139,7 +3139,7 @@ HTML = """
                 margin-bottom: 10px;
             }
             .metric {
-                min-height: 144px;
+                min-height: 132px;
                 border-radius: 16px;
                 padding: 10px;
             }
@@ -3155,12 +3155,12 @@ HTML = """
                 font-size: 12px;
             }
             .settings-button {
-                min-height: 76px;
+                min-height: 72px;
                 border-radius: 14px;
                 font-size: 20px;
             }
             .button-link {
-                line-height: 76px;
+                line-height: 72px;
             }
             .settings-icon {
                 font-size: 22px;
