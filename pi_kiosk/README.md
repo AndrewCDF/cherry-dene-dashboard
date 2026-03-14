@@ -24,6 +24,15 @@ The controller expects one JSON object per line over USB serial, for example:
 
 ## Shed first run
 
+Fastest option:
+
+```bash
+cd ~/cherry-dene-dashboard
+bash ./scripts/install_shed_controller_pi.sh ~/cherry-dene-dashboard andrewcdf 3 http://192.168.1.19:8090
+```
+
+This installs packages, writes the shed config, creates the service, and sets up `labwc` kiosk autostart.
+
 1. Copy this project to your Pi home folder, for example `/home/andrewcdf/cherry-dene-dashboard`
 2. Install Python dependencies:
 

@@ -16,6 +16,8 @@ Office and shed dashboard system for Cherry Dene Farm.
   Deployment config templates
 - `ios/CherryDeneMobile/`
   SwiftUI iPhone/iPad app with Xcode project, native alarm tab, and embedded dashboard views
+- `scripts/install_shed_controller_pi.sh`
+  One-run installer for a shed controller Pi (service, config, kiosk, labwc autostart)
 
 ## Local Run
 
