@@ -279,6 +279,8 @@ def check_for_update():
 def restart_self_delayed(delay_seconds=1.0):
     def _restart():
         time.sleep(delay_seconds)
+        if os.environ.get("INVOCATION_ID") or os.environ.get("JOURNAL_STREAM"):
+            os._exit(0)
         os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)])
 
     threading.Thread(target=_restart, daemon=True).start()

@@ -5,6 +5,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -178,6 +179,16 @@ def run_system_action(action_name):
             detail = "Passwordless sudo is not configured for this controller"
         return False, detail
     return True, ""
+
+
+def restart_self_delayed(delay_seconds=1.0):
+    def _restart():
+        time.sleep(delay_seconds)
+        if os.environ.get("INVOCATION_ID") or os.environ.get("JOURNAL_STREAM"):
+            os._exit(0)
+        os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)])
+
+    threading.Thread(target=_restart, daemon=True).start()
 
 
 def local_ip_address():
@@ -1829,7 +1840,37 @@ def check_update_view():
 @app.route("/settings/update/apply", methods=["POST"])
 def apply_update_view():
     ok, msg = apply_update()
-    return redirect(url_for("settings_view", msg=msg if msg else ("Updated" if ok else "Update failed")))
+    if not ok:
+        return redirect(url_for("settings_view", msg=msg if msg else "Update failed"))
+    restart_self_delayed(1.0)
+    return render_template_string(
+        """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Updating Controller</title>
+  <meta http-equiv="refresh" content="6; url={{ url_for('settings_view') }}">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <style>
+    body { margin:0; background:#5b5b5b; color:#ececec; font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; }
+    .wrap { max-width:760px; margin:0 auto; padding:32px 18px; }
+    .panel { background:rgba(115,115,115,0.96); border:1px solid #8a8a8a; border-radius:20px; padding:24px; }
+    h1 { margin:0 0 12px 0; font-size:34px; }
+    .sub { color:#d2d2d2; font-size:18px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="panel">
+      <h1>Updating Controller</h1>
+      <div class="sub">The latest code has been pulled. This controller is restarting now and will return to settings automatically.</div>
+    </div>
+  </div>
+</body>
+</html>
+        """
+    )
 
 
 @app.route("/settings/pico/update", methods=["POST"])
