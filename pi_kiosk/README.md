@@ -94,6 +94,7 @@ bash /home/andrewcdf/cherry-dene-dashboard/pi_kiosk/kiosk.sh http://127.0.0.1:80
 - The kiosk script waits a few seconds before launching Chromium so the desktop and Flask app can come up cleanly
 - The kiosk script no longer forces `onboard` open at startup
 - The kiosk script is tolerant of Wayland/labwc sessions where `xset` may fail
+- The kiosk script explicitly enables Chromium touch events for the 7 inch touchscreen
 - Numeric/text fields can still request the on-screen keyboard when the Pi desktop auto-show virtual keyboard setting is enabled
 - The controller Settings page includes `Shutdown` and `Reboot` buttons; these rely on the installer's sudoers entry
 - If your Pico appears on another port, update `serial_port`

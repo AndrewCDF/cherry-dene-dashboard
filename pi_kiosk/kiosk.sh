@@ -32,9 +32,11 @@ fi
   --kiosk \
   --incognito \
   --password-store=basic \
+  --touch-events=enabled \
   --noerrdialogs \
   --disable-infobars \
   --disable-session-crashed-bubble \
+  --disable-features=OverscrollHistoryNavigation \
   --check-for-update-interval=31536000 \
   --overscroll-history-navigation=0 \
   "$URL"
