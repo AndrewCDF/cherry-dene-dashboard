@@ -37,7 +37,8 @@ TOUCH_OPTIMIZE_HEAD = (
     'html,body,*{scrollbar-width:none;}'
     'html::-webkit-scrollbar,body::-webkit-scrollbar,*::-webkit-scrollbar{display:none;width:0;height:0;}'
     'body,div,span,p,h1,h2,h3,h4,h5,h6,table,thead,tbody,tr,th,td,a,button,label,.button-link,.metric-link,.settings-button{-webkit-user-select:none;user-select:none;}'
-    'a,button,input,select,textarea,label,summary,.button-link,.metric-link,.settings-button{touch-action:manipulation;}'
+    'a,.button-link,.metric-link,.settings-button{touch-action:pan-y;}'
+    'button,input,select,textarea,label,summary{touch-action:manipulation;}'
     'input,textarea,select,.mono{-webkit-user-select:text;user-select:text;}'
     '.cdf-number-pad{position:fixed;left:0;right:0;bottom:0;z-index:9999;padding:10px 12px 14px;background:rgba(54,54,54,0.94);backdrop-filter:blur(8px);border-top:1px solid rgba(255,255,255,0.12);transform:translateY(100%);transition:transform .12s ease-out;}'
     '.cdf-number-pad.is-open{transform:translateY(0);}'
@@ -1731,26 +1732,69 @@ def serial_available_ports():
     return [p.device for p in ports]
 
 
+def serial_port_infos():
+    if serial is None:
+        return []
+    try:
+        return list(serial.tools.list_ports.comports())
+    except Exception:
+        return []
+
+
+def port_looks_like_pico(port_info):
+    if port_info is None:
+        return False
+    try:
+        vid = int(getattr(port_info, "vid", 0) or 0)
+    except Exception:
+        vid = 0
+    if vid == 0x2E8A:
+        return True
+
+    fields = [
+        getattr(port_info, "manufacturer", ""),
+        getattr(port_info, "product", ""),
+        getattr(port_info, "description", ""),
+        getattr(port_info, "interface", ""),
+        getattr(port_info, "hwid", ""),
+    ]
+    blob = " ".join(str(field or "") for field in fields).lower()
+    pico_markers = [
+        "raspberry pi pico",
+        "raspberry pi",
+        " pico",
+        "pico ",
+        "rp2",
+        "2e8a",
+    ]
+    return any(marker in blob for marker in pico_markers)
+
+
 def detect_serial_port():
     cfg = load_config()
     configured = cfg["serial_port"]
-    ports = serial_available_ports()
-    if configured in ports:
-        return configured
+    port_infos = serial_port_infos()
+    configured_info = None
+    pico_ports = []
+    generic_serial_ports = []
 
-    preferred = []
     i = 0
-    while i < len(ports):
-        port = ports[i]
-        if "ttyACM" in port or "ttyUSB" in port or "cu.usbmodem" in port:
-            preferred.append(port)
+    while i < len(port_infos):
+        info = port_infos[i]
+        device = getattr(info, "device", "")
+        if device == configured:
+            configured_info = info
+        if "ttyACM" in device or "ttyUSB" in device or "cu.usbmodem" in device:
+            generic_serial_ports.append(device)
+            if port_looks_like_pico(info):
+                pico_ports.append(device)
         i += 1
 
-    if preferred:
-        return preferred[0]
-    if ports:
-        return ports[0]
-    return configured
+    if configured_info and port_looks_like_pico(configured_info):
+        return configured
+    if pico_ports:
+        return pico_ports[0]
+    return None if generic_serial_ports else configured
 
 
 def fmt_ts(ts_value):
@@ -2308,6 +2352,11 @@ def serial_reader_loop():
             continue
 
         port = detect_serial_port()
+        if not port:
+            serial_error_update("Pico offline: no Pico serial device found")
+            SERIAL_STOP.wait(3.0)
+            continue
+
         try:
             conn = serial.Serial(
                 port=port,
