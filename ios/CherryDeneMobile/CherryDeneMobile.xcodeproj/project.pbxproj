@@ -8,27 +8,27 @@
 
 /* Begin PBXBuildFile section */
 		A10000000000000000000001 /* CherryDeneMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* CherryDeneMobileApp.swift */; };
-		A10000000000000000000002 /* AppSettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* AppSettingsStore.swift */; };
-		A10000000000000000000003 /* NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* NotificationManager.swift */; };
-		A10000000000000000000004 /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* RootTabView.swift */; };
-		A10000000000000000000005 /* DashboardWebContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* DashboardWebContainer.swift */; };
-		A10000000000000000000006 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* SettingsView.swift */; };
-		A10000000000000000000007 /* AlarmModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* AlarmModels.swift */; };
-		A10000000000000000000008 /* AlarmFeedService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* AlarmFeedService.swift */; };
-		A10000000000000000000009 /* AlarmFeedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000009 /* AlarmFeedView.swift */; };
+		A10000000000000000000002 /* Models/AppSettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* Models/AppSettingsStore.swift */; };
+		A10000000000000000000003 /* Services/NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* Services/NotificationManager.swift */; };
+		A10000000000000000000004 /* Views/RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* Views/RootTabView.swift */; };
+		A10000000000000000000005 /* Views/DashboardWebContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* Views/DashboardWebContainer.swift */; };
+		A10000000000000000000006 /* Views/SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* Views/SettingsView.swift */; };
+		A10000000000000000000007 /* Models/AlarmModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* Models/AlarmModels.swift */; };
+		A10000000000000000000008 /* Services/AlarmFeedService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* Services/AlarmFeedService.swift */; };
+		A10000000000000000000009 /* Views/AlarmFeedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000009 /* Views/AlarmFeedView.swift */; };
 		A1000000000000000000000A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000A /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		A20000000000000000000001 /* CherryDeneMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CherryDeneMobileApp.swift; sourceTree = "<group>"; };
-		A20000000000000000000002 /* AppSettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models/AppSettingsStore.swift; sourceTree = "<group>"; };
-		A20000000000000000000003 /* NotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/NotificationManager.swift; sourceTree = "<group>"; };
-		A20000000000000000000004 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/RootTabView.swift; sourceTree = "<group>"; };
-		A20000000000000000000005 /* DashboardWebContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/DashboardWebContainer.swift; sourceTree = "<group>"; };
-		A20000000000000000000006 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/SettingsView.swift; sourceTree = "<group>"; };
-		A20000000000000000000007 /* AlarmModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models/AlarmModels.swift; sourceTree = "<group>"; };
-		A20000000000000000000008 /* AlarmFeedService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/AlarmFeedService.swift; sourceTree = "<group>"; };
-		A20000000000000000000009 /* AlarmFeedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/AlarmFeedView.swift; sourceTree = "<group>"; };
+		A20000000000000000000002 /* Models/AppSettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettingsStore.swift; sourceTree = "<group>"; };
+		A20000000000000000000003 /* Services/NotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationManager.swift; sourceTree = "<group>"; };
+		A20000000000000000000004 /* Views/RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
+		A20000000000000000000005 /* Views/DashboardWebContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardWebContainer.swift; sourceTree = "<group>"; };
+		A20000000000000000000006 /* Views/SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		A20000000000000000000007 /* Models/AlarmModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlarmModels.swift; sourceTree = "<group>"; };
+		A20000000000000000000008 /* Services/AlarmFeedService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlarmFeedService.swift; sourceTree = "<group>"; };
+		A20000000000000000000009 /* Views/AlarmFeedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlarmFeedView.swift; sourceTree = "<group>"; };
 		A2000000000000000000000A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A2000000000000000000000B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A2000000000000000000000C /* CherryDeneMobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = CherryDeneMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -63,7 +63,7 @@
 				A2000000000000000000000A /* Assets.xcassets */,
 				A2000000000000000000000B /* Info.plist */,
 			);
-			path = CherryDeneMobile;
+			name = CherryDeneMobile;
 			sourceTree = "<group>";
 		};
 		A40000000000000000000003 /* Products */ = {
@@ -77,8 +77,8 @@
 		A40000000000000000000004 /* Models */ = {
 			isa = PBXGroup;
 			children = (
-				A20000000000000000000002 /* AppSettingsStore.swift */,
-				A20000000000000000000007 /* AlarmModels.swift */,
+				A20000000000000000000002 /* Models/AppSettingsStore.swift */,
+				A20000000000000000000007 /* Models/AlarmModels.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -86,8 +86,8 @@
 		A40000000000000000000005 /* Services */ = {
 			isa = PBXGroup;
 			children = (
-				A20000000000000000000003 /* NotificationManager.swift */,
-				A20000000000000000000008 /* AlarmFeedService.swift */,
+				A20000000000000000000003 /* Services/NotificationManager.swift */,
+				A20000000000000000000008 /* Services/AlarmFeedService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -95,10 +95,10 @@
 		A40000000000000000000006 /* Views */ = {
 			isa = PBXGroup;
 			children = (
-				A20000000000000000000004 /* RootTabView.swift */,
-				A20000000000000000000005 /* DashboardWebContainer.swift */,
-				A20000000000000000000006 /* SettingsView.swift */,
-				A20000000000000000000009 /* AlarmFeedView.swift */,
+				A20000000000000000000004 /* Views/RootTabView.swift */,
+				A20000000000000000000005 /* Views/DashboardWebContainer.swift */,
+				A20000000000000000000006 /* Views/SettingsView.swift */,
+				A20000000000000000000009 /* Views/AlarmFeedView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -172,15 +172,15 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A10000000000000000000007 /* AlarmModels.swift in Sources */,
-				A10000000000000000000008 /* AlarmFeedService.swift in Sources */,
-				A10000000000000000000009 /* AlarmFeedView.swift in Sources */,
-				A10000000000000000000002 /* AppSettingsStore.swift in Sources */,
+				A10000000000000000000007 /* Models/AlarmModels.swift in Sources */,
+				A10000000000000000000008 /* Services/AlarmFeedService.swift in Sources */,
+				A10000000000000000000009 /* Views/AlarmFeedView.swift in Sources */,
+				A10000000000000000000002 /* Models/AppSettingsStore.swift in Sources */,
 				A10000000000000000000001 /* CherryDeneMobileApp.swift in Sources */,
-				A10000000000000000000005 /* DashboardWebContainer.swift in Sources */,
-				A10000000000000000000003 /* NotificationManager.swift in Sources */,
-				A10000000000000000000004 /* RootTabView.swift in Sources */,
-				A10000000000000000000006 /* SettingsView.swift in Sources */,
+				A10000000000000000000005 /* Views/DashboardWebContainer.swift in Sources */,
+				A10000000000000000000003 /* Services/NotificationManager.swift in Sources */,
+				A10000000000000000000004 /* Views/RootTabView.swift in Sources */,
+				A10000000000000000000006 /* Views/SettingsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -191,13 +191,17 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = CherryDeneMobile/Info.plist;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "CDF Dash";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -207,6 +211,9 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.cherrydene.mobile;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -217,13 +224,17 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = CherryDeneMobile/Info.plist;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "CDF Dash";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -233,6 +244,9 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.cherrydene.mobile;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
