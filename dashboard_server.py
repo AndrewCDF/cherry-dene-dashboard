@@ -1362,12 +1362,16 @@ def push_shed_state_to_controller_async(shed_no):
     threading.Thread(target=worker, daemon=True).start()
 
 
-def apply_external_shed_entries(shed_no, incoming_entries, source):
+def apply_external_shed_entries(shed_no, incoming_entries, source, controller_meta=None):
     state = load_shed_entries_state()
     shed_name = shed_name_from_number(shed_no)
     entries = ensure_shed_entry_bucket(state, shed_name)
     now_ts = int(time.time())
     changed = False
+    try:
+        controller_seen_sync_version = int((controller_meta or {}).get("last_seen_office_sync_version") or 0)
+    except Exception:
+        controller_seen_sync_version = 0
 
     cleaned_incoming = {}
     if isinstance(incoming_entries, dict):
@@ -1401,6 +1405,19 @@ def apply_external_shed_entries(shed_no, incoming_entries, source):
     for key in existing_keys:
         if key not in cleaned_incoming:
             prev = clean_entry_record(entries.get(key, {}))
+            try:
+                prev_updated_ts = int(prev.get("updated_ts") or 0)
+            except Exception:
+                prev_updated_ts = 0
+            if prev["bird_count"] > 0 and controller_seen_sync_version > 0 and prev_updated_ts >= controller_seen_sync_version:
+                log_event(
+                    "office",
+                    "entry_sync_delete_blocked",
+                    "Blocked stale controller delete by omission",
+                    shed_no=shed_no,
+                    detail="Entry Shed %s retained in %s" % (key, shed_name),
+                )
+                continue
             if prev["bird_count"] > 0 or prev["crop_id"] is not None:
                 log_crop_event(shed_name, prev, False)
                 changed = True
@@ -3054,7 +3071,7 @@ HTML = """
                     <div class="head">
                         <div class="head-left">
                             <div class="shed">{{ s.shed }}</div>
-                            <div class="birds-top">Birds: <span id="shed-birds-remaining-{{ s.shed_no }}">{{ s.birds_remaining }}</span> (<span id="shed-birds-placed-{{ s.shed_no }}">{{ s.birds_placed }}</span> placed) • Age: <span id="shed-age-{{ s.shed_no }}">{{ s.bird_age }}</span></div>
+                            <div class="birds-top">Birds: <span id="shed-birds-remaining-{{ s.shed_no }}">{{ s.birds_remaining }}</span> (<span id="shed-birds-placed-{{ s.shed_no }}">{{ s.birds_placed }}</span>) • Age: <span id="shed-age-{{ s.shed_no }}">{{ s.bird_age }}</span></div>
                             {% if s.allocation_text %}
                             <div id="shed-alloc-{{ s.shed_no }}" class="alloc-top">{{ s.allocation_text }}</div>
                             {% endif %}
@@ -5865,7 +5882,7 @@ def shed_sync_post(shed_no):
     payload = request.get_json(silent=True) or {}
     incoming_entries = payload.get("entries", {})
     incoming_controller_meta = payload.get("controller_meta")
-    changed = apply_external_shed_entries(shed_no, incoming_entries, source="controller")
+    changed = apply_external_shed_entries(shed_no, incoming_entries, source="controller", controller_meta=incoming_controller_meta)
     if isinstance(incoming_controller_meta, dict):
         save_controller_meta_for_shed(shed_no, incoming_controller_meta)
         log_event("controller", "controller_meta", "Controller telemetry updated", shed_no=shed_no)
