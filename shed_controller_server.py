@@ -4764,13 +4764,17 @@ def apply_update_view():
         return redirect(url_for("controller_settings_view"))
 
     branch = status.get("branch") or "main"
+    remote_commit = status.get("remote_commit") or "--"
     code, stdout, stderr = run_git_command(["pull", "--ff-only", "origin", branch], timeout=60)
     save_update_status({
         "checked_at": int(time.time()),
+        "branch": branch,
         "ok": code == 0,
         "status": "Update applied. Restarting controller..." if code == 0 else (stderr or stdout or "Update failed"),
         "restart_required": code == 0,
         "update_available": False if code == 0 else True,
+        "local_commit": remote_commit if code == 0 else status.get("local_commit", "--"),
+        "remote_commit": remote_commit,
     })
 
     if code != 0:
