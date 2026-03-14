@@ -1043,9 +1043,7 @@ HOME_HTML = """
       </div>
       <div class="hero-pills">
         <div class="pill-grid">
-          {% if not hide_home_alerts %}
           <div id="alarmPill" class="pill {{ alarm_class }}"><span class="pill-label">Alarm</span><span class="pill-value" id="alarmValue">{{ alarm_short }}</span></div>
-          {% endif %}
           <div id="officePill" class="pill {{ office_class }}"><span class="pill-label">Office Link</span><span class="pill-value" id="officeValue">{{ office_short }}</span></div>
           <div id="syncPill" class="pill {{ sync_class }}"><span class="pill-label">Office Sync</span><span class="pill-value" id="syncValue">{{ sync_short }}</span></div>
           <div id="picoPill" class="pill {{ pico_class }}"><span class="pill-label">Pico</span><span class="pill-value" id="picoValue">{{ pico_short }}</span></div>
