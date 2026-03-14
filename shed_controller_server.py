@@ -34,8 +34,6 @@ TOUCH_OPTIMIZE_HEAD = (
     '<style id="cdf-touch-optimize">'
     'html,body{touch-action:pan-y;overscroll-behavior-y:contain;-webkit-overflow-scrolling:touch;}'
     'body,*{-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none;}'
-    'html,body,*{scrollbar-width:none;}'
-    'html::-webkit-scrollbar,body::-webkit-scrollbar,*::-webkit-scrollbar{display:none;width:0;height:0;}'
     'body,div,span,p,h1,h2,h3,h4,h5,h6,table,thead,tbody,tr,th,td,a,button,label,.button-link,.metric-link,.settings-button{-webkit-user-select:none;user-select:none;}'
     'a,.button-link,.metric-link,.settings-button{touch-action:pan-y;}'
     'button,input,select,textarea,label,summary{touch-action:manipulation;}'
