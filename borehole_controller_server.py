@@ -1002,14 +1002,14 @@ HOME_HTML = """
     .pill.bad { border-color:#ff5b5b; box-shadow:0 0 10px rgba(255,91,91,0.24); }
     .top-grid { margin-top:16px; display:grid; grid-template-columns:1fr 1fr; gap:16px; }
     .metric-link { color:inherit; text-decoration:none; display:block; }
-    .metric { min-height:160px; border-radius:20px; padding:16px; background:var(--panel); border:1px solid var(--line); }
+    .metric { min-height:176px; border-radius:20px; padding:16px; background:var(--panel); border:1px solid var(--line); }
     .metric-label { color:var(--muted); font-size:14px; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:12px; }
     .metric-val { font-size:42px; font-weight:700; line-height:1; }
     .metric-sub { margin-top:10px; font-size:15px; color:var(--muted); }
     .metric.flow-green { border-color:#35d07f; box-shadow:0 0 10px rgba(53,208,127,0.95),0 0 20px rgba(53,208,127,0.65),0 0 34px rgba(53,208,127,0.35); }
     .metric.flow-red { border-color:#ff5b5b; box-shadow:0 0 10px rgba(255,91,91,0.95),0 0 20px rgba(255,91,91,0.65),0 0 34px rgba(255,91,91,0.35); }
     .settings-row { margin-top:16px; }
-    .settings-button { display:flex; align-items:center; justify-content:center; gap:14px; min-height:84px; border-radius:16px; border:1px solid var(--line); background:linear-gradient(180deg, #7a7a7a, #676767); color:var(--text); text-decoration:none; font-size:26px; font-weight:700; }
+    .settings-button { display:flex; align-items:center; justify-content:center; gap:14px; min-height:92px; border-radius:16px; border:1px solid var(--line); background:linear-gradient(180deg, #7a7a7a, #676767); color:var(--text); text-decoration:none; font-size:26px; font-weight:700; }
     .msg { margin-bottom:14px; padding:10px 12px; border-radius:12px; background:var(--panel); border:1px solid var(--line); }
     @media (min-width: 901px) and (max-width: 1100px) and (max-height: 700px) {
       .wrap { padding:10px 12px 12px; }
@@ -1022,12 +1022,12 @@ HOME_HTML = """
       .pill-label { font-size:7px; }
       .pill-value { font-size:11px; }
       .top-grid { margin-top:10px; gap:10px; }
-      .metric { min-height:100px; border-radius:16px; padding:10px; }
+      .metric { min-height:112px; border-radius:16px; padding:10px; }
       .metric-label { margin-bottom:8px; font-size:12px; }
       .metric-val { font-size:30px; }
       .metric-sub { margin-top:6px; font-size:12px; }
       .settings-row { margin-top:10px; }
-      .settings-button { min-height:58px; border-radius:14px; font-size:20px; }
+      .settings-button { min-height:64px; border-radius:14px; font-size:20px; }
       .msg { margin-bottom:10px; padding:10px 12px; border-radius:14px; font-size:15px; }
     }
     @media (max-width:900px) { .pill-grid,.top-grid { grid-template-columns:1fr; } }
