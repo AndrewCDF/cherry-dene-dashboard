@@ -300,23 +300,27 @@ def restart_self_delayed(delay_seconds=1.0):
 
 
 def restart_service_or_self(delay_seconds=1.0):
-    for executable, args in SERVICE_RESTART_PATHS:
-        if not os.path.exists(executable):
-            continue
-        try:
-            proc = subprocess.run(
-                ["sudo", "-n", executable] + list(args),
-                cwd=APP_ROOT,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if proc.returncode == 0:
-                return True
-        except Exception:
-            pass
-    restart_self_delayed(delay_seconds)
-    return False
+    def _restart_service():
+        time.sleep(delay_seconds)
+        for executable, args in SERVICE_RESTART_PATHS:
+            if not os.path.exists(executable):
+                continue
+            try:
+                proc = subprocess.run(
+                    ["sudo", "-n", executable] + list(args),
+                    cwd=APP_ROOT,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if proc.returncode == 0:
+                    return
+            except Exception:
+                pass
+        restart_self_delayed(0.1)
+
+    threading.Thread(target=_restart_service, daemon=True).start()
+    return True
 
 
 def run_system_action(action_name):
@@ -4822,7 +4826,7 @@ def apply_update_view():
     if code != 0:
         return redirect(url_for("controller_settings_view"))
 
-    restart_service_or_self(1.0)
+    restart_service_or_self(2.5)
     return render_template_string(
         """
 <!doctype html>
