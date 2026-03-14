@@ -2301,6 +2301,7 @@ def build_overall_summary():
 
     total_birds_remaining = 0
     total_birds_placed = 0
+    total_mortality = 0
     total_water = 0.0
     total_feed = 0.0
     i = 0
@@ -2316,7 +2317,9 @@ def build_overall_summary():
         total_birds_remaining += birds_remaining
         total_birds_placed += birds_remaining
         if current_crop_id not in [None, ""]:
-            total_birds_placed += mortality_total_for_shed_crop(shed_name, current_crop_id)
+            shed_mortality = mortality_total_for_shed_crop(shed_name, current_crop_id)
+            total_mortality += shed_mortality
+            total_birds_placed += shed_mortality
 
         crop = active_crop_record_for_shed(shed_name)
         try:
@@ -2345,11 +2348,24 @@ def build_overall_summary():
         i += 1
 
     tile_state = "online" if current_crop_id not in [None, ""] else "offline"
+    mortality_pct = None
+    try:
+        if total_birds_placed > 0 and total_mortality > 0:
+            mortality_pct = (float(total_mortality) / float(total_birds_placed)) * 100.0
+    except Exception:
+        mortality_pct = None
 
     return {
         "tile_state": tile_state,
         "birds_placed": fmt_value(total_birds_placed if total_birds_placed > 0 else None, "i"),
         "birds_remaining": fmt_value(total_birds_remaining if total_birds_remaining > 0 else None, "i"),
+        "mortality_total": fmt_value(total_mortality if total_mortality > 0 else None, "i"),
+        "mortality_pct": fmt_value(mortality_pct, "f1"),
+        "mortality_display": (
+            "%s (%s%%)" % (fmt_value(total_mortality, "i"), fmt_value(mortality_pct, "f1"))
+            if total_mortality > 0 and mortality_pct is not None
+            else fmt_value(total_mortality if total_mortality > 0 else None, "i")
+        ),
         "water": fmt_value(total_water if total_water > 0 else None, "f0"),
         "feed": fmt_value(total_feed if total_feed > 0 else None, "f1"),
         "farm_crop_id": fmt_crop_code(farm_crop.get("current_crop_id"), current_crop_epoch),
@@ -2415,6 +2431,12 @@ def build_rows():
         except Exception:
             mortality_total_i = 0
         birds_placed = birds + mortality_total_i if (birds > 0 or mortality_total_i > 0) else None
+        mortality_pct = None
+        try:
+            if birds_placed not in [None, 0] and mortality_total_i > 0:
+                mortality_pct = (float(mortality_total_i) / float(birds_placed)) * 100.0
+        except Exception:
+            mortality_pct = None
         allocation_text = entry_summary_text(shed_no, active_entries)
 
         crop_id = crop.get("crop_id")
@@ -2558,6 +2580,12 @@ def build_rows():
             "total_feed_to_date": fmt_value(total_feed_to_date, "f1"),
             "allocation_text": allocation_text,
             "mortality_total": fmt_value(mortality_total, "i"),
+            "mortality_pct": fmt_value(mortality_pct, "f1"),
+            "mortality_display": (
+                "%s (%s%%)" % (fmt_value(mortality_total, "i"), fmt_value(mortality_pct, "f1"))
+                if mortality_total_i > 0 and mortality_pct is not None
+                else fmt_value(mortality_total, "i")
+            ),
             "sync_pill_class": sync_pill_class,
             "sync_pill_text": sync_pill_text,
         })
@@ -3007,7 +3035,7 @@ HTML = """
         }
         .summary-grid {
             display: grid;
-            grid-template-columns: repeat(5, 1fr);
+            grid-template-columns: minmax(0, 1.35fr) repeat(5, minmax(0, 0.93fr));
             gap: 10px;
         }
         .summary-box {
@@ -3015,16 +3043,29 @@ HTML = """
             border: 1px solid #858585;
             border-radius: 10px;
             padding: 10px 12px;
+            min-width: 0;
+        }
+        .summary-box-primary {
+            padding: 10px 12px;
+        }
+        .summary-box-compact {
+            padding: 10px 10px;
         }
         .summary-label {
             font-size: 12px;
             color: #d2d2d2;
+        }
+        .summary-box-compact .summary-label {
+            font-size: 11px;
         }
         .summary-val {
             font-size: 30px;
             font-weight: bold;
             margin-top: 4px;
             line-height: 1.1;
+        }
+        .summary-box-compact .summary-val {
+            font-size: 28px;
         }
         @media (max-width: 1700px) {
             .grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
@@ -3036,12 +3077,12 @@ HTML = """
             .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         }
         @media (max-width: 900px) {
-            .summary-grid { grid-template-columns: 1fr 1fr; }
+            .summary-grid { grid-template-columns: minmax(0, 1.25fr) repeat(5, minmax(0, 0.95fr)); }
         }
         @media (max-width: 700px) {
             .grid { grid-template-columns: 1fr; }
             .datetime { font-size: 16px; }
-            .summary-grid { grid-template-columns: 1fr; }
+            .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
             .topbar { grid-template-columns: 1fr; }
             .topbar-left, .topbar-center, .topbar-right { justify-self: center; }
         }
@@ -3155,7 +3196,7 @@ HTML = """
                             </div>
                             <div class="metric">
                                 <div class="metric-label">Mortality</div>
-                                <div id="shed-mortality-{{ s.shed_no }}" class="metric-val">{{ s.mortality_total }}</div>
+                                <div id="shed-mortality-{{ s.shed_no }}" class="metric-val">{{ s.mortality_display }}</div>
                             </div>
                         </div>
                     </div>
@@ -3239,23 +3280,27 @@ HTML = """
         <div id="overall-tile" class="summary-tile {{ overall.tile_state }}">
             <div class="summary-title">Current Crop Overall</div>
             <div class="summary-grid">
-                <div class="summary-box">
+                <div class="summary-box summary-box-primary">
                     <div class="summary-label">Farm Crop ID</div>
                     <div id="overall-crop" class="summary-val">{{ overall.farm_crop_id }}</div>
                 </div>
-                <div class="summary-box">
+                <div class="summary-box summary-box-compact">
                     <div class="summary-label">Birds Placed</div>
                     <div id="overall-birds-placed" class="summary-val">{{ overall.birds_placed }}</div>
                 </div>
-                <div class="summary-box">
+                <div class="summary-box summary-box-compact">
                     <div class="summary-label">Birds Remaining</div>
                     <div id="overall-birds-remaining" class="summary-val">{{ overall.birds_remaining }}</div>
                 </div>
-                <div class="summary-box">
+                <div class="summary-box summary-box-compact">
+                    <div class="summary-label">Total Mortality</div>
+                    <div id="overall-mortality" class="summary-val">{{ overall.mortality_display }}</div>
+                </div>
+                <div class="summary-box summary-box-compact">
                     <div class="summary-label">Total Water L</div>
                     <div id="overall-water" class="summary-val">{{ overall.water }}</div>
                 </div>
-                <div class="summary-box">
+                <div class="summary-box summary-box-compact">
                     <div class="summary-label">Total Feed KG</div>
                     <div id="overall-feed" class="summary-val">{{ overall.feed }}</div>
                 </div>
@@ -3320,7 +3365,7 @@ function renderShed(s) {
     setDashText(`shed-feed-${s.shed_no}`, s.feed_kg);
     setDashText(`shed-water7-${s.shed_no}`, s.water_7to7);
     setDashText(`shed-feed7-${s.shed_no}`, s.feed_7to7);
-    setDashText(`shed-mortality-${s.shed_no}`, s.mortality_total);
+    setDashText(`shed-mortality-${s.shed_no}`, s.mortality_display || s.mortality_total);
     setDashText(`shed-updated-${s.shed_no}`, s.updated);
     setDashClass(`shed-card-${s.shed_no}`, [s.alarm_active ? 'alarm' : s.tile_state, s.has_data ? '' : 'nodata'], ['alarm', 'online', 'offline', 'nodata']);
     setDashClass(`shed-water-tile-${s.shed_no}`, [s.water_glow], ['flow-green', 'flow-red']);
@@ -3372,6 +3417,7 @@ function renderOverall(o) {
     setDashText('overall-crop', o.farm_crop_id);
     setDashText('overall-birds-placed', o.birds_placed);
     setDashText('overall-birds-remaining', o.birds_remaining);
+    setDashText('overall-mortality', o.mortality_display || o.mortality_total);
     setDashText('overall-water', o.water);
     setDashText('overall-feed', o.feed);
     setHeaderClass(o.farm_crop_id && o.farm_crop_id !== '--');
