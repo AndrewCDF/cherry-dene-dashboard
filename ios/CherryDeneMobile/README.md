@@ -8,12 +8,11 @@ Current scope:
 - Native iPhone/iPad app shell
 - Tabs for:
   - Office dashboard
-  - Shed controller
+  - Alarms
   - Bore hole controller
-  - Farm health
   - Settings
 - Embedded `WKWebView` views for the existing Flask dashboards
-- Local app settings for controller/dashboard URLs
+- Local app settings for office and bore hole URLs
 - Notification permission plumbing ready for future alarm notifications
 
 What this is not yet:
@@ -30,10 +29,9 @@ Recommended setup:
 Suggested first-run local URLs:
 
 - Office: `http://127.0.0.1:8090`
-- Shed: `http://127.0.0.1:8091`
 - Bore hole: `http://127.0.0.1:8092`
 
-For real device use on your farm network, change them to the office/shed Pi IPs.
+For real device use on your farm network, change them to the office and bore hole Pi IPs.
 
 Push notifications later:
 

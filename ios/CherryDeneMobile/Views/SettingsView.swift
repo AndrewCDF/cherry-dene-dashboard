@@ -8,27 +8,11 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Dashboard URLs") {
+                Section("Office Dashboard") {
                     TextField("Office dashboard URL", text: $settings.officeBaseURL)
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
                         .autocorrectionDisabled()
-
-                    TextField("Shed controller URL", text: $settings.shedBaseURL)
-                        .textInputAutocapitalization(.never)
-                        .keyboardType(.URL)
-                        .autocorrectionDisabled()
-
-                    TextField("Bore hole controller URL", text: $settings.boreholeBaseURL)
-                        .textInputAutocapitalization(.never)
-                        .keyboardType(.URL)
-                        .autocorrectionDisabled()
-                }
-
-                Section("Controller Defaults") {
-                    Stepper(value: $settings.defaultShedNumber, in: 1...20) {
-                        Text("Default shed: \(settings.defaultShedNumber)")
-                    }
                 }
 
                 Section("Notifications") {
@@ -49,7 +33,7 @@ struct SettingsView: View {
                 }
 
                 Section("About") {
-                    Text("This app is a native SwiftUI shell around the Cherry Dene office, shed, bore hole, and farm health dashboards.")
+                    Text("This app shows the office dashboard, active alarms, and the bore hole in a native layout.")
                     Text("Real alarm push notifications need backend and APNs work later.")
                         .foregroundStyle(.secondary)
                 }

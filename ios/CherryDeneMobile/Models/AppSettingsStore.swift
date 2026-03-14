@@ -3,9 +3,6 @@ import SwiftUI
 
 final class AppSettingsStore: ObservableObject {
     @AppStorage("officeBaseURL") var officeBaseURL: String = "http://127.0.0.1:8090"
-    @AppStorage("shedBaseURL") var shedBaseURL: String = "http://127.0.0.1:8091"
-    @AppStorage("boreholeBaseURL") var boreholeBaseURL: String = "http://127.0.0.1:8092"
-    @AppStorage("defaultShedNumber") var defaultShedNumber: Int = 1
     @AppStorage("notificationsEnabled") var notificationsEnabled: Bool = false
 
     func normalizedURL(_ raw: String) -> String {
@@ -17,7 +14,8 @@ final class AppSettingsStore: ObservableObject {
     }
 
     var officeDashboardURL: URL? { URL(string: normalizedURL(officeBaseURL)) }
-    var officeFarmHealthURL: URL? { URL(string: normalizedURL(officeBaseURL) + "/farm-health") }
-    var shedControllerURL: URL? { URL(string: normalizedURL(shedBaseURL)) }
-    var boreholeControllerURL: URL? { URL(string: normalizedURL(boreholeBaseURL)) }
+    var officeBoreholeURL: URL? {
+        guard let base = officeDashboardURL else { return nil }
+        return base.appending(path: "borehole")
+    }
 }
