@@ -3139,7 +3139,7 @@ HTML = """
                 margin-bottom: 10px;
             }
             .metric {
-                min-height: 122px;
+                min-height: 132px;
                 border-radius: 16px;
                 padding: 10px;
             }
