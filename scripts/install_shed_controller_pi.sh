@@ -76,6 +76,13 @@ EOF
 sudo install -m 644 /tmp/shed-controller.service /etc/systemd/system/shed-controller.service
 rm -f /tmp/shed-controller.service
 
+cat > /tmp/cherry-dene-controller-power <<EOF
+$USER_NAME ALL=(root) NOPASSWD: /sbin/shutdown, /usr/sbin/shutdown, /sbin/reboot, /usr/sbin/reboot
+EOF
+
+sudo install -m 440 /tmp/cherry-dene-controller-power /etc/sudoers.d/cherry-dene-controller-power
+rm -f /tmp/cherry-dene-controller-power
+
 cat > "$USER_HOME/.config/labwc/autostart" <<EOF
 bash $APP_DIR/pi_kiosk/kiosk.sh http://127.0.0.1:8091 &
 EOF
@@ -104,4 +111,5 @@ echo
 echo "Shed controller install complete."
 echo "Local URL: http://127.0.0.1:8091"
 echo "Service: shed-controller.service"
+echo "Power actions: shutdown/reboot buttons enabled for $USER_NAME"
 echo "Reboot recommended to test kiosk startup."

@@ -104,6 +104,10 @@ BACKUP_KEEP_COUNT = 6
 LOCAL_DASHBOARD_PULL_SECONDS = 1
 LOCAL_DASHBOARD_HEARTBEAT_SECONDS = 10
 LOCAL_BACKGROUND_SYNC_LOOP_SECONDS = 5
+SYSTEM_ACTION_PATHS = {
+    "shutdown": [("/sbin/shutdown", ["-h", "now"]), ("/usr/sbin/shutdown", ["-h", "now"])],
+    "reboot": [("/sbin/reboot", []), ("/usr/sbin/reboot", [])],
+}
 
 
 def ensure_data_dir():
@@ -278,6 +282,35 @@ def restart_self_delayed(delay_seconds=1.0):
         os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)])
 
     threading.Thread(target=_restart, daemon=True).start()
+
+
+def run_system_action(action_name):
+    action_paths = SYSTEM_ACTION_PATHS.get(action_name, [])
+    executable = None
+    extra_args = []
+    for candidate, args in action_paths:
+        if os.path.exists(candidate):
+            executable = candidate
+            extra_args = list(args)
+            break
+    if not executable:
+        return False, "System action is not available on this controller"
+    try:
+        proc = subprocess.run(
+            ["sudo", "-n", executable] + extra_args,
+            cwd=APP_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception as exc:
+        return False, str(exc)
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        if not detail:
+            detail = "Passwordless sudo is not configured for this controller"
+        return False, detail
+    return True, ""
 
 
 def deploy_pico_firmware():
@@ -3212,6 +3245,9 @@ SETTINGS_HTML = """
             grid-template-columns: 1fr;
             gap: 12px;
         }
+        .action-form {
+            margin: 0;
+        }
         .button-link {
             display: block;
             min-height: 74px;
@@ -3226,6 +3262,9 @@ SETTINGS_HTML = """
             text-align: center;
             line-height: 74px;
             white-space: nowrap;
+        }
+        .button-icon {
+            margin-right: 10px;
         }
         .full-panel {
             margin-top: 16px;
@@ -3252,6 +3291,14 @@ SETTINGS_HTML = """
             margin: 12px 0 0;
             color: var(--muted);
             font-size: 16px;
+        }
+        .msg {
+            margin-bottom: 16px;
+            padding: 12px 14px;
+            border-radius: 14px;
+            border: 1px solid #8a8a8a;
+            background: rgba(115, 115, 115, 0.96);
+            font-size: 18px;
         }
         .button-row {
             display: grid;
@@ -3308,6 +3355,7 @@ SETTINGS_HTML = """
 </head>
 <body>
     <div class="wrap">
+        {% if msg %}<div class="msg">{{ msg }}</div>{% endif %}
         <div class="topbar"><a href="{{ url_for('index') }}">← Back</a></div>
         <div class="grid">
             <div class="panel">
@@ -3320,6 +3368,12 @@ SETTINGS_HTML = """
                     <a class="button-link" href="{{ url_for('controller_events_view') }}">Event Log</a>
                     <a class="button-link" href="{{ url_for('controller_config_view') }}">Controller Config</a>
                     <a class="button-link" href="{{ url_for('controller_health_view') }}">Controller Health</a>
+                    <form class="action-form" method="post" action="{{ url_for('controller_reboot_view') }}" onsubmit="return confirm('Reboot this controller Pi now?');">
+                        <button class="secondary" type="submit"><span class="button-icon">↻</span>Reboot</button>
+                    </form>
+                    <form class="action-form" method="post" action="{{ url_for('controller_shutdown_view') }}" onsubmit="return confirm('Shut down this controller Pi now?');">
+                        <button class="secondary" type="submit"><span class="button-icon">⏻</span>Shutdown</button>
+                    </form>
                 </div>
             </div>
             <div class="panel">
@@ -4691,6 +4745,7 @@ def controller_settings_view():
     ctx["update_checked_at"] = fmt_ts(checked_at) if checked_at else "--"
     ctx["pico_update_status"] = pico_update_status
     ctx["pico_deployed_at"] = fmt_ts(pico_update_status.get("last_deployed_at"))
+    ctx["msg"] = request.args.get("msg", "")
     return render_template_string(SETTINGS_HTML, **ctx)
 
 
@@ -4754,6 +4809,74 @@ def apply_update_view():
 def apply_pico_update_view():
     deploy_pico_firmware()
     return redirect(url_for("controller_settings_view"))
+
+
+@app.route("/settings/system/reboot", methods=["POST"])
+def controller_reboot_view():
+    ok, detail = run_system_action("reboot")
+    if not ok:
+        return redirect(url_for("controller_settings_view", msg="Reboot failed: %s" % detail))
+    return render_template_string(
+        """
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Rebooting Controller</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <style>
+        body { margin:0; background:#5b5b5b; color:#ececec; font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; }
+        .wrap { max-width:760px; margin:0 auto; padding:32px 18px; }
+        .panel { background:rgba(115,115,115,0.96); border:1px solid #8a8a8a; border-radius:20px; padding:24px; }
+        h1 { margin:0 0 12px 0; font-size:34px; }
+        .sub { color:#d2d2d2; font-size:18px; }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="panel">
+            <h1>↻ Rebooting Controller</h1>
+            <div class="sub">This Pi is restarting now. The shed screen should return automatically after boot.</div>
+        </div>
+    </div>
+</body>
+</html>
+        """
+    )
+
+
+@app.route("/settings/system/shutdown", methods=["POST"])
+def controller_shutdown_view():
+    ok, detail = run_system_action("shutdown")
+    if not ok:
+        return redirect(url_for("controller_settings_view", msg="Shutdown failed: %s" % detail))
+    return render_template_string(
+        """
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Shutting Down Controller</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <style>
+        body { margin:0; background:#5b5b5b; color:#ececec; font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; }
+        .wrap { max-width:760px; margin:0 auto; padding:32px 18px; }
+        .panel { background:rgba(115,115,115,0.96); border:1px solid #8a8a8a; border-radius:20px; padding:24px; }
+        h1 { margin:0 0 12px 0; font-size:34px; }
+        .sub { color:#d2d2d2; font-size:18px; }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="panel">
+            <h1>⏻ Shutting Down Controller</h1>
+            <div class="sub">This Pi is powering down now. Wait for the screen to go dark before disconnecting power.</div>
+        </div>
+    </div>
+</body>
+</html>
+        """
+    )
 
 
 @app.route("/allocation")

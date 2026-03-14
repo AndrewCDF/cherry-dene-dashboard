@@ -31,6 +31,10 @@ LOCAL_OFFICE_HEARTBEAT_SECONDS = 10
 LOCAL_BACKGROUND_SYNC_LOOP_SECONDS = 5
 SENSOR_STALE_SECONDS = 30
 NO_FLOW_EPSILON_LPM = 0.01
+SYSTEM_ACTION_PATHS = {
+    "shutdown": [("/sbin/shutdown", ["-h", "now"]), ("/usr/sbin/shutdown", ["-h", "now"])],
+    "reboot": [("/sbin/reboot", []), ("/usr/sbin/reboot", [])],
+}
 
 
 app = Flask(__name__)
@@ -145,6 +149,35 @@ def fmt_age_seconds(ts):
     if age < 3600:
         return "%dm ago" % (age // 60)
     return "%dh %02dm ago" % (age // 3600, (age % 3600) // 60)
+
+
+def run_system_action(action_name):
+    action_paths = SYSTEM_ACTION_PATHS.get(action_name, [])
+    executable = None
+    extra_args = []
+    for candidate, args in action_paths:
+        if os.path.exists(candidate):
+            executable = candidate
+            extra_args = list(args)
+            break
+    if not executable:
+        return False, "System action is not available on this controller"
+    try:
+        proc = subprocess.run(
+            ["sudo", "-n", executable] + extra_args,
+            cwd=APP_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception as exc:
+        return False, str(exc)
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        if not detail:
+            detail = "Passwordless sudo is not configured for this controller"
+        return False, detail
+    return True, ""
 
 
 def local_ip_address():
@@ -947,6 +980,9 @@ SETTINGS_HTML = """
       grid-template-columns:1fr;
       gap:12px;
     }
+    .action-form {
+      margin:0;
+    }
     .button-link {
       display:block;
       min-height:74px;
@@ -961,6 +997,9 @@ SETTINGS_HTML = """
       text-align:center;
       line-height:74px;
       white-space:nowrap;
+    }
+    .button-icon {
+      margin-right:10px;
     }
     .full-panel {
       margin-top:16px;
@@ -987,6 +1026,14 @@ SETTINGS_HTML = """
       margin:12px 0 0;
       color:var(--muted);
       font-size:16px;
+    }
+    .msg {
+      margin-bottom:16px;
+      padding:12px 14px;
+      border-radius:14px;
+      border:1px solid #8a8a8a;
+      background:rgba(115,115,115,0.96);
+      font-size:18px;
     }
     .button-row {
       display:grid;
@@ -1043,6 +1090,7 @@ SETTINGS_HTML = """
 </head>
 <body>
   <div class="wrap">
+    {% if msg %}<div class="msg">{{ msg }}</div>{% endif %}
     <div class="topbar"><a href="{{ url_for('index') }}">← Back</a></div>
     <div class="grid">
       <div class="panel">
@@ -1056,6 +1104,12 @@ SETTINGS_HTML = """
           <a class="button-link" href="{{ url_for('events_view') }}">Event Log</a>
           <a class="button-link" href="{{ url_for('config_view') }}">Controller Config</a>
           <a class="button-link" href="{{ url_for('health_view') }}">Controller Health</a>
+          <form class="action-form" method="post" action="{{ url_for('controller_reboot_view') }}" onsubmit="return confirm('Reboot this controller Pi now?');">
+            <button class="secondary" type="submit"><span class="button-icon">↻</span>Reboot</button>
+          </form>
+          <form class="action-form" method="post" action="{{ url_for('controller_shutdown_view') }}" onsubmit="return confirm('Shut down this controller Pi now?');">
+            <button class="secondary" type="submit"><span class="button-icon">⏻</span>Shutdown</button>
+          </form>
         </div>
       </div>
       <div class="panel">
@@ -1405,6 +1459,7 @@ def settings_view():
     alarm_count = len(state.get("sensors", {}).get("controller_alarms", []))
     return render_template_string(
         SETTINGS_HTML,
+        msg=request.args.get("msg", ""),
         update=check_for_update(),
         pico_status=state.get("last_pico_update_status", "Not run"),
         last_backup=fmt_ts(state.get("last_backup_ts")),
@@ -1796,6 +1851,42 @@ def pico_update_view():
         msg = str(exc)
     mutate_state(lambda state: state.update({"last_pico_update_status": msg}))
     return redirect(url_for("settings_view", msg=msg))
+
+
+@app.route("/settings/system/reboot", methods=["POST"])
+def controller_reboot_view():
+    ok, detail = run_system_action("reboot")
+    if not ok:
+        return redirect(url_for("settings_view", msg="Reboot failed: %s" % detail))
+    record_event("system", "Controller reboot requested", "User initiated reboot from settings")
+    return render_template_string(
+        SIMPLE_PAGE_HTML,
+        title="Rebooting",
+        back_url=url_for("settings_view"),
+        body="""
+        <h1>↻ Rebooting Controller</h1>
+        <div class="detail"><span class="label">Status</span><span>Restarting now</span></div>
+        <p class="small">This Pi is restarting now. The bore hole screen should return automatically after boot.</p>
+        """,
+    )
+
+
+@app.route("/settings/system/shutdown", methods=["POST"])
+def controller_shutdown_view():
+    ok, detail = run_system_action("shutdown")
+    if not ok:
+        return redirect(url_for("settings_view", msg="Shutdown failed: %s" % detail))
+    record_event("system", "Controller shutdown requested", "User initiated shutdown from settings")
+    return render_template_string(
+        SIMPLE_PAGE_HTML,
+        title="Shutting Down",
+        back_url=url_for("settings_view"),
+        body="""
+        <h1>⏻ Shutting Down Controller</h1>
+        <div class="detail"><span class="label">Status</span><span>Powering down now</span></div>
+        <p class="small">Wait for the screen to go dark before disconnecting power.</p>
+        """,
+    )
 
 
 if __name__ == "__main__":

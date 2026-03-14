@@ -32,6 +32,7 @@ bash ./scripts/install_shed_controller_pi.sh ~/cherry-dene-dashboard andrewcdf 3
 ```
 
 This installs packages, writes the shed config, creates the service, and sets up `labwc` kiosk autostart.
+It also grants the controller user passwordless access to `shutdown` and `reboot` so the Settings power buttons work cleanly.
 
 1. Copy this project to your Pi home folder, for example `/home/andrewcdf/cherry-dene-dashboard`
 2. Install Python dependencies:
@@ -94,6 +95,7 @@ bash /home/andrewcdf/cherry-dene-dashboard/pi_kiosk/kiosk.sh http://127.0.0.1:80
 - The kiosk script no longer forces `onboard` open at startup
 - The kiosk script is tolerant of Wayland/labwc sessions where `xset` may fail
 - Numeric/text fields can still request the on-screen keyboard when the Pi desktop auto-show virtual keyboard setting is enabled
+- The controller Settings page includes `Shutdown` and `Reboot` buttons; these rely on the installer's sudoers entry
 - If your Pico appears on another port, update `serial_port`
 - If the dashboard must allocate crop IDs for controller-started crops, keep the updated `dashboard_server.py` running on the farm side
 
