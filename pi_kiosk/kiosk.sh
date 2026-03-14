@@ -1,13 +1,19 @@
 #!/bin/bash
-set -eu
+set -u
 
 URL="${1:-http://127.0.0.1:8091}"
 
-xset s off
-xset -dpms
-xset s noblank
+sleep 5
 
-unclutter -idle 0.5 -root >/dev/null 2>&1 &
+if command -v xset >/dev/null 2>&1; then
+  xset s off || true
+  xset -dpms || true
+  xset s noblank || true
+fi
+
+if command -v unclutter >/dev/null 2>&1; then
+  unclutter -idle 0.5 >/dev/null 2>&1 &
+fi
 
 if command -v onboard >/dev/null 2>&1; then
   export GTK_IM_MODULE=onboard

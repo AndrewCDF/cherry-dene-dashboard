@@ -35,7 +35,7 @@ sudo apt install -y python3-flask python3-serial chromium unclutter onboard
 3. Start the controller once:
 
 ```bash
-cd /home/pi/shed-controller
+cd /home/andrewcdf/cherry-dene-dashboard
 python3 shed_controller_server.py
 ```
 
@@ -60,15 +60,30 @@ This creates `controller_data/controller_config.json`.
 5. Install the service and kiosk startup:
 
 ```bash
-cd /home/pi/shed-controller
-sudo ./pi_kiosk/install_pi_kiosk.sh /home/pi/shed-controller pi
+cd /home/andrewcdf/cherry-dene-dashboard
+sudo bash ./pi_kiosk/install_pi_kiosk.sh /home/andrewcdf/cherry-dene-dashboard andrewcdf
+```
+
+If your Pi is using `labwc` / Wayland, add this autostart entry:
+
+```bash
+mkdir -p $HOME/.config/labwc
+nano $HOME/.config/labwc/autostart
+```
+
+Add:
+
+```bash
+bash /home/andrewcdf/cherry-dene-dashboard/pi_kiosk/kiosk.sh http://127.0.0.1:8091 &
 ```
 
 ## Shed notes
 
 - The Flask app listens on the configured `listen_port`, default `8091`
 - The Chromium kiosk opens `http://127.0.0.1:8091`
+- The kiosk script waits a few seconds before launching Chromium so the desktop and Flask app can come up cleanly
 - The kiosk script no longer forces `onboard` open at startup
+- The kiosk script is tolerant of Wayland/labwc sessions where `xset` may fail
 - Numeric/text fields can still request the on-screen keyboard when the Pi desktop auto-show virtual keyboard setting is enabled
 - If your Pico appears on another port, update `serial_port`
 - If the dashboard must allocate crop IDs for controller-started crops, keep the updated `dashboard_server.py` running on the farm side
