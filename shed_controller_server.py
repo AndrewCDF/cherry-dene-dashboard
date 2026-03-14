@@ -2807,7 +2807,7 @@ HTML = """
             border: 1px solid var(--line);
             border-radius: 18px;
             padding: 16px;
-            min-height: 154px;
+            min-height: 170px;
             height: 100%;
         }
         .metric-link {
@@ -3139,7 +3139,7 @@ HTML = """
                 margin-bottom: 10px;
             }
             .metric {
-                min-height: 110px;
+                min-height: 144px;
                 border-radius: 16px;
                 padding: 10px;
             }
@@ -3155,12 +3155,12 @@ HTML = """
                 font-size: 12px;
             }
             .settings-button {
-                min-height: 68px;
+                min-height: 76px;
                 border-radius: 14px;
                 font-size: 20px;
             }
             .button-link {
-                line-height: 68px;
+                line-height: 76px;
             }
             .settings-icon {
                 font-size: 22px;
