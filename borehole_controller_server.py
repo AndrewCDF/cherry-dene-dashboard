@@ -32,6 +32,7 @@ LOCAL_OFFICE_HEARTBEAT_SECONDS = 10
 LOCAL_BACKGROUND_SYNC_LOOP_SECONDS = 5
 SENSOR_STALE_SECONDS = 30
 NO_FLOW_EPSILON_LPM = 0.01
+HIDE_HOME_ALERTS_DURING_SETUP = True
 SYSTEM_ACTION_PATHS = {
     "shutdown": [("/sbin/shutdown", ["-h", "now"]), ("/usr/sbin/shutdown", ["-h", "now"])],
     "reboot": [("/sbin/reboot", []), ("/usr/sbin/reboot", [])],
@@ -1034,7 +1035,7 @@ HOME_HTML = """
 </head>
 <body>
   <div class="wrap">
-    {% if msg %}<div class="msg">{{ msg }}</div>{% endif %}
+    {% if msg and not hide_home_alerts %}<div class="msg">{{ msg }}</div>{% endif %}
     <div class="panel">
       <div class="title-row">
         <h1 id="headerTitle" class="{{ header_class }}">CDF - BORE HOLE</h1>
@@ -1042,7 +1043,9 @@ HOME_HTML = """
       </div>
       <div class="hero-pills">
         <div class="pill-grid">
+          {% if not hide_home_alerts %}
           <div id="alarmPill" class="pill {{ alarm_class }}"><span class="pill-label">Alarm</span><span class="pill-value" id="alarmValue">{{ alarm_short }}</span></div>
+          {% endif %}
           <div id="officePill" class="pill {{ office_class }}"><span class="pill-label">Office Link</span><span class="pill-value" id="officeValue">{{ office_short }}</span></div>
           <div id="syncPill" class="pill {{ sync_class }}"><span class="pill-label">Office Sync</span><span class="pill-value" id="syncValue">{{ sync_short }}</span></div>
           <div id="picoPill" class="pill {{ pico_class }}"><span class="pill-label">Pico</span><span class="pill-value" id="picoValue">{{ pico_short }}</span></div>
@@ -1090,13 +1093,13 @@ HOME_HTML = """
       setHeaderClass(data.header_class || 'inactive');
       setText('waterValue', data.water_lpm || '--');
       setText('water7to7Value', data.water_7to7 || '--');
-      setText('alarmValue', data.alarm_short || '--');
+      if (document.getElementById('alarmValue')) setText('alarmValue', data.alarm_short || '--');
       setText('officeValue', data.office_short || '--');
       setText('syncValue', data.sync_short || '--');
       setText('picoValue', data.pico_short || '--');
       setText('pushValue', data.push_short || '--');
       setText('logValue', data.log_short || '--');
-      setPillClass('alarmPill', data.alarm_class);
+      if (document.getElementById('alarmPill')) setPillClass('alarmPill', data.alarm_class);
       setPillClass('officePill', data.office_class);
       setPillClass('syncPill', data.sync_class);
       setPillClass('picoPill', data.pico_class);
@@ -1669,6 +1672,7 @@ HISTORY_HTML = """
 def index():
     maybe_heartbeat_to_dashboard()
     ctx = home_context()
+    ctx["hide_home_alerts"] = HIDE_HOME_ALERTS_DURING_SETUP
     return render_template_string(HOME_HTML, msg=request.args.get("msg", ""), **ctx)
 
 

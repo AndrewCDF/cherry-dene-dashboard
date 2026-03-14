@@ -294,6 +294,7 @@ BACKUP_KEEP_COUNT = 6
 LOCAL_DASHBOARD_PULL_SECONDS = 1
 LOCAL_DASHBOARD_HEARTBEAT_SECONDS = 10
 LOCAL_BACKGROUND_SYNC_LOOP_SECONDS = 5
+HIDE_HOME_ALERTS_DURING_SETUP = True
 SYSTEM_ACTION_PATHS = {
     "shutdown": [("/sbin/shutdown", ["-h", "now"]), ("/usr/sbin/shutdown", ["-h", "now"])],
     "reboot": [("/sbin/reboot", []), ("/usr/sbin/reboot", [])],
@@ -3192,10 +3193,12 @@ HTML = """
 </head>
 <body>
     <div class="wrap">
-        {% if msg %}
+        {% if msg and not hide_home_alerts %}
         <div class="msg auto-dismiss {% if not ok %}error{% endif %}">{{ msg }}</div>
         {% endif %}
+        {% if not hide_home_alerts %}
         <div id="offlineBanner" class="msg warn" {% if not offline_banner %}style="display:none"{% endif %}>{{ offline_banner }}</div>
+        {% endif %}
 
         <div class="hero">
             <div class="panel">
@@ -3229,7 +3232,9 @@ HTML = """
                 </div>
                 <div class="hero-pills">
                     <div class="pill-grid">
+                        {% if not hide_home_alerts %}
                         <div id="alarmPill" class="pill {{ alarm_class }}"><span class="pill-label">Alarm</span><span class="pill-value" id="alarmValue">{{ alarm_short }}</span></div>
+                        {% endif %}
                         <div id="ethernetPill" class="pill {{ ethernet_class }}"><span class="pill-label">Office Link</span><span class="pill-value" id="ethernetValue">{{ ethernet_short }}</span></div>
                         <div id="syncPill" class="pill {{ sync_class }}"><span class="pill-label">Office Sync</span><span class="pill-value" id="syncValue">{{ sync_short }}</span></div>
                         <div id="picoPill" class="pill {{ sensor_class }}"><span class="pill-label">Pico</span><span class="pill-value" id="picoValue">{{ sensor_status_short }}</span></div>
@@ -3240,6 +3245,7 @@ HTML = """
             </div>
         </div>
 
+        {% if not hide_home_alerts %}
         <div class="panel floating-alerts" id="controllerAlertsPanel" style="{% if not controller_alerts %}display:none{% endif %}">
             <div class="alarm-list" id="controllerAlertsList">
                 {% for alarm in controller_alerts %}
@@ -3247,6 +3253,7 @@ HTML = """
                 {% endfor %}
             </div>
         </div>
+        {% endif %}
 
         <div class="top-grid">
             <a class="metric-link" href="{{ url_for('temp_settings_view') }}">
@@ -3352,13 +3359,13 @@ HTML = """
             setText('loggingValue', data.log_short || '--');
             setText('ethernetValue', data.ethernet_short || '--');
             setText('pushValue', data.push_short || '--');
-            setText('alarmValue', data.alarm_short || '--');
+            if (document.getElementById('alarmValue')) setText('alarmValue', data.alarm_short || '--');
             setPillClass('syncPill', data.sync_class);
             setPillClass('picoPill', data.sensor_class);
             setPillClass('loggingPill', data.log_class);
             setPillClass('ethernetPill', data.ethernet_class);
             setPillClass('pushPill', data.push_class);
-            setPillClass('alarmPill', data.alarm_class);
+            if (document.getElementById('alarmPill')) setPillClass('alarmPill', data.alarm_class);
             setText('tempValue', data.temp_c);
             setText('rhValue', data.rh_pct);
             setText('waterValue', data.water_lpm);
@@ -5048,6 +5055,7 @@ def index():
     ok = request.args.get("ok", "1") == "1"
     ctx["msg"] = msg
     ctx["ok"] = ok
+    ctx["hide_home_alerts"] = HIDE_HOME_ALERTS_DURING_SETUP
     return render_template_string(HTML, **ctx)
 
 
