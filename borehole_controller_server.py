@@ -46,6 +46,15 @@ CDF_FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"
 <text x="32" y="39" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="700" fill="#f1f1f1">CDF</text>
 </svg>"""
 
+TOUCH_OPTIMIZE_HEAD = (
+    '<link rel="icon" type="image/svg+xml" href="/favicon.svg">'
+    '<style id="cdf-touch-optimize">'
+    'html,body{touch-action:manipulation;}'
+    'a,button,input,select,textarea,label,summary,.button-link,.metric-link,.settings-button{touch-action:manipulation;}'
+    '*{-webkit-tap-highlight-color:transparent;}'
+    '</style>'
+)
+
 
 @app.route("/favicon.ico")
 @app.route("/favicon.svg")
@@ -59,8 +68,8 @@ def inject_favicon(response):
         content_type = str(response.headers.get("Content-Type", "")).lower()
         if "text/html" in content_type and response.direct_passthrough is False:
             body = response.get_data(as_text=True)
-            if "<head>" in body and 'rel="icon"' not in body:
-                body = body.replace('<head>', '<head><link rel="icon" type="image/svg+xml" href="/favicon.svg">', 1)
+            if "<head>" in body and 'cdf-touch-optimize' not in body:
+                body = body.replace('<head>', '<head>' + TOUCH_OPTIMIZE_HEAD, 1)
                 response.set_data(body)
                 response.headers["Content-Length"] = str(len(response.get_data()))
     except Exception:
