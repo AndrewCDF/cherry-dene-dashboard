@@ -2799,6 +2799,7 @@ HTML = """
         .top-grid {
             display: grid;
             grid-template-columns: repeat(4, minmax(0, 1fr));
+            grid-auto-rows: 170px;
             gap: 14px;
             margin-bottom: 16px;
         }
@@ -2809,6 +2810,8 @@ HTML = """
             padding: 16px;
             min-height: 170px;
             height: 100%;
+            display: flex;
+            flex-direction: column;
         }
         .metric-link {
             display: block;
@@ -2896,9 +2899,11 @@ HTML = """
             font-size: 40px;
             font-weight: 700;
             line-height: 1;
+            margin-top: auto;
+            margin-bottom: auto;
         }
         .metric-sub {
-            margin-top: 10px;
+            margin-top: auto;
             font-size: 15px;
             color: var(--muted);
         }
@@ -3135,6 +3140,7 @@ HTML = """
                 font-size: 14px;
             }
             .top-grid {
+                grid-auto-rows: 132px;
                 gap: 10px;
                 margin-bottom: 10px;
             }
@@ -3145,14 +3151,14 @@ HTML = """
             }
             .metric-label {
                 margin-bottom: 8px;
-                font-size: 20px;
+                font-size: 15px;
             }
             .metric-val {
                 font-size: 37px;
             }
             .metric-sub {
-                margin-top: 6px;
-                font-size: 20px;
+                margin-top: auto;
+                font-size: 15px;
             }
             .settings-button {
                 min-height: 62px;
