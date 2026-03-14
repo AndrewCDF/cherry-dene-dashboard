@@ -108,6 +108,10 @@ SYSTEM_ACTION_PATHS = {
     "shutdown": [("/sbin/shutdown", ["-h", "now"]), ("/usr/sbin/shutdown", ["-h", "now"])],
     "reboot": [("/sbin/reboot", []), ("/usr/sbin/reboot", [])],
 }
+SERVICE_RESTART_PATHS = [
+    ("/bin/systemctl", ["restart", "shed-controller.service"]),
+    ("/usr/bin/systemctl", ["restart", "shed-controller.service"]),
+]
 
 
 def ensure_data_dir():
@@ -284,6 +288,26 @@ def restart_self_delayed(delay_seconds=1.0):
         os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)])
 
     threading.Thread(target=_restart, daemon=True).start()
+
+
+def restart_service_or_self(delay_seconds=1.0):
+    for executable, args in SERVICE_RESTART_PATHS:
+        if not os.path.exists(executable):
+            continue
+        try:
+            proc = subprocess.run(
+                ["sudo", "-n", executable] + list(args),
+                cwd=APP_ROOT,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if proc.returncode == 0:
+                return True
+        except Exception:
+            pass
+    restart_self_delayed(delay_seconds)
+    return False
 
 
 def run_system_action(action_name):
@@ -4789,7 +4813,7 @@ def apply_update_view():
     if code != 0:
         return redirect(url_for("controller_settings_view"))
 
-    restart_self_delayed(1.0)
+    restart_service_or_self(1.0)
     return render_template_string(
         """
 <!doctype html>

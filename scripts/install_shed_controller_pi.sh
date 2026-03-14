@@ -77,7 +77,7 @@ sudo install -m 644 /tmp/shed-controller.service /etc/systemd/system/shed-contro
 rm -f /tmp/shed-controller.service
 
 cat > /tmp/cherry-dene-controller-power <<EOF
-$USER_NAME ALL=(root) NOPASSWD: /sbin/shutdown, /usr/sbin/shutdown, /sbin/reboot, /usr/sbin/reboot
+$USER_NAME ALL=(root) NOPASSWD: /sbin/shutdown, /usr/sbin/shutdown, /sbin/reboot, /usr/sbin/reboot, /bin/systemctl restart shed-controller.service, /usr/bin/systemctl restart shed-controller.service
 EOF
 
 sudo install -m 440 /tmp/cherry-dene-controller-power /etc/sudoers.d/cherry-dene-controller-power

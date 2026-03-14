@@ -32,7 +32,7 @@ bash ./scripts/install_shed_controller_pi.sh ~/cherry-dene-dashboard andrewcdf 3
 ```
 
 This installs packages, writes the shed config, creates the service, and sets up `labwc` kiosk autostart.
-It also grants the controller user passwordless access to `shutdown` and `reboot` so the Settings power buttons work cleanly.
+It also grants the controller user passwordless access to `shutdown`, `reboot`, and `systemctl restart shed-controller.service` so the Settings power buttons and in-app controller updates work cleanly.
 
 1. Copy this project to your Pi home folder, for example `/home/andrewcdf/cherry-dene-dashboard`
 2. Install Python dependencies:
