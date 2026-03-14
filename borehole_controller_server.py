@@ -49,11 +49,146 @@ CDF_FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"
 TOUCH_OPTIMIZE_HEAD = (
     '<link rel="icon" type="image/svg+xml" href="/favicon.svg">'
     '<style id="cdf-touch-optimize">'
-    'html,body{touch-action:manipulation;}'
+    'html,body{touch-action:pan-y;overscroll-behavior-y:contain;-webkit-overflow-scrolling:touch;}'
+    'body,*{-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none;}'
+    'html,body,*{scrollbar-width:none;}'
+    'html::-webkit-scrollbar,body::-webkit-scrollbar,*::-webkit-scrollbar{display:none;width:0;height:0;}'
+    'body,div,span,p,h1,h2,h3,h4,h5,h6,table,thead,tbody,tr,th,td,a,button,label,.button-link,.metric-link,.settings-button{-webkit-user-select:none;user-select:none;}'
     'a,button,input,select,textarea,label,summary,.button-link,.metric-link,.settings-button{touch-action:manipulation;}'
-    '*{-webkit-tap-highlight-color:transparent;}'
+    'input,textarea,select,.mono{-webkit-user-select:text;user-select:text;}'
+    '.cdf-number-pad{position:fixed;left:0;right:0;bottom:0;z-index:9999;padding:10px 12px 14px;background:rgba(54,54,54,0.94);backdrop-filter:blur(8px);border-top:1px solid rgba(255,255,255,0.12);transform:translateY(100%);transition:transform .12s ease-out;}'
+    '.cdf-number-pad.is-open{transform:translateY(0);}'
+    '.cdf-number-pad__panel{max-width:720px;margin:0 auto;}'
+    '.cdf-number-pad__head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px;color:#ececec;font:700 16px/1 Arial,sans-serif;}'
+    '.cdf-number-pad__value{color:#d2d2d2;font:600 14px/1 Arial,sans-serif;min-height:16px;}'
+    '.cdf-number-pad__grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;}'
+    '.cdf-number-pad__key{min-height:60px;border-radius:14px;border:1px solid #8a8a8a;background:linear-gradient(180deg,#7a7a7a,#676767);color:#ececec;font:700 24px/1 Arial,sans-serif;}'
+    '.cdf-number-pad__key--wide{grid-column:span 2;}'
+    '.cdf-number-pad__key--action{background:linear-gradient(180deg,#6f6f6f,#5f5f5f);font-size:18px;}'
+    '.cdf-number-pad__key[hidden]{display:none;}'
     '</style>'
 )
+
+NUMBER_PAD_BODY = """
+<div id="cdfNumberPad" class="cdf-number-pad" aria-hidden="true">
+  <div class="cdf-number-pad__panel">
+    <div class="cdf-number-pad__head">
+      <span>Number Entry</span>
+      <span id="cdfNumberPadValue" class="cdf-number-pad__value"></span>
+    </div>
+    <div class="cdf-number-pad__grid">
+      <button type="button" class="cdf-number-pad__key" data-key="7">7</button>
+      <button type="button" class="cdf-number-pad__key" data-key="8">8</button>
+      <button type="button" class="cdf-number-pad__key" data-key="9">9</button>
+      <button type="button" class="cdf-number-pad__key" data-key="4">4</button>
+      <button type="button" class="cdf-number-pad__key" data-key="5">5</button>
+      <button type="button" class="cdf-number-pad__key" data-key="6">6</button>
+      <button type="button" class="cdf-number-pad__key" data-key="1">1</button>
+      <button type="button" class="cdf-number-pad__key" data-key="2">2</button>
+      <button type="button" class="cdf-number-pad__key" data-key="3">3</button>
+      <button type="button" class="cdf-number-pad__key cdf-number-pad__key--action" data-action="clear">Clear</button>
+      <button type="button" class="cdf-number-pad__key" data-key="0">0</button>
+      <button type="button" id="cdfNumberPadDecimal" class="cdf-number-pad__key" data-key=".">.</button>
+      <button type="button" class="cdf-number-pad__key cdf-number-pad__key--action" data-action="backspace">Back</button>
+      <button type="button" class="cdf-number-pad__key cdf-number-pad__key--action cdf-number-pad__key--wide" data-action="done">Done</button>
+    </div>
+  </div>
+</div>
+<script id="cdf-number-pad-script">
+(function () {
+  const pad = document.getElementById('cdfNumberPad');
+  if (!pad) return;
+  const valueEl = document.getElementById('cdfNumberPadValue');
+  const decimalBtn = document.getElementById('cdfNumberPadDecimal');
+  let activeInput = null;
+
+  function supportsDecimal(input) {
+    const inputMode = (input.getAttribute('inputmode') || '').toLowerCase();
+    if (inputMode === 'decimal') return true;
+    const step = (input.getAttribute('step') || '').toLowerCase();
+    if (step === 'any') return true;
+    return step.indexOf('.') !== -1;
+  }
+
+  function syncDisplay() {
+    valueEl.textContent = activeInput ? (activeInput.value || ' ') : '';
+    if (activeInput) {
+      decimalBtn.hidden = !supportsDecimal(activeInput);
+    }
+  }
+
+  function openPad(input) {
+    if (!input || input.disabled) return;
+    activeInput = input;
+    pad.classList.add('is-open');
+    pad.setAttribute('aria-hidden', 'false');
+    syncDisplay();
+  }
+
+  function closePad() {
+    activeInput = null;
+    pad.classList.remove('is-open');
+    pad.setAttribute('aria-hidden', 'true');
+    valueEl.textContent = '';
+  }
+
+  function commitValue(nextValue) {
+    if (!activeInput) return;
+    activeInput.value = nextValue;
+    activeInput.dispatchEvent(new Event('input', { bubbles: true }));
+    activeInput.dispatchEvent(new Event('change', { bubbles: true }));
+    syncDisplay();
+  }
+
+  document.addEventListener('focusin', function (event) {
+    const target = event.target;
+    if (target && target.matches && target.matches('input[type="number"]')) {
+      openPad(target);
+    }
+  });
+
+  document.addEventListener('pointerdown', function (event) {
+    const target = event.target;
+    if (target && target.matches && target.matches('input[type="number"]')) {
+      openPad(target);
+      return;
+    }
+    if (!pad.contains(target)) {
+      closePad();
+    }
+  });
+
+  pad.addEventListener('click', function (event) {
+    const button = event.target.closest('button');
+    if (!button || !activeInput) return;
+    const action = button.getAttribute('data-action');
+    const key = button.getAttribute('data-key');
+    const current = String(activeInput.value || '');
+
+    if (action === 'clear') {
+      commitValue('');
+      return;
+    }
+    if (action === 'backspace') {
+      commitValue(current.slice(0, -1));
+      return;
+    }
+    if (action === 'done') {
+      activeInput.blur();
+      closePad();
+      return;
+    }
+    if (!key) return;
+    if (key === '.' && (!supportsDecimal(activeInput) || current.includes('.'))) return;
+    if (current === '0' && key !== '.') {
+      commitValue(key);
+      return;
+    }
+    commitValue(current + key);
+  });
+})();
+</script>
+"""
 
 
 @app.route("/favicon.ico")
@@ -70,8 +205,10 @@ def inject_favicon(response):
             body = response.get_data(as_text=True)
             if "<head>" in body and 'cdf-touch-optimize' not in body:
                 body = body.replace('<head>', '<head>' + TOUCH_OPTIMIZE_HEAD, 1)
-                response.set_data(body)
-                response.headers["Content-Length"] = str(len(response.get_data()))
+            if "</body>" in body and 'cdf-number-pad-script' not in body:
+                body = body.replace("</body>", NUMBER_PAD_BODY + "</body>", 1)
+            response.set_data(body)
+            response.headers["Content-Length"] = str(len(response.get_data()))
     except Exception:
         pass
     return response
