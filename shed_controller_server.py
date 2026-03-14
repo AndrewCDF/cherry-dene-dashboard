@@ -4741,6 +4741,14 @@ def controller_settings_view():
     maybe_heartbeat_to_dashboard()
     ctx = build_home_context()
     update_status = load_update_status()
+    live_git = get_local_git_status()
+    update_status["branch"] = live_git.get("branch", update_status.get("branch", "main"))
+    update_status["local_commit"] = live_git.get("local_commit", update_status.get("local_commit", "--"))
+    if update_status.get("remote_commit") == update_status.get("local_commit"):
+        update_status["update_available"] = False
+        update_status["restart_required"] = False
+        if live_git.get("ok"):
+            update_status["status"] = "Already on latest version"
     pico_update_status = load_pico_update_status()
     checked_at = update_status.get("checked_at")
     ctx["update_status"] = update_status
