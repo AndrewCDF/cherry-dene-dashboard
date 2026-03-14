@@ -3145,14 +3145,14 @@ HTML = """
             }
             .metric-label {
                 margin-bottom: 8px;
-                font-size: 12px;
+                font-size: 20px;
             }
             .metric-val {
-                font-size: 28px;
+                font-size: 37px;
             }
             .metric-sub {
                 margin-top: 6px;
-                font-size: 12px;
+                font-size: 20px;
             }
             .settings-button {
                 min-height: 62px;
