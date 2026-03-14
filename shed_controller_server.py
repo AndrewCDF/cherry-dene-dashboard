@@ -4764,7 +4764,7 @@ def controller_settings_view():
     maybe_refresh_from_dashboard()
     maybe_heartbeat_to_dashboard()
     ctx = build_home_context()
-    # Always reconcile the settings page with the live repo state on disk.
+    # Always reconcile the settings page with the live repo state on disk after updates.
     update_status = load_update_status()
     live_git = get_local_git_status()
     update_status["branch"] = live_git.get("branch", update_status.get("branch", "main"))
