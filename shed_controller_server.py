@@ -5887,7 +5887,7 @@ def start_entry_for_dest_impl(dest_shed):
 
     state = mutate_state(mutator)
     record_controller_event("entry_started", "Started entry", "Entry Shed %d" % dest_shed, push_to_office=True)
-    return push_to_dashboard(state, pull_back=True)
+    return push_to_dashboard(state, pull_back=False)
 
 
 @app.route("/entry/<int:dest_shed>/start", methods=["POST"])
@@ -5912,6 +5912,9 @@ def move_entry_for_dest_impl(dest_shed):
     if not ok:
         return False, "Move failed"
 
+    # Clear the moved entry locally immediately so background sync cannot
+    # re-post the old source allocation back to the office before the pull completes.
+    mutate_state(lambda state: clear_entry_for_dest(state, dest_shed))
     pull_from_dashboard(load_state())
     record_controller_event("entry_moved", "Moved entry via office", "Entry Shed %d" % dest_shed, push_to_office=True)
     return True, "Entry moved to Shed %d" % dest_shed

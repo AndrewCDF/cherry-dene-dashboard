@@ -11,6 +11,7 @@ import zipfile
 from datetime import datetime, timedelta
 
 app = Flask(__name__)
+APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 CDF_FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
 <rect width="64" height="64" rx="12" fill="#4f4f4f"/>
@@ -39,7 +40,7 @@ def inject_favicon(response):
         pass
     return response
 
-DATA_DIR = "data"
+DATA_DIR = os.path.join(APP_ROOT, "data")
 SHED_NUMBERS = [1, 2, 3, 4, 6, 7, 8, 9, 10]
 OFFICE_BACKUP_KEEP_COUNT = 6
 OFFICE_AUTO_BACKUP_INTERVAL_SECONDS = 3600
@@ -100,6 +101,20 @@ def read_all_json_lines(filename):
 
 def append_named_json_line(filename, payload):
     append_json_line(os.path.join(DATA_DIR, filename), payload)
+
+
+def write_named_json_lines_atomic(filename, payloads):
+    path = os.path.join(DATA_DIR, filename)
+    parent = os.path.dirname(path) or "."
+    os.makedirs(parent, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".", suffix=".tmp", dir=parent)
+    with os.fdopen(fd, "w") as f:
+        i = 0
+        while i < len(payloads):
+            f.write(json.dumps(payloads[i]))
+            f.write("\n")
+            i += 1
+    os.replace(tmp, path)
 
 
 def backups_dir():
@@ -1086,8 +1101,43 @@ def apply_mortality_to_shed(shed_no, dest_shed, bird_loss, note="", updated_by="
     log_event("office", "mortality_recorded", "Mortality recorded", shed_no=shed_no, detail="Entry Shed %d Loss %d" % (dest_shed, bird_loss))
     save_shed_entries_state(state)
     refresh_farm_crop_current_id(state)
-    push_shed_state_to_controller(shed_no)
+    push_shed_state_to_controller_async(shed_no)
     return True, "Mortality recorded"
+
+
+def move_mortality_history_between_sheds(from_shed_name, to_shed_name, dest_shed, crop_id):
+    if crop_id in [None, ""]:
+        return 0
+
+    rows = read_all_json_lines("mortality.ndjson")
+    changed = 0
+    i = 0
+    while i < len(rows):
+        rec = rows[i]
+        if str(rec.get("shed")) != str(from_shed_name):
+            i += 1
+            continue
+        try:
+            if int(rec.get("dest_shed")) != int(dest_shed):
+                i += 1
+                continue
+        except Exception:
+            i += 1
+            continue
+        try:
+            if int(rec.get("crop_id")) != int(crop_id):
+                i += 1
+                continue
+        except Exception:
+            i += 1
+            continue
+        rec["shed"] = str(to_shed_name)
+        changed += 1
+        i += 1
+
+    if changed > 0:
+        write_named_json_lines_atomic("mortality.ndjson", rows)
+    return changed
 
 
 def normalize_pens(pens):
@@ -1302,6 +1352,16 @@ def push_shed_state_to_controller(shed_no):
         return False, str(exc)
 
 
+def push_shed_state_to_controller_async(shed_no):
+    def worker():
+        try:
+            push_shed_state_to_controller(shed_no)
+        except Exception:
+            pass
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
 def apply_external_shed_entries(shed_no, incoming_entries, source):
     state = load_shed_entries_state()
     shed_name = shed_name_from_number(shed_no)
@@ -1325,6 +1385,16 @@ def apply_external_shed_entries(shed_no, incoming_entries, source):
             rec["updated_by"] = source
             if rec["bird_count"] > 0 and rec["crop_active"] == 1 and rec["crop_id"] is None:
                 rec["crop_id"] = crop_id_for_new_start(state)
+            other_shed = active_entry_location_for_dest(state, dest_shed, exclude_shed_name=shed_name)
+            if rec["bird_count"] > 0 and rec["crop_active"] == 1 and other_shed:
+                log_event(
+                    "office",
+                    "entry_sync_conflict",
+                    "Rejected duplicate active entry from controller sync",
+                    shed_no=shed_no,
+                    detail="Entry Shed %d already active in %s" % (dest_shed, other_shed),
+                )
+                continue
             cleaned_incoming[str(dest_shed)] = rec
 
     existing_keys = list(entries.keys())
@@ -1339,6 +1409,26 @@ def apply_external_shed_entries(shed_no, incoming_entries, source):
     for key in cleaned_incoming:
         prev = clean_entry_record(entries.get(key, {}))
         new_rec = cleaned_incoming[key]
+
+        same_active_flock = (
+            prev["bird_count"] > 0
+            and new_rec["bird_count"] > 0
+            and prev["crop_active"] == 1
+            and new_rec["crop_active"] == 1
+            and str(prev.get("crop_id")) == str(new_rec.get("crop_id"))
+            and str(prev.get("placement_epoch")) == str(new_rec.get("placement_epoch"))
+        )
+        try:
+            prev_updated_ts = int(prev.get("updated_ts") or 0)
+        except Exception:
+            prev_updated_ts = 0
+        try:
+            new_updated_ts = int(new_rec.get("updated_ts") or 0)
+        except Exception:
+            new_updated_ts = 0
+
+        if same_active_flock and prev_updated_ts > new_updated_ts:
+            new_rec = prev
 
         if prev == new_rec:
             continue
@@ -1957,6 +2047,21 @@ def ensure_shed_entry_bucket(state, shed_name):
     return state[shed_name]["entries"]
 
 
+def active_entry_location_for_dest(state, dest_shed, exclude_shed_name=None):
+    i = 0
+    while i < len(SHED_NUMBERS):
+        shed_name = shed_name_from_number(SHED_NUMBERS[i])
+        if exclude_shed_name is not None and str(shed_name) == str(exclude_shed_name):
+            i += 1
+            continue
+        entries = ensure_shed_entry_bucket(state, shed_name)
+        rec = clean_entry_record(entries.get(str(dest_shed), {}))
+        if rec["bird_count"] > 0 and rec["crop_active"] == 1:
+            return shed_name
+        i += 1
+    return None
+
+
 def active_entries_for_tile(entries):
     out = {}
     for key in entries:
@@ -2287,6 +2392,12 @@ def build_rows():
             h += 1
 
         birds = total_birds_from_active_entries(active_entries)
+        mortality_total = mortality_total_for_shed_crop(shed, active_crop_id) if active_crop_id is not None else None
+        try:
+            mortality_total_i = int(mortality_total or 0)
+        except Exception:
+            mortality_total_i = 0
+        birds_placed = birds + mortality_total_i if (birds > 0 or mortality_total_i > 0) else None
         allocation_text = entry_summary_text(shed_no, active_entries)
 
         crop_id = crop.get("crop_id")
@@ -2413,6 +2524,8 @@ def build_rows():
             "crop_id": fmt_crop_code(crop_id, placement_epoch),
             "farm_crop_id": fmt_crop_code(current_farm_crop_id, current_farm_crop_epoch),
             "bird_count": fmt_value(birds if birds > 0 else None, "i"),
+            "birds_remaining": fmt_value(birds if birds > 0 else None, "i"),
+            "birds_placed": fmt_value(birds_placed, "i"),
             "bird_age": fmt_value(bird_age, "i"),
             "water_7to7": fmt_value(yesterday_water, "f0"),
             "feed_7to7": fmt_value(yesterday_feed, "f1"),
@@ -2427,7 +2540,7 @@ def build_rows():
             "total_water_to_date": fmt_value(total_water_to_date, "f0"),
             "total_feed_to_date": fmt_value(total_feed_to_date, "f1"),
             "allocation_text": allocation_text,
-            "mortality_total": fmt_value(mortality_total_for_shed_crop(shed, active_crop_id) if active_crop_id is not None else None, "i"),
+            "mortality_total": fmt_value(mortality_total, "i"),
             "sync_pill_class": sync_pill_class,
             "sync_pill_text": sync_pill_text,
         })
@@ -2941,7 +3054,7 @@ HTML = """
                     <div class="head">
                         <div class="head-left">
                             <div class="shed">{{ s.shed }}</div>
-                            <div class="birds-top">Birds: <span id="shed-birds-{{ s.shed_no }}">{{ s.bird_count }}</span> • Age: <span id="shed-age-{{ s.shed_no }}">{{ s.bird_age }}</span></div>
+                            <div class="birds-top">Birds: <span id="shed-birds-remaining-{{ s.shed_no }}">{{ s.birds_remaining }}</span> (<span id="shed-birds-placed-{{ s.shed_no }}">{{ s.birds_placed }}</span> placed) • Age: <span id="shed-age-{{ s.shed_no }}">{{ s.bird_age }}</span></div>
                             {% if s.allocation_text %}
                             <div id="shed-alloc-{{ s.shed_no }}" class="alloc-top">{{ s.allocation_text }}</div>
                             {% endif %}
@@ -3180,7 +3293,8 @@ function setHeaderClass(active) {
 }
 
 function renderShed(s) {
-    setDashText(`shed-birds-${s.shed_no}`, s.bird_count);
+    setDashText(`shed-birds-placed-${s.shed_no}`, s.birds_placed);
+    setDashText(`shed-birds-remaining-${s.shed_no}`, s.birds_remaining);
     setDashText(`shed-age-${s.shed_no}`, s.bird_age);
     setDashText(`shed-farm-crop-${s.shed_no}`, s.farm_crop_id);
     setDashText(`shed-temp-${s.shed_no}`, s.temp_c);
@@ -4029,7 +4143,7 @@ DETAIL_HTML = """
                     <tr>
                         <td>Shed {{ r.dest_shed }}</td>
                         <td>
-                            <form class="form-inline" method="post" action="{{ url_for('shed_entry_save', shed_no=shed_no, dest_shed=r.dest_shed) }}">
+                            <form id="entry-form-{{ r.dest_shed }}" class="form-inline" method="post" action="{{ url_for('shed_entry_save', shed_no=shed_no, dest_shed=r.dest_shed) }}">
                                 <input type="number" name="bird_count" min="0" step="1" value="{{ r.bird_count }}">
                                 <button type="submit">Save</button>
                             </form>
@@ -4044,9 +4158,7 @@ DETAIL_HTML = """
                             {% endif %}
                         </td>
                         <td>
-                            <form class="form-inline" method="post" action="{{ url_for('shed_entry_start', shed_no=shed_no, dest_shed=r.dest_shed) }}">
-                                <button type="submit">Start</button>
-                            </form>
+                            <button form="entry-form-{{ r.dest_shed }}" formaction="{{ url_for('shed_entry_start', shed_no=shed_no, dest_shed=r.dest_shed) }}" type="submit">Start</button>
                             <form class="form-inline" method="post" action="{{ url_for('shed_entry_end', shed_no=shed_no, dest_shed=r.dest_shed) }}">
                                 <button class="danger" type="submit">End</button>
                             </form>
@@ -5520,7 +5632,7 @@ def shed_entry_save(shed_no, dest_shed):
         log_event("office", "entry_cleared", "Entry saved as zero birds", shed_no=shed_no, detail="Entry Shed %d" % dest_shed)
     else:
         log_event("office", "entry_saved", "Bird count saved", shed_no=shed_no, detail="Entry Shed %d = %d" % (dest_shed, bird_count))
-    push_shed_state_to_controller(shed_no)
+    push_shed_state_to_controller_async(shed_no)
     return redirect(url_for("shed_detail", shed_no=shed_no, ok=1, msg="Entry saved"))
 
 
@@ -5543,6 +5655,18 @@ def shed_entry_start(shed_no, dest_shed):
     })
     rec = clean_entry_record(rec)
 
+    raw = str(request.form.get("bird_count", "") or "").strip()
+    if raw != "":
+        try:
+            bird_count = int(raw)
+            if bird_count < 0:
+                raise ValueError()
+            rec["bird_count"] = bird_count
+            rec["updated_ts"] = int(time.time())
+            rec["updated_by"] = "dashboard"
+        except Exception:
+            return redirect(url_for("shed_detail", shed_no=shed_no, ok=0, msg="Invalid bird count"))
+
     try:
         bird_count = int(rec.get("bird_count", 0) or 0)
     except Exception:
@@ -5550,6 +5674,17 @@ def shed_entry_start(shed_no, dest_shed):
 
     if bird_count <= 0:
         return redirect(url_for("shed_detail", shed_no=shed_no, ok=0, msg="Set birds before starting"))
+
+    other_shed = active_entry_location_for_dest(state, dest_shed, exclude_shed_name=shed_name)
+    if other_shed:
+        return redirect(
+            url_for(
+                "shed_detail",
+                shed_no=shed_no,
+                ok=0,
+                msg="Entry Shed %d is already active in %s" % (dest_shed, other_shed),
+            )
+        )
 
     rec["crop_active"] = 1
     if rec.get("placement_epoch") is None:
@@ -5564,7 +5699,7 @@ def shed_entry_start(shed_no, dest_shed):
     refresh_farm_crop_current_id(state)
     log_crop_event(shed_name, rec, True)
     log_event("office", "entry_started", "Entry started", shed_no=shed_no, detail="Entry Shed %d Crop %s" % (dest_shed, rec.get("crop_id")))
-    push_shed_state_to_controller(shed_no)
+    push_shed_state_to_controller_async(shed_no)
     return redirect(url_for("shed_detail", shed_no=shed_no, ok=1, msg="Entry started"))
 
 
@@ -5589,7 +5724,7 @@ def shed_entry_end(shed_no, dest_shed):
     save_shed_entries_state(state)
     refresh_farm_crop_current_id(state)
     log_event("office", "entry_ended", "Entry ended", shed_no=shed_no, detail="Entry Shed %d" % dest_shed)
-    push_shed_state_to_controller(shed_no)
+    push_shed_state_to_controller_async(shed_no)
 
     return redirect(url_for("shed_detail", shed_no=shed_no, ok=1, msg="Entry ended and shed cleared"))
 
@@ -5642,8 +5777,26 @@ def shed_entry_move(shed_no, dest_shed):
         existing = int(dest_rec.get("bird_count", 0) or 0)
     except Exception:
         existing = 0
+    try:
+        dest_active = int(dest_rec.get("crop_active", 0) or 0)
+    except Exception:
+        dest_active = 0
 
-    dest_rec["bird_count"] = existing + bird_count
+    same_crop = str(dest_rec.get("crop_id")) == str(rec.get("crop_id"))
+    same_epoch = str(dest_rec.get("placement_epoch")) == str(rec.get("placement_epoch"))
+    duplicate_move = existing > 0 and dest_active == 1 and same_crop and same_epoch
+
+    if existing > 0 and dest_active == 1 and not duplicate_move:
+        return redirect(
+            url_for(
+                "shed_detail",
+                shed_no=shed_no,
+                ok=0,
+                msg="Destination already has active birds for that entry",
+            )
+        )
+
+    dest_rec["bird_count"] = existing if duplicate_move else (existing + bird_count)
     dest_rec["crop_active"] = 1
     if dest_rec.get("placement_epoch") is None:
         dest_rec["placement_epoch"] = rec.get("placement_epoch") or int(time.time())
@@ -5660,11 +5813,34 @@ def shed_entry_move(shed_no, dest_shed):
     log_crop_event(to_name, dest_rec, True)
     del from_entries[str(dest_shed)]
 
+    moved_mortality = move_mortality_history_between_sheds(
+        from_name,
+        to_name,
+        dest_shed,
+        rec.get("crop_id"),
+    )
+
     save_shed_entries_state(state)
     refresh_farm_crop_current_id(state)
     log_event("office", "entry_moved", "Entry moved between sheds", shed_no=shed_no, detail="Entry Shed %d moved to Shed %d" % (dest_shed, dest_shed))
-    push_shed_state_to_controller(shed_no)
-    push_shed_state_to_controller(dest_shed)
+    if duplicate_move:
+        log_event(
+            "office",
+            "entry_move_duplicate_blocked",
+            "Duplicate shed move suppressed",
+            shed_no=shed_no,
+            detail="Entry Shed %d already present in Shed %d" % (dest_shed, dest_shed),
+        )
+    if moved_mortality > 0:
+        log_event(
+            "office",
+            "mortality_moved",
+            "Mortality moved with active entry",
+            shed_no=shed_no,
+            detail="Moved %d mortality rows from %s to %s for Entry Shed %d" % (moved_mortality, from_name, to_name, dest_shed),
+        )
+    push_shed_state_to_controller_async(shed_no)
+    push_shed_state_to_controller_async(dest_shed)
     return redirect(url_for("shed_detail", shed_no=shed_no, ok=1, msg="Entry moved to Shed %d" % dest_shed))
 
 
