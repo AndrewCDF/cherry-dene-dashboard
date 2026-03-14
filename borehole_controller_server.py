@@ -102,6 +102,8 @@ NUMBER_PAD_BODY = """
   const valueEl = document.getElementById('cdfNumberPadValue');
   const decimalBtn = document.getElementById('cdfNumberPadDecimal');
   let activeInput = null;
+  let dragScroll = null;
+  let suppressClickUntil = 0;
 
   function supportsDecimal(input) {
     const inputMode = (input.getAttribute('inputmode') || '').toLowerCase();
@@ -147,6 +149,49 @@ NUMBER_PAD_BODY = """
       openPad(target);
     }
   });
+
+  function isInteractiveTarget(target) {
+    return !!(target && target.closest && target.closest('input, textarea, select, button, .cdf-number-pad'));
+  }
+
+  document.addEventListener('touchstart', function (event) {
+    if (!event.touches || event.touches.length !== 1) return;
+    const target = event.target;
+    if (isInteractiveTarget(target)) return;
+    const touch = event.touches[0];
+    dragScroll = {
+      startY: touch.clientY,
+      lastY: touch.clientY,
+      moved: false,
+    };
+  }, { passive: true });
+
+  document.addEventListener('touchmove', function (event) {
+    if (!dragScroll || !event.touches || event.touches.length !== 1) return;
+    const touch = event.touches[0];
+    const deltaY = touch.clientY - dragScroll.lastY;
+    const totalMove = touch.clientY - dragScroll.startY;
+    if (Math.abs(totalMove) > 6) {
+      dragScroll.moved = true;
+    }
+    if (dragScroll.moved) {
+      window.scrollBy(0, -deltaY);
+      dragScroll.lastY = touch.clientY;
+      suppressClickUntil = Date.now() + 250;
+      event.preventDefault();
+    }
+  }, { passive: false });
+
+  document.addEventListener('touchend', function () {
+    dragScroll = null;
+  }, { passive: true });
+
+  document.addEventListener('click', function (event) {
+    if (Date.now() < suppressClickUntil) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }, true);
 
   document.addEventListener('pointerdown', function (event) {
     const target = event.target;
@@ -1185,6 +1230,9 @@ SETTINGS_HTML = """
       color:var(--muted);
       font-size:16px;
     }
+    .status-note.is-busy {
+      color:var(--text);
+    }
     .msg {
       margin-bottom:16px;
       padding:12px 14px;
@@ -1290,20 +1338,18 @@ SETTINGS_HTML = """
         <div class="update-box">
           <h2>Controller Update</h2>
           <div class="detail-list">
-            <div class="detail"><span class="label">Branch</span><span>{{ update.branch }}</span></div>
-            <div class="detail"><span class="label">Current Version</span><span>{{ update.local_commit }}</span></div>
-            <div class="detail"><span class="label">Latest Version</span><span>{{ update.remote_commit }}</span></div>
+            <div class="detail"><span class="label">Branch</span><span id="controllerUpdateBranch">{{ update.branch }}</span></div>
+            <div class="detail"><span class="label">Current Version</span><span id="controllerUpdateCurrent">{{ update.local_commit }}</span></div>
+            <div class="detail"><span class="label">Latest Version</span><span id="controllerUpdateLatest">{{ update.remote_commit }}</span></div>
           </div>
-          <div class="status-note">{{ update.status }}</div>
+          <div id="controllerUpdateStatus" class="status-note">{{ update.status }}</div>
           <div class="button-row">
-            <form method="post" action="{{ url_for('check_update_view') }}">
-              <button class="secondary" type="submit">Check for Update</button>
+            <form id="controllerUpdateCheckForm" method="post" action="{{ url_for('check_update_view') }}">
+              <button id="controllerUpdateCheckButton" class="secondary" type="submit">Check for Update</button>
             </form>
-            {% if update.update_available %}
-            <form method="post" action="{{ url_for('apply_update_view') }}">
+            <form id="controllerUpdateApplyForm" method="post" action="{{ url_for('apply_update_view') }}" {% if not update.update_available %}style="display:none;"{% endif %}>
               <button type="submit">Update Now</button>
             </form>
-            {% endif %}
           </div>
         </div>
         <div class="update-box">
@@ -1339,6 +1385,53 @@ SETTINGS_HTML = """
       </div>
     </div>
   </div>
+  <script>
+  (function () {
+    const form = document.getElementById('controllerUpdateCheckForm');
+    if (!form) return;
+    const button = document.getElementById('controllerUpdateCheckButton');
+    const statusEl = document.getElementById('controllerUpdateStatus');
+    const branchEl = document.getElementById('controllerUpdateBranch');
+    const currentEl = document.getElementById('controllerUpdateCurrent');
+    const latestEl = document.getElementById('controllerUpdateLatest');
+    const applyForm = document.getElementById('controllerUpdateApplyForm');
+    const defaultLabel = button.textContent;
+
+    form.addEventListener('submit', async function (event) {
+      event.preventDefault();
+      button.disabled = true;
+      button.textContent = 'Checking...';
+      statusEl.textContent = 'Checking GitHub...';
+      statusEl.classList.add('is-busy');
+      try {
+        const resp = await fetch(form.action, {
+          method: 'POST',
+          headers: {
+            'X-Requested-With': 'fetch',
+            'Accept': 'application/json'
+          }
+        });
+        if (!resp.ok) throw new Error('Update check failed');
+        const data = await resp.json();
+        branchEl.textContent = data.branch || '--';
+        currentEl.textContent = data.local_commit || '--';
+        latestEl.textContent = data.remote_commit || '--';
+        statusEl.textContent = data.status || '--';
+        if (data.update_available) {
+          applyForm.style.display = '';
+        } else {
+          applyForm.style.display = 'none';
+        }
+      } catch (err) {
+        statusEl.textContent = 'Update check failed';
+      } finally {
+        statusEl.classList.remove('is-busy');
+        button.disabled = false;
+        button.textContent = defaultLabel;
+      }
+    });
+  })();
+  </script>
 </body>
 </html>
 """
@@ -1981,7 +2074,11 @@ def download_backup_view():
 
 @app.route("/settings/update/check", methods=["POST"])
 def check_update_view():
-    return redirect(url_for("settings_view", msg=check_for_update().get("status", "Checked")))
+    status = check_for_update()
+    wants_json = "application/json" in str(request.headers.get("Accept", "")).lower() or request.headers.get("X-Requested-With") == "fetch"
+    if wants_json:
+      return jsonify(status)
+    return redirect(url_for("settings_view", msg=status.get("status", "Checked")))
 
 
 @app.route("/settings/update/apply", methods=["POST"])
