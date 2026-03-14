@@ -11,10 +11,18 @@ unclutter -idle 0.5 -root >/dev/null 2>&1 &
 
 if command -v onboard >/dev/null 2>&1; then
   export GTK_IM_MODULE=onboard
-  onboard >/dev/null 2>&1 &
 fi
 
-chromium-browser \
+if command -v chromium >/dev/null 2>&1; then
+  BROWSER_BIN="chromium"
+elif command -v chromium-browser >/dev/null 2>&1; then
+  BROWSER_BIN="chromium-browser"
+else
+  echo "No Chromium browser binary found." >&2
+  exit 1
+fi
+
+"$BROWSER_BIN" \
   --kiosk \
   --incognito \
   --noerrdialogs \

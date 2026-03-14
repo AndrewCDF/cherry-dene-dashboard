@@ -24,12 +24,12 @@ The controller expects one JSON object per line over USB serial, for example:
 
 ## Shed first run
 
-1. Copy this project to `/home/pi/shed-controller`
+1. Copy this project to your Pi home folder, for example `/home/andrewcdf/cherry-dene-dashboard`
 2. Install Python dependencies:
 
 ```bash
 sudo apt update
-sudo apt install -y python3-flask python3-serial chromium-browser unclutter onboard
+sudo apt install -y python3-flask python3-serial chromium unclutter onboard
 ```
 
 3. Start the controller once:
@@ -68,7 +68,8 @@ sudo ./pi_kiosk/install_pi_kiosk.sh /home/pi/shed-controller pi
 
 - The Flask app listens on the configured `listen_port`, default `8091`
 - The Chromium kiosk opens `http://127.0.0.1:8091`
-- `onboard` is started by the kiosk script so numeric fields can bring up an on-screen keyboard on the touchscreen
+- The kiosk script no longer forces `onboard` open at startup
+- Numeric/text fields can still request the on-screen keyboard when the Pi desktop auto-show virtual keyboard setting is enabled
 - If your Pico appears on another port, update `serial_port`
 - If the dashboard must allocate crop IDs for controller-started crops, keep the updated `dashboard_server.py` running on the farm side
 
