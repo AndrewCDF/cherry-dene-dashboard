@@ -1,0 +1,266 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000000000000000000001 /* CherryDeneMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* CherryDeneMobileApp.swift */; };
+		A10000000000000000000002 /* AppSettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* AppSettingsStore.swift */; };
+		A10000000000000000000003 /* NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* NotificationManager.swift */; };
+		A10000000000000000000004 /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* RootTabView.swift */; };
+		A10000000000000000000005 /* DashboardWebContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* DashboardWebContainer.swift */; };
+		A10000000000000000000006 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* SettingsView.swift */; };
+		A10000000000000000000007 /* AlarmModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* AlarmModels.swift */; };
+		A10000000000000000000008 /* AlarmFeedService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* AlarmFeedService.swift */; };
+		A10000000000000000000009 /* AlarmFeedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000009 /* AlarmFeedView.swift */; };
+		A1000000000000000000000A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000A /* Assets.xcassets */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		A20000000000000000000001 /* CherryDeneMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CherryDeneMobileApp.swift; sourceTree = "<group>"; };
+		A20000000000000000000002 /* AppSettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models/AppSettingsStore.swift; sourceTree = "<group>"; };
+		A20000000000000000000003 /* NotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/NotificationManager.swift; sourceTree = "<group>"; };
+		A20000000000000000000004 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/RootTabView.swift; sourceTree = "<group>"; };
+		A20000000000000000000005 /* DashboardWebContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/DashboardWebContainer.swift; sourceTree = "<group>"; };
+		A20000000000000000000006 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/SettingsView.swift; sourceTree = "<group>"; };
+		A20000000000000000000007 /* AlarmModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models/AlarmModels.swift; sourceTree = "<group>"; };
+		A20000000000000000000008 /* AlarmFeedService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/AlarmFeedService.swift; sourceTree = "<group>"; };
+		A20000000000000000000009 /* AlarmFeedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/AlarmFeedView.swift; sourceTree = "<group>"; };
+		A2000000000000000000000A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A2000000000000000000000B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A2000000000000000000000C /* CherryDeneMobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = CherryDeneMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A30000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A40000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				A40000000000000000000002 /* CherryDeneMobile */,
+				A40000000000000000000003 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A40000000000000000000002 /* CherryDeneMobile */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000001 /* CherryDeneMobileApp.swift */,
+				A40000000000000000000004 /* Models */,
+				A40000000000000000000005 /* Services */,
+				A40000000000000000000006 /* Views */,
+				A2000000000000000000000A /* Assets.xcassets */,
+				A2000000000000000000000B /* Info.plist */,
+			);
+			path = CherryDeneMobile;
+			sourceTree = "<group>";
+		};
+		A40000000000000000000003 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A2000000000000000000000C /* CherryDeneMobile.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		A40000000000000000000004 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000002 /* AppSettingsStore.swift */,
+				A20000000000000000000007 /* AlarmModels.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		A40000000000000000000005 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000003 /* NotificationManager.swift */,
+				A20000000000000000000008 /* AlarmFeedService.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		A40000000000000000000006 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000004 /* RootTabView.swift */,
+				A20000000000000000000005 /* DashboardWebContainer.swift */,
+				A20000000000000000000006 /* SettingsView.swift */,
+				A20000000000000000000009 /* AlarmFeedView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A50000000000000000000001 /* CherryDeneMobile */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A70000000000000000000001 /* Build configuration list for PBXNativeTarget "CherryDeneMobile" */;
+			buildPhases = (
+				A30000000000000000000002 /* Sources */,
+				A30000000000000000000001 /* Frameworks */,
+				A30000000000000000000003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = CherryDeneMobile;
+			productName = CherryDeneMobile;
+			productReference = A2000000000000000000000C /* CherryDeneMobile.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A60000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					A50000000000000000000001 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = A70000000000000000000002 /* Build configuration list for PBXProject "CherryDeneMobile" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A40000000000000000000001;
+			productRefGroup = A40000000000000000000003 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A50000000000000000000001 /* CherryDeneMobile */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A30000000000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000000000000000000000A /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A30000000000000000000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000007 /* AlarmModels.swift in Sources */,
+				A10000000000000000000008 /* AlarmFeedService.swift in Sources */,
+				A10000000000000000000009 /* AlarmFeedView.swift in Sources */,
+				A10000000000000000000002 /* AppSettingsStore.swift in Sources */,
+				A10000000000000000000001 /* CherryDeneMobileApp.swift in Sources */,
+				A10000000000000000000005 /* DashboardWebContainer.swift in Sources */,
+				A10000000000000000000003 /* NotificationManager.swift in Sources */,
+				A10000000000000000000004 /* RootTabView.swift in Sources */,
+				A10000000000000000000006 /* SettingsView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		A80000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = CherryDeneMobile/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.cherrydene.mobile;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		A80000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = CherryDeneMobile/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.cherrydene.mobile;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A70000000000000000000001 /* Build configuration list for PBXNativeTarget "CherryDeneMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A80000000000000000000001 /* Debug */,
+				A80000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A70000000000000000000002 /* Build configuration list for PBXProject "CherryDeneMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A80000000000000000000001 /* Debug */,
+				A80000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A60000000000000000000001 /* Project object */;
+}
