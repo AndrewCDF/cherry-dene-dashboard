@@ -1284,6 +1284,7 @@ def shed_sync_payload(shed_no):
     state = load_shed_entries_state()
     shed_name = shed_name_from_number(shed_no)
     entries = ensure_shed_entry_bucket(state, shed_name)
+    ended_entries = state.get(shed_name, {}).get("ended_entries", {})
     payload_entries = {}
 
     for key in entries:
@@ -1366,6 +1367,7 @@ def apply_external_shed_entries(shed_no, incoming_entries, source, controller_me
     state = load_shed_entries_state()
     shed_name = shed_name_from_number(shed_no)
     entries = ensure_shed_entry_bucket(state, shed_name)
+    ended_entries = state.get(shed_name, {}).get("ended_entries", {})
     now_ts = int(time.time())
     changed = False
     try:
@@ -1395,6 +1397,21 @@ def apply_external_shed_entries(shed_no, incoming_entries, source, controller_me
             if rec["updated_ts"] is None:
                 rec["updated_ts"] = now_ts
             rec["updated_by"] = source
+            ended_ts = 0
+            try:
+                ended_ts = int(ended_entries.get(str(dest_shed)) or 0)
+            except Exception:
+                ended_ts = 0
+            incoming_updated_ts = int(rec.get("updated_ts") or 0)
+            if rec["bird_count"] > 0 and ended_ts > 0 and incoming_updated_ts <= ended_ts:
+                log_event(
+                    "office",
+                    "entry_sync_revival_blocked",
+                    "Blocked stale controller reactivation",
+                    shed_no=shed_no,
+                    detail="Entry Shed %d older than dashboard end" % dest_shed,
+                )
+                continue
             if rec["bird_count"] > 0 and rec["crop_active"] == 1 and rec["crop_id"] is None:
                 rec["crop_id"] = crop_id_for_new_start(state)
             other_shed = active_entry_location_for_dest(state, dest_shed, exclude_shed_name=shed_name)
@@ -1436,6 +1453,7 @@ def apply_external_shed_entries(shed_no, incoming_entries, source, controller_me
                 continue
             if prev["bird_count"] > 0 or prev["crop_id"] is not None:
                 log_crop_event(shed_name, prev, False)
+                ended_entries[str(key)] = max(now_ts, prev_updated_ts)
                 changed = True
             del entries[key]
 
@@ -1467,6 +1485,8 @@ def apply_external_shed_entries(shed_no, incoming_entries, source, controller_me
             continue
 
         entries[key] = new_rec
+        if new_rec["bird_count"] > 0 and str(key) in ended_entries:
+            del ended_entries[str(key)]
         changed = True
 
         prev_active = prev["bird_count"] > 0 and prev["crop_active"] == 1 and prev["crop_id"] is not None
@@ -2062,7 +2082,20 @@ def load_shed_entries_state():
                 continue
             clean_entries[str(dest_shed)] = clean_entry_record(entries.get(key, {}))
 
-        result[shed_name] = {"entries": clean_entries}
+        ended_entries = shed_rec.get("ended_entries", {})
+        if not isinstance(ended_entries, dict):
+            ended_entries = {}
+        clean_ended_entries = {}
+        for key, value in ended_entries.items():
+            try:
+                dest_shed = int(key)
+                ended_ts = int(value or 0)
+            except Exception:
+                continue
+            if ended_ts > 0:
+                clean_ended_entries[str(dest_shed)] = ended_ts
+
+        result[shed_name] = {"entries": clean_entries, "ended_entries": clean_ended_entries}
 
     return result
 
@@ -2074,9 +2107,11 @@ def save_shed_entries_state(state):
 
 def ensure_shed_entry_bucket(state, shed_name):
     if shed_name not in state or not isinstance(state.get(shed_name), dict):
-        state[shed_name] = {"entries": {}}
+        state[shed_name] = {"entries": {}, "ended_entries": {}}
     if "entries" not in state[shed_name] or not isinstance(state[shed_name].get("entries"), dict):
         state[shed_name]["entries"] = {}
+    if "ended_entries" not in state[shed_name] or not isinstance(state[shed_name].get("ended_entries"), dict):
+        state[shed_name]["ended_entries"] = {}
     return state[shed_name]["entries"]
 
 
@@ -5708,6 +5743,8 @@ def shed_entry_save(shed_no, dest_shed):
     rec["updated_by"] = "dashboard"
 
     entries[str(dest_shed)] = rec
+    if str(dest_shed) in ended_entries:
+        del ended_entries[str(dest_shed)]
     save_shed_entries_state(state)
     if bird_count == 0:
         refresh_farm_crop_current_id(state)
@@ -5728,6 +5765,7 @@ def shed_entry_start(shed_no, dest_shed):
     state = load_shed_entries_state()
     shed_name = shed_name_from_number(shed_no)
     entries = ensure_shed_entry_bucket(state, shed_name)
+    ended_entries = state.get(shed_name, {}).get("ended_entries", {})
 
     rec = entries.get(str(dest_shed), {
         "bird_count": 0,
@@ -5779,6 +5817,8 @@ def shed_entry_start(shed_no, dest_shed):
     rec["updated_by"] = "dashboard"
 
     entries[str(dest_shed)] = rec
+    if str(dest_shed) in ended_entries:
+        del ended_entries[str(dest_shed)]
     save_shed_entries_state(state)
     refresh_farm_crop_current_id(state)
     log_crop_event(shed_name, rec, True)
@@ -5795,6 +5835,7 @@ def shed_entry_end(shed_no, dest_shed):
     state = load_shed_entries_state()
     shed_name = shed_name_from_number(shed_no)
     entries = ensure_shed_entry_bucket(state, shed_name)
+    ended_entries = state.get(shed_name, {}).get("ended_entries", {})
 
     rec = entries.get(str(dest_shed))
     if not rec:
@@ -5804,6 +5845,7 @@ def shed_entry_end(shed_no, dest_shed):
     rec["updated_ts"] = int(time.time())
     rec["updated_by"] = "dashboard"
     log_crop_event(shed_name, rec, False)
+    ended_entries[str(dest_shed)] = int(time.time())
     del entries[str(dest_shed)]
     save_shed_entries_state(state)
     refresh_farm_crop_current_id(state)
