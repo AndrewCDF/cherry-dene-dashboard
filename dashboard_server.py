@@ -1415,9 +1415,11 @@ def apply_external_shed_entries(shed_no, incoming_entries, source, controller_me
                 prev_updated_ts = 0
             is_possible_stale_delete = (
                 prev["bird_count"] > 0
-                and controller_seen_sync_version > 0
-                and prev_updated_ts >= controller_seen_sync_version
                 and controller_state_updated_ts <= prev_updated_ts
+                and (
+                    controller_seen_sync_version <= 0
+                    or prev_updated_ts >= controller_seen_sync_version
+                )
             )
             if is_possible_stale_delete:
                 log_event(
@@ -2533,6 +2535,10 @@ def build_rows():
         else:
             tile_state = "offline"
 
+        # Keep controller/sync info visible independently, but only glow the shed
+        # tile green when there is an active crop running in that shed.
+        card_state = "online" if has_active_entry else "offline"
+
         if updated_ts:
             try:
                 tt = datetime.fromtimestamp(int(updated_ts))
@@ -2564,6 +2570,7 @@ def build_rows():
             "has_data": bool(live) or bool(days) or bool(crop) or bool(active_entries),
             "has_active_entry": has_active_entry,
             "tile_state": tile_state,
+            "card_state": card_state,
             "temp_c": fmt_value(temp_c, "f1"),
             "rh_pct": fmt_value(rh_pct, "f0"),
             "feed_kg": fmt_value(feed_kg, "f0"),
@@ -3118,7 +3125,7 @@ HTML = """
         <div class="grid">
             {% for s in sheds %}
             <a class="card-link" href="{{ url_for('shed_detail', shed_no=s.shed_no) }}">
-                <div id="shed-card-{{ s.shed_no }}" class="card {% if s.alarm_active %}alarm{% elif s.tile_state == 'online' %}online{% else %}offline{% endif %} {% if not s.has_data %}nodata{% endif %}">
+                <div id="shed-card-{{ s.shed_no }}" class="card {% if s.alarm_active %}alarm{% elif s.card_state == 'online' %}online{% else %}offline{% endif %} {% if not s.has_data %}nodata{% endif %}">
                     <div class="head">
                         <div class="head-left">
                             <div class="shed">{{ s.shed }}</div>
@@ -3377,7 +3384,7 @@ function renderShed(s) {
     setDashText(`shed-feed7-${s.shed_no}`, s.feed_7to7);
     setDashText(`shed-mortality-${s.shed_no}`, s.mortality_display || s.mortality_total);
     setDashText(`shed-updated-${s.shed_no}`, s.updated);
-    setDashClass(`shed-card-${s.shed_no}`, [s.alarm_active ? 'alarm' : s.tile_state, s.has_data ? '' : 'nodata'], ['alarm', 'online', 'offline', 'nodata']);
+    setDashClass(`shed-card-${s.shed_no}`, [s.alarm_active ? 'alarm' : s.card_state, s.has_data ? '' : 'nodata'], ['alarm', 'online', 'offline', 'nodata']);
     setDashClass(`shed-water-tile-${s.shed_no}`, [s.water_glow], ['flow-green', 'flow-red']);
     setDashClass(`shed-feed-tile-${s.shed_no}`, [s.feed_glow], ['feed-green', 'feed-red']);
     setDashText(`shed-sync-badge-${s.shed_no}`, s.sync_pill_text);
