@@ -797,8 +797,7 @@ def update_shed_hourly_water_from_meta(shed_no, meta):
 
     shed_name = shed_name_from_number(shed_no)
     crop_id = get_active_crop_id_for_shed(shed_name)
-    if crop_id in [None, ""]:
-        return False
+    out_of_crop = crop_id in [None, ""]
 
     hour_epoch = (sensor_ts // 3600) * 3600
     rows = read_all_json_lines("hourly.ndjson")
@@ -810,11 +809,24 @@ def update_shed_hourly_water_from_meta(shed_no, meta):
         try:
             same_hour = (
                 row.get("shed") == shed_name
-                and int(row.get("crop_id")) == int(crop_id)
                 and int(row.get("hour_epoch")) == int(hour_epoch)
             )
         except Exception:
-            same_hour = False
+            same_hour = (
+                row.get("shed") == shed_name
+                and row.get("crop_id") in [None, ""]
+                and int(row.get("hour_epoch")) == int(hour_epoch)
+            )
+
+        if same_hour:
+            if out_of_crop:
+                if row.get("crop_id") not in [None, ""]:
+                    same_hour = False
+            else:
+                try:
+                    same_hour = int(row.get("crop_id")) == int(crop_id)
+                except Exception:
+                    same_hour = False
 
         if same_hour:
             try:
@@ -828,6 +840,7 @@ def update_shed_hourly_water_from_meta(shed_no, meta):
             row["water_hour_liters"] = round(max(0.0, water_total_litres - start_total_litres), 3)
             row["ts"] = int(time.time())
             row["source"] = "controller_sync"
+            row["out_of_crop"] = bool(out_of_crop)
             updated = True
             break
         i += 1
@@ -836,11 +849,12 @@ def update_shed_hourly_water_from_meta(shed_no, meta):
         rows.append({
             "ts": int(time.time()),
             "shed": shed_name,
-            "crop_id": int(crop_id),
+            "crop_id": None if out_of_crop else int(crop_id),
             "hour_epoch": int(hour_epoch),
             "start_total_litres": water_total_litres,
             "water_total_litres": water_total_litres,
             "water_hour_liters": 0.0,
+            "out_of_crop": bool(out_of_crop),
             "source": "controller_sync",
         })
 
@@ -1844,6 +1858,10 @@ def get_hourly_history_for_shed(shed_name, max_points=168, crop_id=None):
             if rec_crop_id != int(crop_id):
                 i += 1
                 continue
+        else:
+            if p.get("crop_id") not in [None, ""]:
+                i += 1
+                continue
 
         try:
             hour_epoch = int(p.get("hour_epoch"))
@@ -1874,6 +1892,7 @@ def get_hourly_history_for_shed(shed_name, max_points=168, crop_id=None):
             "water": water_val,
             "feed": feed_val,
             "crop_id": p.get("crop_id"),
+            "out_of_crop": bool(p.get("out_of_crop", False)),
         })
         i += 1
 
@@ -6298,18 +6317,25 @@ def shed_period_view(shed_no, period):
     active_crop_id = get_active_crop_id_for_shed(shed_name)
     active_crop = active_crop_record_for_shed(shed_name)
     active_crop_code = fmt_crop_code(active_crop_id, active_crop.get("placement_epoch"))
+    showing_out_of_crop = active_crop_id in [None, ""]
 
     if period == "hourly":
         rows = get_hourly_history_for_shed(shed_name, max_points=168, crop_id=active_crop_id)
         rows = add_running_totals(rows)
         period_title = "Hourly"
-        period_sub = "Current crop %s hourly list with running totals and separate zoomable feed and water charts." % active_crop_code
+        if showing_out_of_crop:
+            period_sub = "Out-of-crop hourly list with running totals and separate zoomable feed and water charts."
+        else:
+            period_sub = "Current crop %s hourly list with running totals and separate zoomable feed and water charts." % active_crop_code
         first_col = "Hour"
     else:
         rows = get_daily_history_for_shed(shed_name, max_days=40, crop_id=active_crop_id)
         rows = add_running_totals(rows)
         period_title = "Daily"
-        period_sub = "Current crop %s completed 7am-7am daily list with running totals and separate zoomable feed and water charts." % active_crop_code
+        if showing_out_of_crop:
+            period_sub = "Out-of-crop completed 7am-7am daily list with running totals and separate zoomable feed and water charts."
+        else:
+            period_sub = "Current crop %s completed 7am-7am daily list with running totals and separate zoomable feed and water charts." % active_crop_code
         first_col = "Day"
 
     labels = []
