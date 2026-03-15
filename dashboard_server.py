@@ -3364,7 +3364,7 @@ HTML = """
                     </div>
 
                     <div class="section">
-                        <div class="row"><span class="label">Crop</span>{{ s.crop_id }}</div>
+                        <div class="row"><span class="label">Crop</span><span id="shed-crop-{{ s.shed_no }}">{{ s.crop_id }}</span></div>
                         <div class="row"><span class="label">Updated</span><span id="shed-updated-{{ s.shed_no }}">{{ s.updated }}</span></div>
                     </div>
 
@@ -3520,6 +3520,7 @@ function renderShed(s) {
     setDashText(`shed-birds-placed-${s.shed_no}`, s.birds_placed);
     setDashText(`shed-birds-remaining-${s.shed_no}`, s.birds_remaining);
     setDashText(`shed-age-${s.shed_no}`, s.bird_age);
+    setDashText(`shed-crop-${s.shed_no}`, s.crop_id);
     setDashText(`shed-farm-crop-${s.shed_no}`, s.farm_crop_id);
     setDashText(`shed-temp-${s.shed_no}`, s.temp_c);
     setDashText(`shed-rh-${s.shed_no}`, s.rh_pct);
