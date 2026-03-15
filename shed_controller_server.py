@@ -1914,6 +1914,18 @@ def build_home_context():
     now_ts = int(time.time())
     augers = ensure_augers_state(sensors)
     dashboard_summary = state.get("dashboard_summary", {})
+    try:
+        mortality_total_raw = int(dashboard_summary.get("mortality_total") or 0)
+    except Exception:
+        mortality_total_raw = 0
+    birds_remaining_raw = total_birds if total_birds > 0 else 0
+    birds_placed_raw = birds_remaining_raw + mortality_total_raw if birds_remaining_raw > 0 else 0
+    birds_display = fmt_value(birds_remaining_raw if birds_remaining_raw > 0 else None, "i")
+    if birds_placed_raw > 0:
+        birds_display = "%s (%s)" % (
+            fmt_value(birds_remaining_raw, "i"),
+            fmt_value(birds_placed_raw, "i"),
+        )
     sync_status = state.get("last_sync_status", "") or "No sync yet"
     sync_class = "ok" if "OK" in sync_status else ("warn" if "No sync" in sync_status else "bad")
     push_status = state.get("last_push_status", "") or "Waiting"
@@ -2027,6 +2039,7 @@ def build_home_context():
         "updated_at": fmt_ts(entry.get("updated_ts")),
         "started_at": fmt_ts(entry.get("placement_epoch")),
         "total_birds": fmt_value(total_birds if total_birds > 0 else None, "i"),
+        "birds_display": birds_display,
         "oldest_bird_age": fmt_value(oldest_age_days, "i"),
         "allocation_summary": allocation_summary,
         "active_crop_id": active_crop_id,
@@ -3224,7 +3237,7 @@ HTML = """
                         <div class="hero-stat-row">
                             <a class="hero-birds {{ crop_class }}" href="{{ url_for('allocation_view') }}" id="birdsBox">
                                 <span class="hero-birds-label">Birds</span>
-                                <span class="hero-birds-val" id="birdsValue">{{ total_birds }}</span>
+                                <span class="hero-birds-val" id="birdsValue">{{ birds_display }}</span>
                             </a>
                             <a class="hero-mortality {{ crop_class }}" href="{{ url_for('mortality_view') }}" id="mortalityBox">
                                 <span class="hero-mortality-label">Mortality</span>
@@ -3358,7 +3371,7 @@ HTML = """
         }
 
         function renderController(data) {
-            setText('birdsValue', data.total_birds);
+            setText('birdsValue', data.birds_display || data.total_birds);
             setText('birdAgeValue', data.oldest_bird_age);
             setText('cropValue', data.active_crop_code || '--');
             setText('cropDateTime', data.current_datetime || '--');
