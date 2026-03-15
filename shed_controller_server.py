@@ -5892,17 +5892,24 @@ def save_entry_for_dest(dest_shed):
     return redirect_back_with_status("index", ok, sync_msg if sync_msg else "Saved")
 
 
-def start_entry_for_dest_impl(dest_shed):
+def start_entry_for_dest_impl(dest_shed, bird_count_override=None):
     if dest_shed not in SHED_NUMBERS:
         return False, "Invalid shed"
 
     state = load_state()
+    if bird_count_override is not None:
+        entry = get_entry_for_dest(state, dest_shed)
+        entry["bird_count"] = bird_count_override
+        entry["pens"] = []
     entry = get_entry_for_dest(state, dest_shed)
     if entry["bird_count"] <= 0:
         return False, "Set birds before starting"
 
     def mutator(state):
         entry = get_entry_for_dest(state, dest_shed)
+        if bird_count_override is not None:
+            entry["bird_count"] = bird_count_override
+            entry["pens"] = []
         entry["crop_active"] = 1
         if entry["placement_epoch"] is None:
             entry["placement_epoch"] = int(time.time())
@@ -5918,7 +5925,16 @@ def start_entry_for_dest_impl(dest_shed):
 
 @app.route("/entry/<int:dest_shed>/start", methods=["POST"])
 def start_entry_for_dest(dest_shed):
-    ok, sync_msg = start_entry_for_dest_impl(dest_shed)
+    bird_count_override = None
+    raw = str(request.form.get("bird_count", "") or "").strip()
+    if raw != "":
+        try:
+            bird_count_override = int(raw)
+            if bird_count_override < 0:
+                raise ValueError()
+        except Exception:
+            return redirect_back_with_status("index", False, "Invalid bird count")
+    ok, sync_msg = start_entry_for_dest_impl(dest_shed, bird_count_override=bird_count_override)
     return redirect_back_with_status("index", ok, sync_msg if sync_msg else "Started")
 
 
