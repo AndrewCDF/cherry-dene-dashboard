@@ -14,8 +14,11 @@ Current hardware this starter now targets:
 
 Current assumptions:
 - SHT45 is on I2C bus 0
-- SDA is GPIO 4
-- SCL is GPIO 5
+- SHT45 SDA is GPIO 4
+- SHT45 SCL is GPIO 5
+- ADS1115 is on I2C bus 1
+- ADS1115 SDA is GPIO 6
+- ADS1115 SCL is GPIO 7
 - SHT45 address is 0x44
 - ADS1115 address is 0x48
 - ADS1115 channel map is:
@@ -52,24 +55,25 @@ What the firmware sends over USB serial:
 - ct_debug
 
 What you need to edit:
-1. Change I2C_ID, I2C_SDA_PIN, and I2C_SCL_PIN if your SHT45 is wired differently.
-2. Change SHT45_ADDR if your board uses the alternate SHT4x address.
-3. Change FLOW_PIN if your hall-effect flow meter pulse wire is on another GPIO.
-4. Change FLOW_HZ_PER_LPM to match your actual flow meter calibration.
-5. Change HX711_DOUT_PIN and HX711_SCK_PIN if your HX711 is wired differently.
-6. Change the ADS1115 CT channels and thresholds if your auger wiring differs.
-7. Replace the placeholder functions if you later add:
+1. Change SHT_I2C_ID, SHT_I2C_SDA_PIN, and SHT_I2C_SCL_PIN if your SHT45 is wired differently.
+2. Change ADS_I2C_ID, ADS_I2C_SDA_PIN, and ADS_I2C_SCL_PIN if your ADS1115 is wired differently.
+3. Change SHT45_ADDR if your board uses the alternate SHT4x address.
+4. Change FLOW_PIN if your hall-effect flow meter pulse wire is on another GPIO.
+5. Change FLOW_HZ_PER_LPM to match your actual flow meter calibration.
+6. Change HX711_DOUT_PIN and HX711_SCK_PIN if your HX711 is wired differently.
+7. Change the ADS1115 CT channels and thresholds if your auger wiring differs.
+8. Replace the placeholder functions if you later add:
    - light sensor
    - pressure sensor
-8. Set `DEVICE_NAME` so the shed Pi can identify the Pico cleanly.
-9. Set `DEBUG_ADS1115 = False` later if you do not want CT debug data in the JSON output.
+9. Set `DEVICE_NAME` so the shed Pi can identify the Pico cleanly.
+10. Set `DEBUG_ADS1115 = False` later if you do not want CT debug data in the JSON output.
 
 Wiring notes:
 - SHT45:
   - VCC to 3.3V
   - GND to GND
-  - SDA to GPIO set by I2C_SDA_PIN
-  - SCL to GPIO set by I2C_SCL_PIN
+  - SDA to GPIO set by SHT_I2C_SDA_PIN
+  - SCL to GPIO set by SHT_I2C_SCL_PIN
 
 - 3-wire hall flow meter:
   - red to supply
@@ -89,8 +93,9 @@ Wiring notes:
 
 - auger current transformers:
   - CT outputs go into the ADS1115 analog inputs
-  - ADS1115 shares the Pico I2C bus
-  - default firmware assumption is `0x48` on the same bus as the SHT45
+  - ADS1115 uses its own Pico I2C bus
+  - default firmware assumption is bus 1 on GPIO 6/7
+  - default ADS1115 address is `0x48`
   - firmware reads:
     - `A0` for `cross_auger_on`
     - `A1` for `auger_left_on`

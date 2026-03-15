@@ -10,9 +10,12 @@ DEVICE_NAME = "pico-2-shed"
 DEBUG_ADS1115 = True
 
 # Change these pin numbers to match your wiring.
-I2C_ID = 0
-I2C_SDA_PIN = 4
-I2C_SCL_PIN = 5
+SHT_I2C_ID = 0
+SHT_I2C_SDA_PIN = 4
+SHT_I2C_SCL_PIN = 5
+ADS_I2C_ID = 1
+ADS_I2C_SDA_PIN = 6
+ADS_I2C_SCL_PIN = 7
 SHT45_ADDR = 0x44
 ADS1115_ADDR = 0x48
 FLOW_PIN = 3
@@ -51,7 +54,8 @@ ADS1115_CONFIG_COMP_DISABLE = 0x0003
 
 
 status_led = Pin(STATUS_LED_PIN, Pin.OUT)
-i2c = I2C(I2C_ID, sda=Pin(I2C_SDA_PIN), scl=Pin(I2C_SCL_PIN), freq=100000)
+sht_i2c = I2C(SHT_I2C_ID, sda=Pin(SHT_I2C_SDA_PIN), scl=Pin(SHT_I2C_SCL_PIN), freq=100000)
+ads_i2c = I2C(ADS_I2C_ID, sda=Pin(ADS_I2C_SDA_PIN), scl=Pin(ADS_I2C_SCL_PIN), freq=100000)
 flow_pin = Pin(FLOW_PIN, Pin.IN, Pin.PULL_UP)
 hx711_dout = Pin(HX711_DOUT_PIN, Pin.IN, Pin.PULL_UP)
 hx711_sck = Pin(HX711_SCK_PIN, Pin.OUT)
@@ -75,12 +79,12 @@ def ads1115_write_config(config_value):
         (config_value >> 8) & 0xFF,
         config_value & 0xFF,
     ])
-    i2c.writeto(ADS1115_ADDR, payload)
+    ads_i2c.writeto(ADS1115_ADDR, payload)
 
 
 def ads1115_read_conversion():
-    i2c.writeto(ADS1115_ADDR, bytes([ADS1115_REG_CONVERSION]))
-    raw = i2c.readfrom(ADS1115_ADDR, 2)
+    ads_i2c.writeto(ADS1115_ADDR, bytes([ADS1115_REG_CONVERSION]))
+    raw = ads_i2c.readfrom(ADS1115_ADDR, 2)
     value = (raw[0] << 8) | raw[1]
     if value & 0x8000:
         value -= 0x10000
@@ -126,9 +130,9 @@ def crc8(data_bytes):
 
 
 def read_sht45():
-    i2c.writeto(SHT45_ADDR, SHT45_MEASURE_HIGH_PRECISION)
+    sht_i2c.writeto(SHT45_ADDR, SHT45_MEASURE_HIGH_PRECISION)
     time.sleep_ms(10)
-    raw = i2c.readfrom(SHT45_ADDR, 6)
+    raw = sht_i2c.readfrom(SHT45_ADDR, 6)
 
     temp_bytes = raw[0:2]
     temp_crc = raw[2]
