@@ -1372,6 +1372,10 @@ def apply_external_shed_entries(shed_no, incoming_entries, source, controller_me
         controller_seen_sync_version = int((controller_meta or {}).get("last_seen_office_sync_version") or 0)
     except Exception:
         controller_seen_sync_version = 0
+    try:
+        controller_state_updated_ts = int((controller_meta or {}).get("controller_state_updated_ts") or 0)
+    except Exception:
+        controller_state_updated_ts = 0
 
     cleaned_incoming = {}
     if isinstance(incoming_entries, dict):
@@ -1409,7 +1413,13 @@ def apply_external_shed_entries(shed_no, incoming_entries, source, controller_me
                 prev_updated_ts = int(prev.get("updated_ts") or 0)
             except Exception:
                 prev_updated_ts = 0
-            if prev["bird_count"] > 0 and controller_seen_sync_version > 0 and prev_updated_ts >= controller_seen_sync_version:
+            is_possible_stale_delete = (
+                prev["bird_count"] > 0
+                and controller_seen_sync_version > 0
+                and prev_updated_ts >= controller_seen_sync_version
+                and controller_state_updated_ts <= prev_updated_ts
+            )
+            if is_possible_stale_delete:
                 log_event(
                     "office",
                     "entry_sync_delete_blocked",
