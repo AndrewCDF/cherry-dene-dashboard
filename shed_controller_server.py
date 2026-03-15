@@ -5901,6 +5901,7 @@ def start_entry_for_dest_impl(dest_shed, bird_count_override=None):
         entry = get_entry_for_dest(state, dest_shed)
         entry["bird_count"] = bird_count_override
         entry["pens"] = []
+        set_entry_for_dest(state, dest_shed, entry)
     entry = get_entry_for_dest(state, dest_shed)
     if entry["bird_count"] <= 0:
         return False, "Set birds before starting"
