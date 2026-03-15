@@ -1376,6 +1376,10 @@ def apply_external_shed_entries(shed_no, incoming_entries, source, controller_me
         controller_state_updated_ts = int((controller_meta or {}).get("controller_state_updated_ts") or 0)
     except Exception:
         controller_state_updated_ts = 0
+    try:
+        controller_entries_updated_ts = int((controller_meta or {}).get("controller_entries_updated_ts") or 0)
+    except Exception:
+        controller_entries_updated_ts = 0
 
     cleaned_incoming = {}
     if isinstance(incoming_entries, dict):
@@ -1415,7 +1419,7 @@ def apply_external_shed_entries(shed_no, incoming_entries, source, controller_me
                 prev_updated_ts = 0
             is_possible_stale_delete = (
                 prev["bird_count"] > 0
-                and controller_state_updated_ts <= prev_updated_ts
+                and controller_entries_updated_ts <= prev_updated_ts
                 and (
                     controller_seen_sync_version <= 0
                     or prev_updated_ts >= controller_seen_sync_version

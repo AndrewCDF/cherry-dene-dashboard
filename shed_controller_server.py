@@ -1129,6 +1129,7 @@ def load_state():
         "last_auto_sync_signature": "",
         "state_version": 0,
         "state_updated_ts": None,
+        "entries_updated_ts": None,
         "last_seen_office_sync_version": 0,
         "last_seen_office_sync_ts": None,
         "last_sync_ts": None,
@@ -1172,6 +1173,8 @@ def load_state():
         state["state_version"] = 0
     if state.get("state_updated_ts") in [""]:
         state["state_updated_ts"] = None
+    if state.get("entries_updated_ts") in [""]:
+        state["entries_updated_ts"] = None
     try:
         state["last_seen_office_sync_version"] = int(state.get("last_seen_office_sync_version", 0) or 0)
     except Exception:
@@ -1495,6 +1498,7 @@ def sync_payload(state):
         "controller_alarms": sensors.get("controller_alarms", []),
         "controller_sync_version": state.get("state_version", 0),
         "controller_state_updated_ts": state.get("state_updated_ts"),
+        "controller_entries_updated_ts": state.get("entries_updated_ts"),
         "last_seen_office_sync_version": state.get("last_seen_office_sync_version", 0),
         "last_backup_ts": state.get("last_backup_ts"),
         "last_backup_status": state.get("last_backup_status"),
@@ -1619,6 +1623,7 @@ def pull_from_dashboard(state):
                 state["entries"] = {}
                 for key in incoming:
                     state["entries"][str(key)] = clean_entry_record(incoming.get(key, {}))
+                state["entries_updated_ts"] = int(time.time())
             summary = payload.get("summary", {})
             if isinstance(summary, dict):
                 state["dashboard_summary"] = {
@@ -5853,6 +5858,7 @@ def save_entry_for_dest_impl(dest_shed, bird_count):
             entry["updated_ts"] = int(time.time())
             entry["updated_by"] = "controller"
             set_entry_for_dest(state, dest_shed, entry)
+        state["entries_updated_ts"] = int(time.time())
 
     state = mutate_state(mutator)
     record_controller_event("entry_saved", "Saved bird count", "Entry Shed %d = %d" % (dest_shed, bird_count), push_to_office=True)
@@ -5890,6 +5896,7 @@ def start_entry_for_dest_impl(dest_shed):
         entry["updated_ts"] = int(time.time())
         entry["updated_by"] = "controller"
         set_entry_for_dest(state, dest_shed, entry)
+        state["entries_updated_ts"] = int(time.time())
 
     state = mutate_state(mutator)
     record_controller_event("entry_started", "Started entry", "Entry Shed %d" % dest_shed, push_to_office=True)
@@ -5920,7 +5927,7 @@ def move_entry_for_dest_impl(dest_shed):
 
     # Clear the moved entry locally immediately so background sync cannot
     # re-post the old source allocation back to the office before the pull completes.
-    mutate_state(lambda state: clear_entry_for_dest(state, dest_shed))
+    mutate_state(lambda state: (clear_entry_for_dest(state, dest_shed), state.update({"entries_updated_ts": int(time.time())})))
     pull_from_dashboard(load_state())
     record_controller_event("entry_moved", "Moved entry via office", "Entry Shed %d" % dest_shed, push_to_office=True)
     return True, "Entry moved to Shed %d" % dest_shed
@@ -5939,6 +5946,7 @@ def end_entry_for_dest_impl(dest_shed):
     def mutator(state):
         clear_entry_for_dest(state, dest_shed)
         state["last_sync_ts"] = int(time.time())
+        state["entries_updated_ts"] = int(time.time())
 
     state = mutate_state(mutator)
     record_controller_event("entry_ended", "Ended entry", "Entry Shed %d" % dest_shed, push_to_office=True)
@@ -6002,6 +6010,7 @@ def dashboard_sync():
             state["entries"] = {}
             for key in incoming_entries:
                 state["entries"][str(key)] = clean_entry_record(incoming_entries.get(key, {}))
+            state["entries_updated_ts"] = int(time.time())
         summary = payload.get("summary", {})
         if isinstance(summary, dict):
             state["dashboard_summary"] = {
