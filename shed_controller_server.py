@@ -1486,10 +1486,19 @@ def sync_payload(state):
     }
 
     sensors = state.get("sensors", {})
+    water_total_litres = None
+    try:
+        total_pulses = sensors.get("flow_total_pulses")
+        pulses_per_litre = float(cfg.get("water_pulses_per_litre", 450.0))
+        if total_pulses not in [None, ""] and pulses_per_litre > 0:
+            water_total_litres = round(float(total_pulses) / pulses_per_litre, 3)
+    except Exception:
+        water_total_litres = None
     payload["controller_meta"] = {
         "temp_c": sensors.get("temp_c"),
         "rh_pct": sensors.get("rh_pct"),
         "water_lpm": sensors.get("water_lpm"),
+        "water_total_litres": water_total_litres,
         "feed_kg": sensors.get("feed_kg"),
         "last_sensor_ts": sensors.get("last_sensor_ts"),
         "device_status": sensors.get("device_status"),

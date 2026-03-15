@@ -707,6 +707,7 @@ def clean_controller_meta(meta):
         "temp_c": meta.get("temp_c"),
         "rh_pct": meta.get("rh_pct"),
         "water_lpm": meta.get("water_lpm"),
+        "water_total_litres": meta.get("water_total_litres"),
         "feed_kg": meta.get("feed_kg"),
         "last_sensor_ts": meta.get("last_sensor_ts"),
         "device_status": meta.get("device_status"),
@@ -759,6 +760,92 @@ def clean_controller_meta(meta):
             }
 
     return out
+
+
+def save_live_latest_map(data):
+    path = os.path.join(DATA_DIR, "live_latest.json")
+    write_json_file_atomic(path, data if isinstance(data, dict) else {})
+
+
+def save_live_snapshot_for_shed(shed_no, meta):
+    if not isinstance(meta, dict):
+        return
+
+    shed_name = shed_name_from_number(shed_no)
+    live_map = latest_live_by_shed()
+    rec = dict(live_map.get(shed_name, {}))
+
+    for key in ["temp_c", "rh_pct", "water_lpm", "feed_kg", "water_total_litres"]:
+        if meta.get(key) is not None:
+            rec[key] = meta.get(key)
+
+    rec["ts"] = meta.get("last_sensor_ts") if meta.get("last_sensor_ts") not in [None, ""] else int(time.time())
+    rec["source"] = "controller_sync"
+    live_map[shed_name] = rec
+    save_live_latest_map(live_map)
+
+
+def update_shed_hourly_water_from_meta(shed_no, meta):
+    if not isinstance(meta, dict):
+        return False
+
+    try:
+        sensor_ts = int(meta.get("last_sensor_ts"))
+        water_total_litres = float(meta.get("water_total_litres"))
+    except Exception:
+        return False
+
+    shed_name = shed_name_from_number(shed_no)
+    crop_id = get_active_crop_id_for_shed(shed_name)
+    if crop_id in [None, ""]:
+        return False
+
+    hour_epoch = (sensor_ts // 3600) * 3600
+    rows = read_all_json_lines("hourly.ndjson")
+    updated = False
+
+    i = 0
+    while i < len(rows):
+        row = rows[i]
+        try:
+            same_hour = (
+                row.get("shed") == shed_name
+                and int(row.get("crop_id")) == int(crop_id)
+                and int(row.get("hour_epoch")) == int(hour_epoch)
+            )
+        except Exception:
+            same_hour = False
+
+        if same_hour:
+            try:
+                start_total_litres = float(row.get("start_total_litres"))
+            except Exception:
+                start_total_litres = water_total_litres
+            if water_total_litres < start_total_litres:
+                start_total_litres = water_total_litres
+            row["start_total_litres"] = start_total_litres
+            row["water_total_litres"] = water_total_litres
+            row["water_hour_liters"] = round(max(0.0, water_total_litres - start_total_litres), 3)
+            row["ts"] = int(time.time())
+            row["source"] = "controller_sync"
+            updated = True
+            break
+        i += 1
+
+    if not updated:
+        rows.append({
+            "ts": int(time.time()),
+            "shed": shed_name,
+            "crop_id": int(crop_id),
+            "hour_epoch": int(hour_epoch),
+            "start_total_litres": water_total_litres,
+            "water_total_litres": water_total_litres,
+            "water_hour_liters": 0.0,
+            "source": "controller_sync",
+        })
+
+    write_named_json_lines_atomic("hourly.ndjson", rows)
+    return True
 
 
 def save_controller_meta_for_shed(shed_no, meta):
@@ -5994,6 +6081,8 @@ def shed_sync_post(shed_no):
     changed = apply_external_shed_entries(shed_no, incoming_entries, source="controller", controller_meta=incoming_controller_meta)
     if isinstance(incoming_controller_meta, dict):
         save_controller_meta_for_shed(shed_no, incoming_controller_meta)
+        save_live_snapshot_for_shed(shed_no, incoming_controller_meta)
+        update_shed_hourly_water_from_meta(shed_no, incoming_controller_meta)
         log_event("controller", "controller_meta", "Controller telemetry updated", shed_no=shed_no)
 
     return jsonify({
