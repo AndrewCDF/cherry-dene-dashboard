@@ -4370,8 +4370,7 @@ DETAIL_HTML = """
                         <td>Shed {{ r.dest_shed }}</td>
                         <td>
                             <form id="entry-form-{{ r.dest_shed }}" class="form-inline" method="post" action="{{ url_for('shed_entry_save', shed_no=shed_no, dest_shed=r.dest_shed) }}">
-                                <input type="number" name="bird_count" min="0" step="1" value="{{ r.bird_count }}">
-                                <button type="submit">Save</button>
+                                <input type="number" name="bird_count" min="0" step="1" value="{{ '' if r.bird_count == 0 else r.bird_count }}">
                             </form>
                         </td>
                         <td>{{ r.pens_text if r.pens_text else "--" }}</td>
