@@ -5825,6 +5825,7 @@ def shed_entry_save(shed_no, dest_shed):
     state = load_shed_entries_state()
     shed_name = shed_name_from_number(shed_no)
     entries = ensure_shed_entry_bucket(state, shed_name)
+    ended_entries = state.get(shed_name, {}).get("ended_entries", {})
 
     rec = entries.get(str(dest_shed), {
         "bird_count": 0,
