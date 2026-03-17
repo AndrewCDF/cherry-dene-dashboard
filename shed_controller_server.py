@@ -1142,6 +1142,7 @@ def evaluate_augers(sensors, now_ts=None):
     augers = ensure_augers_state(sensors)
     changed = False
     controller_alarms = []
+    active_auger_keys = enabled_auger_keys(load_config())
 
     i = 0
     while i < len(AUGER_DEFS):
@@ -1163,12 +1164,22 @@ def evaluate_augers(sensors, now_ts=None):
             auger["overrun"] = overrun
             changed = True
 
-        if overrun:
+        if overrun and not augers_look_floating(augers, active_auger_keys):
             controller_alarms.append({
                 "alarm_key": "%s_overrun" % key,
                 "message": "%s overrun: running longer than 20 minutes" % label,
             })
         i += 1
+
+    if augers_look_floating(augers, active_auger_keys):
+        i = 0
+        while i < len(active_auger_keys):
+            active_key = active_auger_keys[i]
+            auger = augers.get(active_key, {})
+            if auger.get("overrun"):
+                auger["overrun"] = False
+                changed = True
+            i += 1
 
     normalized = normalize_controller_alarms(controller_alarms)
     if sensors.get("controller_alarms") != normalized:
@@ -1179,9 +1190,7 @@ def evaluate_augers(sensors, now_ts=None):
     return changed
 
 
-def auger_is_waiting_override(auger_key, augers, active_auger_keys):
-    if auger_key not in active_auger_keys:
-        return False
+def augers_look_floating(augers, active_auger_keys):
     if not active_auger_keys:
         return False
 
@@ -1191,14 +1200,18 @@ def auger_is_waiting_override(auger_key, augers, active_auger_keys):
         auger = augers.get(active_key, {})
         if not auger.get("on"):
             return False
-        if auger.get("overrun"):
-            return False
         if auger.get("last_stopped_ts") not in [None, ""]:
             return False
         if auger.get("last_duration_s") not in [None, ""]:
             return False
         i += 1
     return True
+
+
+def auger_is_waiting_override(auger_key, augers, active_auger_keys):
+    if auger_key not in active_auger_keys:
+        return False
+    return augers_look_floating(augers, active_auger_keys)
 
 
 def auger_status_text(auger):
