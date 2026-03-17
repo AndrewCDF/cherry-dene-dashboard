@@ -28,7 +28,7 @@ CONTROLLER_TEMPLATE = load_json(TEMPLATE_DIR / "controller_config.template.json"
 BOREHOLE_CONTROLLER_TEMPLATE = {
     "dashboard_url": "http://127.0.0.1:8090",
     "sync_token": "",
-    "mode_switch_pin": "7193",
+    "mode_switch_pin": "1234",
     "listen_port": 8092,
     "touch_refresh_seconds": 1,
     "water_low_lpm": 0.1,
@@ -138,6 +138,7 @@ def build_farm_setup_payload(form_data):
     farm["deployment_mode"] = form_data["deployment_mode"]
     farm["commissioning_mode"] = commissioning_mode_enabled(form_data["deployment_mode"])
     farm["controller_service_mode"] = form_data["controller_service_mode"]
+    farm["mode_switch_pin"] = str(form_data["mode_switch_pin"]).strip()
     farm["planning"] = {
         "controller_ip_base": form_data["controller_ip_base"],
         "controller_ip_start": int(form_data["controller_ip_start"]),
@@ -175,6 +176,7 @@ def build_farm_setup_payload(form_data):
             "deployment_mode": form_data["deployment_mode"],
             "commissioning_mode": commissioning_mode_enabled(form_data["deployment_mode"]),
             "service_mode": form_data["controller_service_mode"],
+            "mode_switch_pin": str(form_data["mode_switch_pin"]).strip(),
         }
         shed_payload["serial_enabled"] = serial_enabled_for_shed(shed_payload)
         farm["sheds"][shed_no] = shed_payload
@@ -184,6 +186,7 @@ def build_farm_setup_payload(form_data):
     farm["borehole"]["service_mode"] = form_data["controller_service_mode"]
     farm["borehole"]["deployment_mode"] = form_data["deployment_mode"]
     farm["borehole"]["commissioning_mode"] = commissioning_mode_enabled(form_data["deployment_mode"])
+    farm["borehole"]["mode_switch_pin"] = str(form_data["mode_switch_pin"]).strip()
     return farm
 
 
@@ -211,7 +214,7 @@ def build_controller_config_payload(farm_setup, shed_no):
     cfg["shed_no"] = int(shed_no)
     cfg["dashboard_url"] = farm_setup["office"]["dashboard_url"]
     cfg["sync_token"] = ""
-    cfg["mode_switch_pin"] = "7193"
+    cfg["mode_switch_pin"] = str(farm_setup.get("mode_switch_pin", shed.get("mode_switch_pin", "1234")) or "1234")
     cfg["listen_port"] = int(shed.get("controller_port", 8091))
     cfg["serial_port"] = shed.get("serial_port", "/dev/ttyACM0")
     cfg["serial_enabled"] = bool(shed.get("serial_enabled", True))
@@ -240,7 +243,7 @@ def build_borehole_controller_config_payload(farm_setup):
     cfg = deepcopy(BOREHOLE_CONTROLLER_TEMPLATE)
     cfg["dashboard_url"] = farm_setup["office"]["dashboard_url"]
     cfg["sync_token"] = ""
-    cfg["mode_switch_pin"] = "7193"
+    cfg["mode_switch_pin"] = str(farm_setup.get("mode_switch_pin", borehole.get("mode_switch_pin", "1234")) or "1234")
     cfg["deployment_mode"] = farm_setup.get("deployment_mode", "commissioning")
     cfg["commissioning_mode"] = bool(farm_setup.get("commissioning_mode", True))
     cfg["service_mode"] = borehole.get("service_mode", "kiosk")
@@ -274,6 +277,7 @@ def build_setup_sheet(farm_setup, system_type):
         "Office dashboard: %s" % farm_setup["office"]["dashboard_url"],
         "Deployment mode: %s" % DEPLOYMENT_MODE_LABELS.get(farm_setup.get("deployment_mode"), farm_setup.get("deployment_mode", "")),
         "Controller runtime: %s" % SERVICE_MODE_LABELS.get(farm_setup.get("controller_service_mode"), farm_setup.get("controller_service_mode", "")),
+        "Mode PIN: %s" % str(farm_setup.get("mode_switch_pin", "1234")),
         "Sync token: (blank)",
         "",
         "Office Pi",
@@ -316,6 +320,7 @@ def build_install_notes(farm_setup, output_dir):
         "This bundle is set up for:",
         "- Deployment mode: %s" % DEPLOYMENT_MODE_LABELS.get(farm_setup.get("deployment_mode"), farm_setup.get("deployment_mode", "")),
         "- Controller runtime: %s" % SERVICE_MODE_LABELS.get(farm_setup.get("controller_service_mode"), farm_setup.get("controller_service_mode", "")),
+        "- Mode PIN: %s" % str(farm_setup.get("mode_switch_pin", "1234")),
         "- Sync tokens: always blank",
         "",
         "Included files",
@@ -344,6 +349,7 @@ def build_shed_install_notes(form_data, farm_setup, bundle_dir):
         "Shed: %s" % shed_no,
         "Deployment mode: %s" % DEPLOYMENT_MODE_LABELS.get(farm_setup.get("deployment_mode"), farm_setup.get("deployment_mode", "")),
         "Controller runtime: %s" % SERVICE_MODE_LABELS.get(farm_setup.get("controller_service_mode"), farm_setup.get("controller_service_mode", "")),
+        "Mode PIN: %s" % str(farm_setup.get("mode_switch_pin", "1234")),
         "Equipment: %s" % ", ".join(format_equipment_list(shed)),
         "",
         "Files",
@@ -366,6 +372,7 @@ def build_water_install_notes(form_data, farm_setup, bundle_dir):
         "Water controller IP: %s" % form_data["borehole_ip"],
         "Deployment mode: %s" % DEPLOYMENT_MODE_LABELS.get(farm_setup.get("deployment_mode"), farm_setup.get("deployment_mode", "")),
         "Controller runtime: %s" % SERVICE_MODE_LABELS.get(farm_setup.get("controller_service_mode"), farm_setup.get("controller_service_mode", "")),
+        "Mode PIN: %s" % str(farm_setup.get("mode_switch_pin", "1234")),
         "",
         "Files",
         "- water/controller_config.json",
@@ -418,7 +425,7 @@ if [ ! -d "$APP_DIR" ]; then
   exit 1
 fi
 
-bash "$APP_DIR/scripts/install_shed_controller_pi.sh" "$APP_DIR" "$USER_NAME" "%(shed_no)s" "%(dashboard_url)s" "" "%(service_mode)s" "%(deployment_mode)s"
+bash "$APP_DIR/scripts/install_shed_controller_pi.sh" "$APP_DIR" "$USER_NAME" "%(shed_no)s" "%(dashboard_url)s" "" "%(service_mode)s" "%(deployment_mode)s" "%(mode_switch_pin)s"
 mkdir -p "$APP_DIR/controller_data"
 cp "$SCRIPT_DIR/controller_config.json" "$APP_DIR/controller_data/controller_config.json"
 sudo systemctl restart shed-controller.service
@@ -431,6 +438,7 @@ echo "Config copied from: $SCRIPT_DIR/controller_config.json"
         "dashboard_url": farm_setup["office"]["dashboard_url"],
         "service_mode": cfg.get("service_mode", "kiosk"),
         "deployment_mode": cfg.get("deployment_mode", "commissioning"),
+        "mode_switch_pin": str(cfg.get("mode_switch_pin", farm_setup.get("mode_switch_pin", "1234")) or "1234"),
     }
 
 
@@ -448,7 +456,7 @@ if [ ! -d "$APP_DIR" ]; then
   exit 1
 fi
 
-bash "$APP_DIR/scripts/install_borehole_controller_pi.sh" "$APP_DIR" "$USER_NAME" "%(dashboard_url)s" "" "%(service_mode)s" "%(deployment_mode)s"
+bash "$APP_DIR/scripts/install_borehole_controller_pi.sh" "$APP_DIR" "$USER_NAME" "%(dashboard_url)s" "" "%(service_mode)s" "%(deployment_mode)s" "%(mode_switch_pin)s"
 mkdir -p "$APP_DIR/borehole_controller_data"
 cp "$SCRIPT_DIR/controller_config.json" "$APP_DIR/borehole_controller_data/controller_config.json"
 sudo systemctl restart borehole-controller.service
@@ -460,6 +468,7 @@ echo "Config copied from: $SCRIPT_DIR/controller_config.json"
         "dashboard_url": farm_setup["office"]["dashboard_url"],
         "service_mode": farm_setup.get("borehole", {}).get("service_mode", farm_setup.get("controller_service_mode", "kiosk")),
         "deployment_mode": farm_setup.get("borehole", {}).get("deployment_mode", farm_setup.get("deployment_mode", "commissioning")),
+        "mode_switch_pin": str(farm_setup.get("borehole", {}).get("mode_switch_pin", farm_setup.get("mode_switch_pin", "1234")) or "1234"),
     }
 
 
@@ -560,6 +569,7 @@ class FarmSetupWizard:
         self.system_type_var = tk.StringVar(value="dashboard")
         self.deployment_mode_var = tk.StringVar(value="commissioning")
         self.controller_service_mode_var = tk.StringVar(value="kiosk")
+        self.mode_switch_pin_var = tk.StringVar(value="1234")
         self.farm_name_var = tk.StringVar(value=FARM_TEMPLATE.get("farm_name", ""))
         self.dashboard_ip_var = tk.StringVar(value=default_ip)
         self.dashboard_port_var = tk.StringVar(value=str(FARM_TEMPLATE["office"].get("dashboard_port", 8090)))
@@ -631,24 +641,27 @@ class FarmSetupWizard:
         ttk.Entry(top, textvariable=self.controller_ip_base_var, width=18).grid(row=2, column=1, sticky="ew", padx=6, pady=6)
         ttk.Label(top, text="Start Host").grid(row=2, column=2, sticky="w", padx=6, pady=6)
         ttk.Entry(top, textvariable=self.controller_ip_start_var, width=8).grid(row=2, column=3, sticky="ew", padx=6, pady=6)
+        ttk.Label(top, text="Mode PIN").grid(row=2, column=4, sticky="w", padx=6, pady=6)
+        ttk.Entry(top, textvariable=self.mode_switch_pin_var, width=12).grid(row=2, column=5, sticky="ew", padx=6, pady=6)
+
         self.shed_numbers_label = ttk.Label(top, text="Shed Numbers")
-        self.shed_numbers_label.grid(row=2, column=4, sticky="w", padx=6, pady=6)
+        self.shed_numbers_label.grid(row=3, column=0, sticky="w", padx=6, pady=6)
         self.shed_numbers_entry = ttk.Entry(top, textvariable=self.shed_numbers_var, width=18)
-        self.shed_numbers_entry.grid(row=2, column=5, sticky="ew", padx=6, pady=6)
+        self.shed_numbers_entry.grid(row=3, column=1, sticky="ew", padx=6, pady=6)
 
         self.build_rows_button = ttk.Button(top, text="Build Shed Rows", command=self.rebuild_shed_rows)
         self.build_rows_button.grid(row=3, column=4, columnspan=2, sticky="ew", padx=6, pady=6)
 
         self.borehole_check = ttk.Checkbutton(top, text="Include Bore Hole", variable=self.borehole_enabled_var)
-        self.borehole_check.grid(row=3, column=0, sticky="w", padx=6, pady=6)
+        self.borehole_check.grid(row=4, column=0, sticky="w", padx=6, pady=6)
         self.borehole_ip_label = ttk.Label(top, text="Bore Hole IP")
-        self.borehole_ip_label.grid(row=3, column=2, sticky="w", padx=6, pady=6)
+        self.borehole_ip_label.grid(row=4, column=2, sticky="w", padx=6, pady=6)
         self.borehole_ip_entry = ttk.Entry(top, textvariable=self.borehole_ip_var, width=18)
-        self.borehole_ip_entry.grid(row=3, column=3, sticky="ew", padx=6, pady=6)
+        self.borehole_ip_entry.grid(row=4, column=3, sticky="ew", padx=6, pady=6)
 
-        ttk.Label(top, text="Output Folder").grid(row=4, column=0, sticky="w", padx=6, pady=6)
-        ttk.Entry(top, textvariable=self.output_root_var).grid(row=4, column=1, columnspan=4, sticky="ew", padx=6, pady=6)
-        ttk.Button(top, text="Choose...", command=self.choose_output_root).grid(row=4, column=5, sticky="ew", padx=6, pady=6)
+        ttk.Label(top, text="Output Folder").grid(row=5, column=0, sticky="w", padx=6, pady=6)
+        ttk.Entry(top, textvariable=self.output_root_var).grid(row=5, column=1, columnspan=4, sticky="ew", padx=6, pady=6)
+        ttk.Button(top, text="Choose...", command=self.choose_output_root).grid(row=5, column=5, sticky="ew", padx=6, pady=6)
 
         for column in range(6):
             top.columnconfigure(column, weight=1 if column in [1, 3, 5] else 0)
@@ -756,6 +769,9 @@ class FarmSetupWizard:
             raise ValueError("Pick commissioning or live mode.")
         if controller_service_mode not in SERVICE_MODE_LABELS:
             raise ValueError("Pick kiosk or service_only runtime.")
+        mode_switch_pin = str(self.mode_switch_pin_var.get()).strip()
+        if not mode_switch_pin or not mode_switch_pin.isdigit() or len(mode_switch_pin) < 4:
+            raise ValueError("Mode PIN must be at least 4 digits.")
 
         dashboard_port = int(self.dashboard_port_var.get().strip())
         controller_ip_base = normalise_ip_base(self.controller_ip_base_var.get(), self.dashboard_ip_var.get())
@@ -780,6 +796,7 @@ class FarmSetupWizard:
             "system_type": system_type,
             "deployment_mode": deployment_mode,
             "controller_service_mode": controller_service_mode,
+            "mode_switch_pin": mode_switch_pin,
             "farm_name": self.farm_name_var.get().strip(),
             "dashboard_ip": self.dashboard_ip_var.get().strip(),
             "dashboard_port": dashboard_port,

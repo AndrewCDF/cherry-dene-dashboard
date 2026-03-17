@@ -24,7 +24,7 @@ DEFAULT_CONFIG = {
     "sync_token": "",
     "deployment_mode": "commissioning",
     "commissioning_mode": True,
-    "mode_switch_pin": "7193",
+    "mode_switch_pin": "1234",
     "listen_port": 8092,
     "touch_refresh_seconds": 1,
     "water_low_lpm": 0.1,
