@@ -1044,12 +1044,6 @@ HOME_HTML = """
     .hero-datetime.inactive {
       text-shadow:0 0 10px rgba(255,91,91,0.95),0 0 20px rgba(255,91,91,0.65),0 0 34px rgba(255,91,91,0.35);
     }
-    .hero-access {
-      margin-top:8px;
-      color:var(--muted);
-      font-size:14px;
-      word-break:break-word;
-    }
     .hero-pills { margin-top:14px; }
     .pill-grid { display:grid; grid-template-columns:repeat(6, minmax(0,1fr)); gap:8px; }
     .pill { border-radius:14px; border:1px solid var(--line); background:var(--panel2); padding:7px 8px; min-height:44px; display:flex; flex-direction:column; justify-content:center; align-items:center; }
@@ -1098,7 +1092,6 @@ HOME_HTML = """
         <h1 id="headerTitle" class="{{ header_class }}">CDF - BORE HOLE</h1>
         <div id="dateTime" class="hero-datetime {{ header_class }}">{{ current_datetime }}</div>
       </div>
-      <div class="hero-access">This device: {{ host_ips }}</div>
       <div class="hero-pills">
         <div class="pill-grid">
           <div id="alarmPill" class="pill {{ alarm_class }}"><span class="pill-label">Alarm</span><span class="pill-value" id="alarmValue">{{ alarm_short }}</span></div>
@@ -2049,6 +2042,7 @@ def config_view():
     <form method="post" action="%s">
       <label>Office Dashboard URL</label>
       <input type="text" name="dashboard_url" value="%s">
+      <div class="detail"><span class="label">This Device IP</span><span>%s</span></div>
       <label>Refresh Seconds</label>
       <input type="number" name="touch_refresh_seconds" min="1" step="1" value="%s">
       <label>Low Flow Alarm Threshold LPM</label>
@@ -2060,6 +2054,7 @@ def config_view():
     """ % (
         url_for("save_config_view"),
         cfg.get("dashboard_url", ""),
+        host_ipv4_display(),
         cfg.get("touch_refresh_seconds", 1),
         cfg.get("water_low_lpm", 0.1),
         cfg.get("water_pulses_per_litre", 450.0),

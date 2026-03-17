@@ -2879,12 +2879,6 @@ HTML = """
             color: var(--muted);
             font-size: 16px;
         }
-        .hero-access {
-            margin-top: 8px;
-            color: var(--muted);
-            font-size: 14px;
-            word-break: break-word;
-        }
         .hero-datetime-inline {
             margin-left: auto;
             display: inline-flex;
@@ -3386,7 +3380,6 @@ HTML = """
                             </div>
                         </div>
                         <div class="hero-allocations" id="allocationSummary" {% if not allocation_summary %}style="display:none"{% endif %}>{{ allocation_summary }}</div>
-                        <div class="hero-access">This device: {{ host_ips }}</div>
                     </div>
                 </div>
                 <div class="hero-pills">
@@ -4072,6 +4065,7 @@ CONFIG_HTML = """
         .group-title { margin:18px 0 10px 0; font-size:18px; color:var(--text); }
         label { display:block; color:var(--muted); margin-bottom:8px; font-size:15px; }
         input[type="text"], input[type="number"] { width:100%; min-height:64px; border-radius:16px; border:1px solid var(--line); background:#686868; color:var(--text); font-size:24px; padding:10px 14px; box-sizing:border-box; }
+        .value-readout { min-height:64px; border-radius:16px; border:1px solid var(--line); background:#5f5f5f; color:var(--text); font-size:22px; padding:14px; box-sizing:border-box; display:flex; align-items:center; word-break:break-word; }
         .check { display:flex; align-items:center; justify-content:space-between; padding:12px 0; border-bottom:1px solid #818181; font-size:18px; }
         .check:last-child { border-bottom:0; }
         input[type="checkbox"] { width:28px; height:28px; }
@@ -4094,6 +4088,7 @@ CONFIG_HTML = """
                     <div class="group-title">Identity & Network</div>
                     <div class="field"><label for="shed_no">Shed Number</label><input id="shed_no" type="number" name="shed_no" step="1" inputmode="numeric" value="{{ cfg.shed_no }}"></div>
                     <div class="field"><label for="dashboard_url">Office Dashboard URL</label><input id="dashboard_url" type="text" name="dashboard_url" inputmode="url" enterkeyhint="done" data-cdf-urlpad="1" value="{{ cfg.dashboard_url }}"></div>
+                    <div class="field"><label>This Device IP</label><div class="value-readout">{{ host_ips }}</div></div>
                     <div class="group-title">Pico Serial</div>
                     <div class="field"><label for="serial_port">Serial Port</label><input id="serial_port" type="text" name="serial_port" value="{{ cfg.serial_port }}"></div>
                     <div class="field"><label for="serial_baudrate">Serial Baudrate</label><input id="serial_baudrate" type="number" name="serial_baudrate" step="1" inputmode="numeric" value="{{ cfg.serial_baudrate }}"></div>
@@ -5595,6 +5590,7 @@ def controller_config_view():
         CONFIG_HTML,
         shed_no=cfg["shed_no"],
         cfg=cfg,
+        host_ips=host_ipv4_display(),
         last_backup=fmt_ts(state.get("last_backup_ts")),
         last_backup_status=state.get("last_backup_status", "") or "--",
     )
