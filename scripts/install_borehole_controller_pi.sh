@@ -53,7 +53,7 @@ cat > "$APP_DIR/borehole_controller_data/controller_config.json" <<EOF
   "sync_token": "$SYNC_TOKEN",
   "deployment_mode": "$DEPLOYMENT_MODE",
   "commissioning_mode": $COMMISSIONING_MODE,
-  "mode_switch_pin": "2468",
+  "mode_switch_pin": "7193",
   "listen_port": 8092,
   "touch_refresh_seconds": 1,
   "water_low_lpm": 0.1,

@@ -28,7 +28,7 @@ CONTROLLER_TEMPLATE = load_json(TEMPLATE_DIR / "controller_config.template.json"
 BOREHOLE_CONTROLLER_TEMPLATE = {
     "dashboard_url": "http://127.0.0.1:8090",
     "sync_token": "",
-    "mode_switch_pin": "2468",
+    "mode_switch_pin": "7193",
     "listen_port": 8092,
     "touch_refresh_seconds": 1,
     "water_low_lpm": 0.1,
@@ -211,7 +211,7 @@ def build_controller_config_payload(farm_setup, shed_no):
     cfg["shed_no"] = int(shed_no)
     cfg["dashboard_url"] = farm_setup["office"]["dashboard_url"]
     cfg["sync_token"] = ""
-    cfg["mode_switch_pin"] = "2468"
+    cfg["mode_switch_pin"] = "7193"
     cfg["listen_port"] = int(shed.get("controller_port", 8091))
     cfg["serial_port"] = shed.get("serial_port", "/dev/ttyACM0")
     cfg["serial_enabled"] = bool(shed.get("serial_enabled", True))
@@ -240,7 +240,7 @@ def build_borehole_controller_config_payload(farm_setup):
     cfg = deepcopy(BOREHOLE_CONTROLLER_TEMPLATE)
     cfg["dashboard_url"] = farm_setup["office"]["dashboard_url"]
     cfg["sync_token"] = ""
-    cfg["mode_switch_pin"] = "2468"
+    cfg["mode_switch_pin"] = "7193"
     cfg["deployment_mode"] = farm_setup.get("deployment_mode", "commissioning")
     cfg["commissioning_mode"] = bool(farm_setup.get("commissioning_mode", True))
     cfg["service_mode"] = borehole.get("service_mode", "kiosk")

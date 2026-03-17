@@ -267,7 +267,7 @@ DEFAULT_CONFIG = {
     "sync_token": "",
     "deployment_mode": "commissioning",
     "commissioning_mode": True,
-    "mode_switch_pin": "2468",
+    "mode_switch_pin": "7193",
     "listen_port": 8091,
     "serial_port": "/dev/ttyACM0",
     "serial_baudrate": 115200,
