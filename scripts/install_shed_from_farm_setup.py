@@ -47,6 +47,8 @@ def main():
     shed = sheds[shed_no]
 
     cfg = dict(template)
+    cfg["farm_id"] = str(farm.get("farm_id", shed.get("farm_id", "")) or "")
+    cfg["farm_name"] = str(farm.get("farm_name", shed.get("farm_name", "")) or "")
     cfg["shed_no"] = int(shed_no)
     cfg["dashboard_url"] = office.get("dashboard_url", cfg.get("dashboard_url"))
     cfg["mode_switch_pin"] = str(shed.get("mode_switch_pin", farm.get("mode_switch_pin", cfg.get("mode_switch_pin", "1234"))) or "1234")

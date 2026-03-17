@@ -11,6 +11,8 @@ Use on each shed Pi:
 2. Copy controller_config.template.json to:
    controller_data/controller_config.json
 3. Change:
+   - farm_id
+   - farm_name
    - shed_no
    - dashboard_url
    - sync_token
@@ -31,6 +33,8 @@ Planning all sheds:
 
 Master planning file:
 1. Fill out farm_setup.template.json if you want one file covering:
+   - farm_id
+   - farm_name
    - office dashboard
    - all sheds
    - the bore hole controller

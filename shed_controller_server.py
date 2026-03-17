@@ -262,6 +262,8 @@ DATA_DIR = "controller_data"
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 SHED_NUMBERS = [1, 2, 3, 4, 6, 7, 8, 9, 10]
 DEFAULT_CONFIG = {
+    "farm_id": "",
+    "farm_name": "",
     "shed_no": 1,
     "dashboard_url": "http://127.0.0.1:8090",
     "sync_token": "",

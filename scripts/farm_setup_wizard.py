@@ -56,6 +56,10 @@ def slugify(text):
     return cleaned or "farm"
 
 
+def default_farm_id():
+    return str(FARM_TEMPLATE.get("farm_id") or slugify(FARM_TEMPLATE.get("farm_name", "farm"))).strip()
+
+
 def parse_shed_numbers(raw_text):
     out = []
     for part in str(raw_text or "").replace(" ", "").split(","):
@@ -134,6 +138,7 @@ def format_equipment_list(payload):
 
 def build_farm_setup_payload(form_data):
     farm = deepcopy(FARM_TEMPLATE)
+    farm["farm_id"] = form_data["farm_id"]
     farm["farm_name"] = form_data["farm_name"]
     farm["deployment_mode"] = form_data["deployment_mode"]
     farm["commissioning_mode"] = commissioning_mode_enabled(form_data["deployment_mode"])
@@ -150,11 +155,15 @@ def build_farm_setup_payload(form_data):
         form_data["dashboard_ip"],
         int(form_data["dashboard_port"]),
     )
+    farm["office"]["farm_id"] = form_data["farm_id"]
+    farm["office"]["farm_name"] = form_data["farm_name"]
 
     farm["sheds"] = {}
     for shed in form_data["sheds"]:
         shed_no = str(int(shed["shed_no"]))
         shed_payload = {
+            "farm_id": form_data["farm_id"],
+            "farm_name": form_data["farm_name"],
             "controller_ip": shed["controller_ip"],
             "controller_port": 8091,
             "serial_port": "/dev/ttyACM0",
@@ -187,6 +196,8 @@ def build_farm_setup_payload(form_data):
     farm["borehole"]["deployment_mode"] = form_data["deployment_mode"]
     farm["borehole"]["commissioning_mode"] = commissioning_mode_enabled(form_data["deployment_mode"])
     farm["borehole"]["mode_switch_pin"] = str(form_data["mode_switch_pin"]).strip()
+    farm["borehole"]["farm_id"] = form_data["farm_id"]
+    farm["borehole"]["farm_name"] = form_data["farm_name"]
     return farm
 
 
@@ -211,6 +222,8 @@ def build_office_controllers_payload(farm_setup):
 def build_controller_config_payload(farm_setup, shed_no):
     shed = farm_setup["sheds"][str(int(shed_no))]
     cfg = deepcopy(CONTROLLER_TEMPLATE)
+    cfg["farm_id"] = str(farm_setup.get("farm_id", shed.get("farm_id", "")) or "")
+    cfg["farm_name"] = str(farm_setup.get("farm_name", shed.get("farm_name", "")) or "")
     cfg["shed_no"] = int(shed_no)
     cfg["dashboard_url"] = farm_setup["office"]["dashboard_url"]
     cfg["sync_token"] = ""
@@ -241,6 +254,8 @@ def build_controller_config_payload(farm_setup, shed_no):
 def build_borehole_controller_config_payload(farm_setup):
     borehole = farm_setup.get("borehole", {})
     cfg = deepcopy(BOREHOLE_CONTROLLER_TEMPLATE)
+    cfg["farm_id"] = str(farm_setup.get("farm_id", borehole.get("farm_id", "")) or "")
+    cfg["farm_name"] = str(farm_setup.get("farm_name", borehole.get("farm_name", "")) or "")
     cfg["dashboard_url"] = farm_setup["office"]["dashboard_url"]
     cfg["sync_token"] = ""
     cfg["mode_switch_pin"] = str(farm_setup.get("mode_switch_pin", borehole.get("mode_switch_pin", "1234")) or "1234")
@@ -268,11 +283,19 @@ def write_shell_script(path, text):
     os.chmod(path, 0o755)
 
 
+def build_office_config_payload(farm_setup):
+    return {
+        "farm_id": str(farm_setup.get("farm_id", "") or ""),
+        "farm_name": str(farm_setup.get("farm_name", "") or ""),
+    }
+
+
 def build_setup_sheet(farm_setup, system_type):
     lines = [
         "Cherry Dene Setup Sheet",
         "",
         "Bundle type: %s" % SYSTEM_TYPE_LABELS.get(system_type, system_type),
+        "Farm ID: %s" % farm_setup.get("farm_id", "--"),
         "Farm: %s" % farm_setup["farm_name"],
         "Office dashboard: %s" % farm_setup["office"]["dashboard_url"],
         "Deployment mode: %s" % DEPLOYMENT_MODE_LABELS.get(farm_setup.get("deployment_mode"), farm_setup.get("deployment_mode", "")),
@@ -318,6 +341,8 @@ def build_install_notes(farm_setup, output_dir):
         "Cherry Dene Farm Setup Export",
         "",
         "This bundle is set up for:",
+        "- Farm ID: %s" % farm_setup.get("farm_id", "--"),
+        "- Farm Name: %s" % farm_setup.get("farm_name", "--"),
         "- Deployment mode: %s" % DEPLOYMENT_MODE_LABELS.get(farm_setup.get("deployment_mode"), farm_setup.get("deployment_mode", "")),
         "- Controller runtime: %s" % SERVICE_MODE_LABELS.get(farm_setup.get("controller_service_mode"), farm_setup.get("controller_service_mode", "")),
         "- Mode PIN: %s" % str(farm_setup.get("mode_switch_pin", "1234")),
@@ -326,6 +351,7 @@ def build_install_notes(farm_setup, output_dir):
         "Included files",
         "- SETUP-SHEET.txt",
         "- office/install_commands.sh",
+        "- office/office_config.json",
         "- one install_commands.sh per shed or water controller",
         "",
         "Copy the whole bundle to the target machine if you want to run the generated install scripts directly.",
@@ -344,6 +370,7 @@ def build_shed_install_notes(form_data, farm_setup, bundle_dir):
     return "\n".join([
         "Cherry Dene Shed Controller Export",
         "",
+        "Farm ID: %s" % farm_setup.get("farm_id", "--"),
         "Farm: %s" % farm_setup["farm_name"],
         "Office dashboard: %s" % farm_setup["office"]["dashboard_url"],
         "Shed: %s" % shed_no,
@@ -367,6 +394,7 @@ def build_water_install_notes(form_data, farm_setup, bundle_dir):
     return "\n".join([
         "Cherry Dene Water Controller Export",
         "",
+        "Farm ID: %s" % farm_setup.get("farm_id", "--"),
         "Farm: %s" % farm_setup["farm_name"],
         "Office dashboard: %s" % farm_setup["office"]["dashboard_url"],
         "Water controller IP: %s" % form_data["borehole_ip"],
@@ -400,12 +428,14 @@ fi
 
 mkdir -p "$APP_DIR/data"
 cp "$SCRIPT_DIR/controllers.json" "$APP_DIR/data/controllers.json"
+cp "$SCRIPT_DIR/office_config.json" "$APP_DIR/data/office_config.json"
 sudo bash "$APP_DIR/pi_kiosk/install_office_service.sh" "$APP_DIR"
 sudo systemctl restart office-dashboard.service
 
 echo
 echo "Office dashboard updated from bundle."
 echo "Controllers file copied from: $SCRIPT_DIR/controllers.json"
+echo "Office identity copied from: $SCRIPT_DIR/office_config.json"
 """
 
 
@@ -486,6 +516,7 @@ def build_bundle(form_data, output_root):
 
     if system_type in ["dashboard", "other"]:
         write_json(bundle_dir / "office" / "controllers.json", office_controllers)
+        write_json(bundle_dir / "office" / "office_config.json", build_office_config_payload(farm_setup))
         write_shell_script(bundle_dir / "office" / "install_commands.sh", build_office_install_script())
         for shed_no in sorted(farm_setup["sheds"].keys(), key=lambda value: int(value)):
             cfg = build_controller_config_payload(farm_setup, shed_no)
@@ -570,6 +601,7 @@ class FarmSetupWizard:
         self.deployment_mode_var = tk.StringVar(value="commissioning")
         self.controller_service_mode_var = tk.StringVar(value="kiosk")
         self.mode_switch_pin_var = tk.StringVar(value="1234")
+        self.farm_id_var = tk.StringVar(value=default_farm_id())
         self.farm_name_var = tk.StringVar(value=FARM_TEMPLATE.get("farm_name", ""))
         self.dashboard_ip_var = tk.StringVar(value=default_ip)
         self.dashboard_port_var = tk.StringVar(value=str(FARM_TEMPLATE["office"].get("dashboard_port", 8090)))
@@ -632,22 +664,24 @@ class FarmSetupWizard:
 
         ttk.Label(top, text="Farm Name").grid(row=1, column=0, sticky="w", padx=6, pady=6)
         ttk.Entry(top, textvariable=self.farm_name_var, width=36).grid(row=1, column=1, sticky="ew", padx=6, pady=6)
-        ttk.Label(top, text="Dashboard IP").grid(row=1, column=2, sticky="w", padx=6, pady=6)
-        ttk.Entry(top, textvariable=self.dashboard_ip_var, width=18).grid(row=1, column=3, sticky="ew", padx=6, pady=6)
-        ttk.Label(top, text="Dashboard Port").grid(row=1, column=4, sticky="w", padx=6, pady=6)
-        ttk.Entry(top, textvariable=self.dashboard_port_var, width=8).grid(row=1, column=5, sticky="ew", padx=6, pady=6)
+        ttk.Label(top, text="Farm ID").grid(row=1, column=2, sticky="w", padx=6, pady=6)
+        ttk.Entry(top, textvariable=self.farm_id_var, width=18).grid(row=1, column=3, sticky="ew", padx=6, pady=6)
+        ttk.Label(top, text="Dashboard IP").grid(row=1, column=4, sticky="w", padx=6, pady=6)
+        ttk.Entry(top, textvariable=self.dashboard_ip_var, width=18).grid(row=1, column=5, sticky="ew", padx=6, pady=6)
 
-        ttk.Label(top, text="Controller IP Base").grid(row=2, column=0, sticky="w", padx=6, pady=6)
-        ttk.Entry(top, textvariable=self.controller_ip_base_var, width=18).grid(row=2, column=1, sticky="ew", padx=6, pady=6)
-        ttk.Label(top, text="Start Host").grid(row=2, column=2, sticky="w", padx=6, pady=6)
-        ttk.Entry(top, textvariable=self.controller_ip_start_var, width=8).grid(row=2, column=3, sticky="ew", padx=6, pady=6)
-        ttk.Label(top, text="Mode PIN").grid(row=2, column=4, sticky="w", padx=6, pady=6)
-        ttk.Entry(top, textvariable=self.mode_switch_pin_var, width=12).grid(row=2, column=5, sticky="ew", padx=6, pady=6)
+        ttk.Label(top, text="Dashboard Port").grid(row=2, column=0, sticky="w", padx=6, pady=6)
+        ttk.Entry(top, textvariable=self.dashboard_port_var, width=8).grid(row=2, column=1, sticky="ew", padx=6, pady=6)
+        ttk.Label(top, text="Controller IP Base").grid(row=2, column=2, sticky="w", padx=6, pady=6)
+        ttk.Entry(top, textvariable=self.controller_ip_base_var, width=18).grid(row=2, column=3, sticky="ew", padx=6, pady=6)
+        ttk.Label(top, text="Start Host").grid(row=2, column=4, sticky="w", padx=6, pady=6)
+        ttk.Entry(top, textvariable=self.controller_ip_start_var, width=8).grid(row=2, column=5, sticky="ew", padx=6, pady=6)
 
+        ttk.Label(top, text="Mode PIN").grid(row=3, column=0, sticky="w", padx=6, pady=6)
+        ttk.Entry(top, textvariable=self.mode_switch_pin_var, width=12).grid(row=3, column=1, sticky="ew", padx=6, pady=6)
         self.shed_numbers_label = ttk.Label(top, text="Shed Numbers")
-        self.shed_numbers_label.grid(row=3, column=0, sticky="w", padx=6, pady=6)
+        self.shed_numbers_label.grid(row=3, column=2, sticky="w", padx=6, pady=6)
         self.shed_numbers_entry = ttk.Entry(top, textvariable=self.shed_numbers_var, width=18)
-        self.shed_numbers_entry.grid(row=3, column=1, sticky="ew", padx=6, pady=6)
+        self.shed_numbers_entry.grid(row=3, column=3, sticky="ew", padx=6, pady=6)
 
         self.build_rows_button = ttk.Button(top, text="Build Shed Rows", command=self.rebuild_shed_rows)
         self.build_rows_button.grid(row=3, column=4, columnspan=2, sticky="ew", padx=6, pady=6)
@@ -757,8 +791,11 @@ class FarmSetupWizard:
         self.borehole_check.configure(state="normal" if system_type in ["dashboard", "other"] else "disabled")
 
     def validate(self):
+        farm_id = slugify(self.farm_id_var.get().strip())
         if not self.farm_name_var.get().strip():
             raise ValueError("Farm name is required.")
+        if not farm_id:
+            raise ValueError("Farm ID is required.")
         if not self.dashboard_ip_var.get().strip():
             raise ValueError("Dashboard IP is required.")
 
@@ -797,6 +834,7 @@ class FarmSetupWizard:
             "deployment_mode": deployment_mode,
             "controller_service_mode": controller_service_mode,
             "mode_switch_pin": mode_switch_pin,
+            "farm_id": farm_id,
             "farm_name": self.farm_name_var.get().strip(),
             "dashboard_ip": self.dashboard_ip_var.get().strip(),
             "dashboard_port": dashboard_port,

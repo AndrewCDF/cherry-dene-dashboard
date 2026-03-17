@@ -1,4 +1,6 @@
 {
+  "farm_id": "cherry-dene",
+  "farm_name": "Cherry Dene Farm Ltd.",
   "shed_no": 1,
   "dashboard_url": "http://192.168.1.10:8090",
   "sync_token": "CHANGE_ME_SHARED_TOKEN",

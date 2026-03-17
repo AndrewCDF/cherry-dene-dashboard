@@ -20,6 +20,8 @@ DATA_DIR = os.path.join(APP_ROOT, "borehole_controller_data")
 STATE_LOCK = threading.Lock()
 
 DEFAULT_CONFIG = {
+    "farm_id": "",
+    "farm_name": "",
     "dashboard_url": "http://127.0.0.1:8090",
     "sync_token": "",
     "deployment_mode": "commissioning",
