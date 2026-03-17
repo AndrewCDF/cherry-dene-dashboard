@@ -283,6 +283,55 @@ def write_json_file_atomic(path, payload):
     os.replace(tmp, path)
 
 
+def host_ipv4_addresses():
+    seen = []
+
+    def add_ip(ip):
+        ip = str(ip or "").strip()
+        if not ip or ip.startswith("127."):
+            return
+        if ip not in seen:
+            seen.append(ip)
+
+    try:
+        output = subprocess.check_output(["hostname", "-I"], text=True, stderr=subprocess.DEVNULL)
+        for part in output.split():
+            if part.count(".") == 3:
+                add_ip(part)
+    except Exception:
+        pass
+
+    try:
+        infos = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET, socket.SOCK_DGRAM)
+        for info in infos:
+            add_ip(info[4][0])
+    except Exception:
+        pass
+
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.connect(("8.8.8.8", 80))
+        add_ip(sock.getsockname()[0])
+        sock.close()
+    except Exception:
+        pass
+
+    def sort_key(ip):
+        if ip.startswith("192.168.") or ip.startswith("10.") or ip.startswith("172."):
+            return (0, ip)
+        if ip.startswith("100."):
+            return (1, ip)
+        return (2, ip)
+
+    seen.sort(key=sort_key)
+    return seen
+
+
+def host_ipv4_display():
+    ips = host_ipv4_addresses()
+    return " • ".join(ips) if ips else "--"
+
+
 def append_named_json_line(name, payload):
     ensure_data_dir()
     path = os.path.join(DATA_DIR, name)
@@ -945,6 +994,7 @@ def home_context():
         sensor_age = None
     header_class = "active" if pico_connected and sensor_age is not None and sensor_age <= SENSOR_STALE_SECONDS else "inactive"
     return {
+        "host_ips": host_ipv4_display(),
         "refresh_seconds": max(1, int(cfg.get("touch_refresh_seconds", 1) or 1)),
         "water_lpm": fmt_value(water, "f2"),
         "water_glow": water_glow,
@@ -992,6 +1042,12 @@ HOME_HTML = """
     }
     .hero-datetime.inactive {
       text-shadow:0 0 10px rgba(255,91,91,0.95),0 0 20px rgba(255,91,91,0.65),0 0 34px rgba(255,91,91,0.35);
+    }
+    .hero-access {
+      margin-top:8px;
+      color:var(--muted);
+      font-size:14px;
+      word-break:break-word;
     }
     .hero-pills { margin-top:14px; }
     .pill-grid { display:grid; grid-template-columns:repeat(6, minmax(0,1fr)); gap:8px; }
@@ -1041,6 +1097,7 @@ HOME_HTML = """
         <h1 id="headerTitle" class="{{ header_class }}">CDF - BORE HOLE</h1>
         <div id="dateTime" class="hero-datetime {{ header_class }}">{{ current_datetime }}</div>
       </div>
+      <div class="hero-access">This device: {{ host_ips }}</div>
       <div class="hero-pills">
         <div class="pill-grid">
           <div id="alarmPill" class="pill {{ alarm_class }}"><span class="pill-label">Alarm</span><span class="pill-value" id="alarmValue">{{ alarm_short }}</span></div>

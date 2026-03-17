@@ -1,6 +1,7 @@
 from flask import Flask, render_template_string, abort, url_for, request, redirect, jsonify, Response, send_file
 import json
 import os
+import socket
 import subprocess
 import tempfile
 import threading
@@ -126,6 +127,55 @@ def backups_dir():
                 return backup_dir
             return os.path.join(office_repo_dir(), backup_dir)
     return os.path.join(DATA_DIR, "backups")
+
+
+def host_ipv4_addresses():
+    seen = []
+
+    def add_ip(ip):
+        ip = str(ip or "").strip()
+        if not ip or ip.startswith("127."):
+            return
+        if ip not in seen:
+            seen.append(ip)
+
+    try:
+        output = subprocess.check_output(["hostname", "-I"], text=True, stderr=subprocess.DEVNULL)
+        for part in output.split():
+            if part.count(".") == 3:
+                add_ip(part)
+    except Exception:
+        pass
+
+    try:
+        infos = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET, socket.SOCK_DGRAM)
+        for info in infos:
+            add_ip(info[4][0])
+    except Exception:
+        pass
+
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.connect(("8.8.8.8", 80))
+        add_ip(sock.getsockname()[0])
+        sock.close()
+    except Exception:
+        pass
+
+    def sort_key(ip):
+        if ip.startswith("192.168.") or ip.startswith("10.") or ip.startswith("172.16.") or ip.startswith("172.17.") or ip.startswith("172.18.") or ip.startswith("172.19.") or ip.startswith("172.2"):
+            return (0, ip)
+        if ip.startswith("100."):
+            return (1, ip)
+        return (2, ip)
+
+    seen.sort(key=sort_key)
+    return seen
+
+
+def host_ipv4_display():
+    ips = host_ipv4_addresses()
+    return " • ".join(ips) if ips else "--"
 
 
 def crop_age_days(placement_epoch):
@@ -2770,6 +2820,7 @@ def build_dashboard_context():
         "sheds": build_rows(),
         "borehole": build_borehole_row(),
         "overall": overall,
+        "host_ips": host_ipv4_display(),
         "header_class": "active" if str(overall.get("farm_crop_id", "--")) != "--" else "inactive",
     }
 
@@ -2885,6 +2936,13 @@ HTML = """
             font-weight: bold;
             color: #efefef;
             white-space: nowrap;
+        }
+        .access-ip {
+            margin-top: 6px;
+            font-size: 13px;
+            color: #d2d2d2;
+            text-align: right;
+            word-break: break-word;
         }
         .datetime.active {
             text-shadow:
@@ -3272,6 +3330,7 @@ HTML = """
             </div>
             <div class="topbar-right">
                 <div id="topDateTime" class="datetime {{ header_class }}">--</div>
+                <div class="access-ip">This device: {{ host_ips }}</div>
             </div>
         </div>
 

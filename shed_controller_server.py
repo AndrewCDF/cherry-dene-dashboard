@@ -346,6 +346,55 @@ def write_json_file_atomic(path, payload):
     os.replace(tmp, path)
 
 
+def host_ipv4_addresses():
+    seen = []
+
+    def add_ip(ip):
+        ip = str(ip or "").strip()
+        if not ip or ip.startswith("127."):
+            return
+        if ip not in seen:
+            seen.append(ip)
+
+    try:
+        output = subprocess.check_output(["hostname", "-I"], text=True, stderr=subprocess.DEVNULL)
+        for part in output.split():
+            if part.count(".") == 3:
+                add_ip(part)
+    except Exception:
+        pass
+
+    try:
+        infos = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET, socket.SOCK_DGRAM)
+        for info in infos:
+            add_ip(info[4][0])
+    except Exception:
+        pass
+
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.connect(("8.8.8.8", 80))
+        add_ip(sock.getsockname()[0])
+        sock.close()
+    except Exception:
+        pass
+
+    def sort_key(ip):
+        if ip.startswith("192.168.") or ip.startswith("10.") or ip.startswith("172."):
+            return (0, ip)
+        if ip.startswith("100."):
+            return (1, ip)
+        return (2, ip)
+
+    seen.sort(key=sort_key)
+    return seen
+
+
+def host_ipv4_display():
+    ips = host_ipv4_addresses()
+    return " • ".join(ips) if ips else "--"
+
+
 def crop_age_days(placement_epoch):
     if placement_epoch in [None, ""]:
         return None
@@ -2048,6 +2097,7 @@ def build_home_context():
 
     return {
         "shed_no": cfg["shed_no"],
+        "host_ips": host_ipv4_display(),
         "dashboard_url": cfg["dashboard_url"],
         "serial_port": detect_serial_port(),
         "refresh_seconds": max(1, cfg["touch_refresh_seconds"]),
@@ -2828,6 +2878,12 @@ HTML = """
             color: var(--muted);
             font-size: 16px;
         }
+        .hero-access {
+            margin-top: 8px;
+            color: var(--muted);
+            font-size: 14px;
+            word-break: break-word;
+        }
         .hero-datetime-inline {
             margin-left: auto;
             display: inline-flex;
@@ -3329,6 +3385,7 @@ HTML = """
                             </div>
                         </div>
                         <div class="hero-allocations" id="allocationSummary" {% if not allocation_summary %}style="display:none"{% endif %}>{{ allocation_summary }}</div>
+                        <div class="hero-access">This device: {{ host_ips }}</div>
                     </div>
                 </div>
                 <div class="hero-pills">
