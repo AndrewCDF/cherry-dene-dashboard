@@ -128,6 +128,17 @@ def backups_dir():
     return os.path.join(DATA_DIR, "backups")
 
 
+def crop_age_days(placement_epoch):
+    if placement_epoch in [None, ""]:
+        return None
+    try:
+        started_date = datetime.fromtimestamp(int(placement_epoch)).date()
+        today = datetime.now().date()
+    except Exception:
+        return None
+    return max(0, (today - started_date).days)
+
+
 def load_office_config():
     data = read_json_file(os.path.join(DATA_DIR, "office_config.json"), {})
     return data if isinstance(data, dict) else {}
@@ -2603,10 +2614,7 @@ def build_rows():
         bird_age = None
         try:
             if placement_epoch is not None and int(crop_active) == 1:
-                age_s = int(time.time()) - int(placement_epoch)
-                if age_s < 0:
-                    age_s = 0
-                bird_age = age_s // 86400
+                bird_age = crop_age_days(placement_epoch)
         except Exception:
             bird_age = None
 

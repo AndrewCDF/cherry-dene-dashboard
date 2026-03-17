@@ -329,6 +329,17 @@ def write_json_file_atomic(path, payload):
     os.replace(tmp, path)
 
 
+def crop_age_days(placement_epoch):
+    if placement_epoch in [None, ""]:
+        return None
+    try:
+        started_date = datetime.fromtimestamp(int(placement_epoch)).date()
+        today = datetime.now().date()
+    except Exception:
+        return None
+    return max(0, (today - started_date).days)
+
+
 def append_ndjson(path, payload):
     with open(path, "a") as f:
         f.write(json.dumps(payload) + "\n")
@@ -1406,7 +1417,6 @@ def active_crop_epoch_from_entries(entries, crop_id=None):
 
 def oldest_bird_age_days(entries):
     oldest_days = None
-    now_ts = int(time.time())
 
     for key in entries:
         rec = clean_entry_record(entries.get(key, {}))
@@ -1417,9 +1427,8 @@ def oldest_bird_age_days(entries):
         if placement_epoch in [None, ""]:
             continue
 
-        try:
-            age_days = max(0, (now_ts - int(placement_epoch)) // 86400)
-        except Exception:
+        age_days = crop_age_days(placement_epoch)
+        if age_days is None:
             continue
 
         if oldest_days is None or age_days > oldest_days:
