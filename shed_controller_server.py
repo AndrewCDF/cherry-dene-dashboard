@@ -47,6 +47,7 @@ TOUCH_OPTIMIZE_HEAD = (
     '.cdf-number-pad__key{min-height:60px;border-radius:14px;border:1px solid #8a8a8a;background:linear-gradient(180deg,#7a7a7a,#676767);color:#ececec;font:700 24px/1 Arial,sans-serif;}'
     '.cdf-number-pad__key--wide{grid-column:span 2;}'
     '.cdf-number-pad__key--action{background:linear-gradient(180deg,#6f6f6f,#5f5f5f);font-size:18px;}'
+    '.cdf-number-pad__key--url{font-size:20px;}'
     '.cdf-number-pad__key[hidden]{display:none;}'
     '</style>'
 )
@@ -71,6 +72,9 @@ NUMBER_PAD_BODY = """
       <button type="button" class="cdf-number-pad__key cdf-number-pad__key--action" data-action="clear">Clear</button>
       <button type="button" class="cdf-number-pad__key" data-key="0">0</button>
       <button type="button" id="cdfNumberPadDecimal" class="cdf-number-pad__key" data-key=".">.</button>
+      <button type="button" id="cdfNumberPadHttp" class="cdf-number-pad__key cdf-number-pad__key--url cdf-number-pad__key--wide" data-key="http://">http://</button>
+      <button type="button" id="cdfNumberPadColon" class="cdf-number-pad__key cdf-number-pad__key--url" data-key=":">:</button>
+      <button type="button" id="cdfNumberPadSlash" class="cdf-number-pad__key cdf-number-pad__key--url" data-key="/">/</button>
       <button type="button" class="cdf-number-pad__key cdf-number-pad__key--action" data-action="backspace">Back</button>
       <button type="button" class="cdf-number-pad__key cdf-number-pad__key--action cdf-number-pad__key--wide" data-action="done">Done</button>
     </div>
@@ -82,9 +86,16 @@ NUMBER_PAD_BODY = """
   if (!pad) return;
   const valueEl = document.getElementById('cdfNumberPadValue');
   const decimalBtn = document.getElementById('cdfNumberPadDecimal');
+  const httpBtn = document.getElementById('cdfNumberPadHttp');
+  const colonBtn = document.getElementById('cdfNumberPadColon');
+  const slashBtn = document.getElementById('cdfNumberPadSlash');
   let activeInput = null;
   let dragScroll = null;
   let suppressClickUntil = 0;
+
+  function isUrlPadInput(input) {
+    return !!(input && input.matches && input.matches('input[data-cdf-urlpad]'));
+  }
 
   function supportsDecimal(input) {
     const inputMode = (input.getAttribute('inputmode') || '').toLowerCase();
@@ -97,7 +108,13 @@ NUMBER_PAD_BODY = """
   function syncDisplay() {
     valueEl.textContent = activeInput ? (activeInput.value || ' ') : '';
     if (activeInput) {
-      decimalBtn.hidden = !supportsDecimal(activeInput);
+      const urlMode = isUrlPadInput(activeInput);
+      decimalBtn.hidden = !urlMode && !supportsDecimal(activeInput);
+      decimalBtn.textContent = '.';
+      decimalBtn.setAttribute('data-key', '.');
+      httpBtn.hidden = !urlMode;
+      colonBtn.hidden = !urlMode;
+      slashBtn.hidden = !urlMode;
     }
   }
 
@@ -126,7 +143,7 @@ NUMBER_PAD_BODY = """
 
   document.addEventListener('focusin', function (event) {
     const target = event.target;
-    if (target && target.matches && target.matches('input[type="number"]')) {
+    if (target && target.matches && target.matches('input[type="number"], input[data-cdf-urlpad]')) {
       openPad(target);
     }
   });
@@ -176,7 +193,7 @@ NUMBER_PAD_BODY = """
 
   document.addEventListener('pointerdown', function (event) {
     const target = event.target;
-    if (target && target.matches && target.matches('input[type="number"]')) {
+    if (target && target.matches && target.matches('input[type="number"], input[data-cdf-urlpad]')) {
       openPad(target);
       return;
     }
@@ -206,8 +223,8 @@ NUMBER_PAD_BODY = """
       return;
     }
     if (!key) return;
-    if (key === '.' && (!supportsDecimal(activeInput) || current.includes('.'))) return;
-    if (current === '0' && key !== '.') {
+    if (!isUrlPadInput(activeInput) && key === '.' && (!supportsDecimal(activeInput) || current.includes('.'))) return;
+    if (!isUrlPadInput(activeInput) && current === '0' && key !== '.') {
       commitValue(key);
       return;
     }
@@ -3976,7 +3993,7 @@ CONFIG_HTML = """
                 <form method="post" action="{{ url_for('save_controller_config_view') }}">
                     <div class="group-title">Identity & Network</div>
                     <div class="field"><label for="shed_no">Shed Number</label><input id="shed_no" type="number" name="shed_no" step="1" inputmode="numeric" value="{{ cfg.shed_no }}"></div>
-                    <div class="field"><label for="dashboard_url">Office Dashboard URL</label><input id="dashboard_url" type="text" name="dashboard_url" value="{{ cfg.dashboard_url }}"></div>
+                    <div class="field"><label for="dashboard_url">Office Dashboard URL</label><input id="dashboard_url" type="text" name="dashboard_url" inputmode="url" enterkeyhint="done" data-cdf-urlpad="1" value="{{ cfg.dashboard_url }}"></div>
                     <div class="group-title">Pico Serial</div>
                     <div class="field"><label for="serial_port">Serial Port</label><input id="serial_port" type="text" name="serial_port" value="{{ cfg.serial_port }}"></div>
                     <div class="field"><label for="serial_baudrate">Serial Baudrate</label><input id="serial_baudrate" type="number" name="serial_baudrate" step="1" inputmode="numeric" value="{{ cfg.serial_baudrate }}"></div>
@@ -4593,10 +4610,10 @@ WATER_SETTINGS_HTML = """
         <div class="panel">
             <h1>Shed {{ shed_no }} Water Settings</h1>
             <div class="sub">Adjust the low-flow threshold and calibrate pulses per litre against the shed water meter.</div>
-            <div class="current">Current: {{ current_value }} L/PM</div>
+            <div class="current">Current: <span id="waterCurrentValue">{{ current_value }}</span> L/PM</div>
             <div class="detail"><span>Low flow threshold</span><span>{{ water_low_lpm }} L/PM</span></div>
-            <div class="detail"><span>Pulses per litre</span><span>{{ water_pulses_per_litre }}</span></div>
-            <div class="detail"><span>Total flow pulses</span><span>{{ total_flow_pulses }}</span></div>
+            <div class="detail"><span>Pulses per litre</span><span id="waterPulsesPerLitre">{{ water_pulses_per_litre }}</span></div>
+            <div class="detail"><span>Total flow pulses</span><span id="waterTotalPulses">{{ total_flow_pulses }}</span></div>
         </div>
         <div class="panel">
             <form method="post" action="{{ url_for('save_water_settings') }}">
@@ -4608,30 +4625,74 @@ WATER_SETTINGS_HTML = """
         </div>
         <div class="panel">
             <div class="sub">5 minute calibration</div>
-            <div class="detail"><span>Status</span><span class="status">{{ calibration_status }}</span></div>
-            <div class="detail"><span>Pulse count in run</span><span>{{ calibration_pulse_delta }}</span></div>
-            <div class="detail"><span>Time remaining</span><span>{{ calibration_remaining }}</span></div>
-            {% if calibration_can_start %}
-            <form method="post" action="{{ url_for('start_water_calibration') }}">
+            <div class="detail"><span>Status</span><span id="calibrationStatus" class="status">{{ calibration_status }}</span></div>
+            <div class="detail"><span>Pulse count in run</span><span id="calibrationPulseDelta">{{ calibration_pulse_delta }}</span></div>
+            <div class="detail"><span>Time remaining</span><span id="calibrationRemaining">{{ calibration_remaining }}</span></div>
+            <form id="startCalibrationForm" method="post" action="{{ url_for('start_water_calibration') }}" {% if not calibration_can_start %}style="display:none"{% endif %}>
                 <button type="submit">Start 5 Minute Calibration</button>
             </form>
-            {% endif %}
-            {% if calibration_active %}
-            <form method="post" action="{{ url_for('cancel_water_calibration') }}">
+            <form id="cancelCalibrationForm" method="post" action="{{ url_for('cancel_water_calibration') }}" {% if not calibration_active %}style="display:none"{% endif %}>
                 <button class="danger" type="submit">Cancel Calibration</button>
             </form>
-            {% endif %}
-            <form method="post" action="{{ url_for('finish_water_calibration') }}">
+            <form id="finishCalibrationForm" method="post" action="{{ url_for('finish_water_calibration') }}">
                 <label for="meter_litres">Litres shown on physical water meter for this 5 minute run</label>
                 <input id="meter_litres" type="number" name="meter_litres" step="0.01" inputmode="decimal" enterkeyhint="done" value="" {% if not calibration_ready %}disabled{% endif %}>
-                <button type="submit" {% if not calibration_ready %}disabled{% endif %}>Save New Pulses Per Litre</button>
+                <button id="finishCalibrationButton" type="submit" {% if not calibration_ready %}disabled{% endif %}>Save New Pulses Per Litre</button>
             </form>
-            <div class="hint">
+            <div id="calibrationHint" class="hint">
                 New pulses per litre = counted pulses divided by the litres from the physical meter.
                 {% if not calibration_ready %}Complete the 5 minute calibration first to enable saving.{% endif %}
             </div>
         </div>
     </div>
+<script>
+(function () {
+    const currentEl = document.getElementById('waterCurrentValue');
+    const pplEl = document.getElementById('waterPulsesPerLitre');
+    const totalEl = document.getElementById('waterTotalPulses');
+    const statusEl = document.getElementById('calibrationStatus');
+    const pulseEl = document.getElementById('calibrationPulseDelta');
+    const remainingEl = document.getElementById('calibrationRemaining');
+    const startForm = document.getElementById('startCalibrationForm');
+    const cancelForm = document.getElementById('cancelCalibrationForm');
+    const meterInput = document.getElementById('meter_litres');
+    const finishButton = document.getElementById('finishCalibrationButton');
+    const hintEl = document.getElementById('calibrationHint');
+    if (!currentEl || !pplEl || !totalEl || !statusEl || !pulseEl || !remainingEl) return;
+
+    function setVisible(el, visible) {
+        if (!el) return;
+        el.style.display = visible ? '' : 'none';
+    }
+
+    async function refreshWaterCalibration() {
+        try {
+            const resp = await fetch('/api/settings/water-state', { cache: 'no-store' });
+            if (!resp.ok) return;
+            const data = await resp.json();
+            currentEl.textContent = data.current_value || '--';
+            pplEl.textContent = data.water_pulses_per_litre || '--';
+            totalEl.textContent = data.total_flow_pulses || '--';
+            statusEl.textContent = data.calibration_status || 'Ready';
+            pulseEl.textContent = data.calibration_pulse_delta || '--';
+            remainingEl.textContent = data.calibration_remaining || '--';
+            setVisible(startForm, !!data.calibration_can_start);
+            setVisible(cancelForm, !!data.calibration_active);
+            if (meterInput) meterInput.disabled = !data.calibration_ready;
+            if (finishButton) finishButton.disabled = !data.calibration_ready;
+            if (hintEl) {
+                let hint = 'New pulses per litre = counted pulses divided by the litres from the physical meter.';
+                if (!data.calibration_ready) hint += ' Complete the 5 minute calibration first to enable saving.';
+                hintEl.textContent = hint;
+            }
+        } catch (err) {
+        }
+    }
+
+    refreshWaterCalibration();
+    setInterval(refreshWaterCalibration, 1000);
+})();
+</script>
 </body>
 </html>
 """
@@ -5556,10 +5617,7 @@ def save_temp_settings():
     return redirect(url_for("temp_settings_view"))
 
 
-@app.route("/settings/water")
-def water_settings_view():
-    cfg = load_config()
-    state = load_state()
+def build_water_settings_context(cfg, state):
     sensors = state.get("sensors", default_sensor_state())
     calib = state.get("water_calibration", {})
     now_ts = int(time.time())
@@ -5585,6 +5643,7 @@ def water_settings_view():
                     calib_state["pulse_delta"] = None
                 state["water_calibration"] = calib_state
             state = mutate_state(mutator)
+            sensors = state.get("sensors", default_sensor_state())
             calib = state.get("water_calibration", {})
 
     calibration_status = "Ready"
@@ -5617,20 +5676,33 @@ def water_settings_view():
             calibration_remaining = "0m 00s"
             calibration_pulse_delta = fmt_value(calib.get("pulse_delta"), "i")
 
-    return render_template_string(
-        WATER_SETTINGS_HTML,
-        shed_no=cfg["shed_no"],
-        current_value=fmt_value(sensors.get("water_lpm"), "f2"),
-        water_low_lpm=fmt_value(cfg.get("water_low_lpm", 0.1), "f2"),
-        water_pulses_per_litre=fmt_value(cfg.get("water_pulses_per_litre", 450.0), "f1"),
-        total_flow_pulses=fmt_value(sensors.get("flow_total_pulses"), "i"),
-        calibration_status=calibration_status,
-        calibration_remaining=calibration_remaining,
-        calibration_pulse_delta=calibration_pulse_delta,
-        calibration_can_start=calibration_can_start,
-        calibration_active=calibration_active,
-        calibration_ready=calibration_ready,
-    )
+    return {
+        "shed_no": cfg["shed_no"],
+        "current_value": fmt_value(sensors.get("water_lpm"), "f2"),
+        "water_low_lpm": fmt_value(cfg.get("water_low_lpm", 0.1), "f2"),
+        "water_pulses_per_litre": fmt_value(cfg.get("water_pulses_per_litre", 450.0), "f1"),
+        "total_flow_pulses": fmt_value(sensors.get("flow_total_pulses"), "i"),
+        "calibration_status": calibration_status,
+        "calibration_remaining": calibration_remaining,
+        "calibration_pulse_delta": calibration_pulse_delta,
+        "calibration_can_start": calibration_can_start,
+        "calibration_active": calibration_active,
+        "calibration_ready": calibration_ready,
+    }
+
+
+@app.route("/settings/water")
+def water_settings_view():
+    cfg = load_config()
+    state = load_state()
+    return render_template_string(WATER_SETTINGS_HTML, **build_water_settings_context(cfg, state))
+
+
+@app.route("/api/settings/water-state")
+def water_settings_state_api():
+    cfg = load_config()
+    state = load_state()
+    return jsonify(build_water_settings_context(cfg, state))
 
 
 @app.route("/settings/water/save", methods=["POST"])
