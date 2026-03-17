@@ -886,6 +886,7 @@ def default_sensor_state():
         "temp_c": None,
         "rh_pct": None,
         "water_lpm": None,
+        "water_lpm_raw": None,
         "feed_kg": None,
         "light_lux": None,
         "pressure_pa": None,
@@ -2303,7 +2304,22 @@ def update_water_from_pulses(sensors, now_ts):
 
         if pulse_delta is not None and pulse_delta >= 0 and elapsed_s is not None:
             litres_per_second = (float(pulse_delta) / pulses_per_litre) / float(elapsed_s)
-            sensors["water_lpm"] = round(litres_per_second * 60.0, 2)
+            raw_lpm = round(litres_per_second * 60.0, 2)
+            sensors["water_lpm_raw"] = raw_lpm
+            prev_lpm = sensors.get("water_lpm")
+            try:
+                prev_lpm = float(prev_lpm) if prev_lpm is not None else None
+            except Exception:
+                prev_lpm = None
+            if prev_lpm is None:
+                sensors["water_lpm"] = raw_lpm
+            else:
+                # Smooth the displayed L/PM so pulse timing jitter does not make
+                # the touchscreen readout jump wildly while preserving total litres.
+                alpha = 0.35
+                if raw_lpm < prev_lpm:
+                    alpha = 0.5
+                sensors["water_lpm"] = round((prev_lpm * (1.0 - alpha)) + (raw_lpm * alpha), 2)
 
     sensors["flow_prev_total_pulses"] = total_pulses
     sensors["flow_prev_ts"] = now_ts
