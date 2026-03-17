@@ -498,6 +498,27 @@ def mpremote_command():
     return [sys.executable, "-m", "mpremote"]
 
 
+def pause_sensor_threads(join_timeout=3.0):
+    SERIAL_STOP.set()
+    threads = [SERIAL_THREAD, MONITOR_THREAD]
+    i = 0
+    while i < len(threads):
+        thread = threads[i]
+        if thread is not None and thread.is_alive():
+            try:
+                thread.join(join_timeout)
+            except Exception:
+                pass
+        i += 1
+    time.sleep(0.4)
+
+
+def resume_sensor_threads():
+    SERIAL_STOP.clear()
+    start_serial_thread()
+    start_monitor_thread()
+
+
 def run_git_command(args, timeout=20):
     proc = subprocess.run(
         ["git"] + args,
@@ -640,25 +661,29 @@ def deploy_pico_firmware():
     controller_commit = stdout if code == 0 and stdout else "--"
     mpremote = mpremote_command()
 
-    proc = subprocess.run(
-        mpremote + ["connect", "auto", "fs", "cp", source_path, ":main.py"],
-        cwd=APP_ROOT,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
+    pause_sensor_threads()
+    try:
+        proc = subprocess.run(
+            mpremote + ["connect", "auto", "fs", "cp", source_path, ":main.py"],
+            cwd=APP_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if proc.returncode == 0:
+            subprocess.run(
+                mpremote + ["connect", "auto", "soft-reset"],
+                cwd=APP_ROOT,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+    finally:
+        resume_sensor_threads()
     if proc.returncode != 0:
         status["status"] = (proc.stderr or proc.stdout or "Pico copy failed").strip()
         save_pico_update_status(status)
         return status
-
-    subprocess.run(
-        mpremote + ["connect", "auto", "soft-reset"],
-        cwd=APP_ROOT,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
     status.update({
         "ok": True,
         "status": "Pico firmware deployed from controller %s" % controller_commit,
@@ -677,13 +702,17 @@ def soft_reset_pico():
         "status": "Pico soft reset failed",
     })
     mpremote = mpremote_command()
-    proc = subprocess.run(
-        mpremote + ["connect", "auto", "soft-reset"],
-        cwd=APP_ROOT,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
+    pause_sensor_threads()
+    try:
+        proc = subprocess.run(
+            mpremote + ["connect", "auto", "soft-reset"],
+            cwd=APP_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    finally:
+        resume_sensor_threads()
     if proc.returncode != 0:
         status["status"] = (proc.stderr or proc.stdout or "Pico soft reset failed").strip()
         save_pico_update_status(status)
