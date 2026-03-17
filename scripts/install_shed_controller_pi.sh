@@ -6,6 +6,7 @@ USER_NAME="${2:-$(id -un)}"
 SHED_NO="${3:-1}"
 DASHBOARD_URL="${4:-http://192.168.1.19:8090}"
 SYNC_TOKEN="${5:-}"
+SERVICE_MODE="${6:-kiosk}"
 
 APP_DIR="$(cd "$APP_DIR" && pwd)"
 USER_HOME="$(getent passwd "$USER_NAME" | cut -d: -f6)"
@@ -21,13 +22,24 @@ echo "  user          : $USER_NAME"
 echo "  user home     : $USER_HOME"
 echo "  shed number   : $SHED_NO"
 echo "  dashboard url : $DASHBOARD_URL"
+echo "  service mode  : $SERVICE_MODE"
 
 sudo apt update
-sudo apt install -y python3-flask python3-serial chromium unclutter onboard
+sudo apt install -y python3-flask python3-serial
+
+if [ "$SERVICE_MODE" = "kiosk" ]; then
+  sudo apt install -y chromium unclutter onboard
+elif [ "$SERVICE_MODE" != "service_only" ]; then
+  echo "Unknown service mode: $SERVICE_MODE" >&2
+  exit 1
+fi
 
 mkdir -p "$APP_DIR/controller_data"
-mkdir -p "$USER_HOME/.config/autostart"
-mkdir -p "$USER_HOME/.config/labwc"
+
+if [ "$SERVICE_MODE" = "kiosk" ]; then
+  mkdir -p "$USER_HOME/.config/autostart"
+  mkdir -p "$USER_HOME/.config/labwc"
+fi
 
 cat > "$APP_DIR/controller_data/controller_config.json" <<EOF
 {
@@ -83,11 +95,12 @@ EOF
 sudo install -m 440 /tmp/cherry-dene-controller-power /etc/sudoers.d/cherry-dene-controller-power
 rm -f /tmp/cherry-dene-controller-power
 
-cat > "$USER_HOME/.config/labwc/autostart" <<EOF
+if [ "$SERVICE_MODE" = "kiosk" ]; then
+  cat > "$USER_HOME/.config/labwc/autostart" <<EOF
 bash $APP_DIR/pi_kiosk/kiosk.sh http://127.0.0.1:8091 &
 EOF
 
-cat > "$USER_HOME/.config/autostart/shed-kiosk.desktop" <<EOF
+  cat > "$USER_HOME/.config/autostart/shed-kiosk.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Shed Controller Kiosk
@@ -95,9 +108,15 @@ Exec=$APP_DIR/pi_kiosk/kiosk.sh http://127.0.0.1:8091
 X-GNOME-Autostart-enabled=true
 EOF
 
-chmod +x "$APP_DIR/pi_kiosk/kiosk.sh"
+  chmod +x "$APP_DIR/pi_kiosk/kiosk.sh"
+else
+  rm -f "$USER_HOME/.config/autostart/shed-kiosk.desktop" "$USER_HOME/.config/labwc/autostart"
+fi
+
 sudo chown -R "$USER_NAME:$USER_NAME" "$APP_DIR"
-sudo chown -R "$USER_NAME:$USER_NAME" "$USER_HOME/.config"
+if [ -d "$USER_HOME/.config" ]; then
+  sudo chown -R "$USER_NAME:$USER_NAME" "$USER_HOME/.config"
+fi
 
 if command -v gsettings >/dev/null 2>&1; then
   su - "$USER_NAME" -c "gsettings set org.onboard auto-show enabled true" >/dev/null 2>&1 || true
@@ -112,4 +131,8 @@ echo "Shed controller install complete."
 echo "Local URL: http://127.0.0.1:8091"
 echo "Service: shed-controller.service"
 echo "Power actions: shutdown/reboot buttons enabled for $USER_NAME"
-echo "Reboot recommended to test kiosk startup."
+if [ "$SERVICE_MODE" = "kiosk" ]; then
+  echo "Reboot recommended to test kiosk startup."
+else
+  echo "Controller set up as a background service only."
+fi

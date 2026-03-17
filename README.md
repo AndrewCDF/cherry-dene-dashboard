@@ -17,7 +17,11 @@ Office and shed dashboard system for Cherry Dene Farm.
 - `ios/CherryDeneMobile/`
   SwiftUI iPhone/iPad app with Xcode project, native alarm tab, and embedded dashboard views
 - `scripts/install_shed_controller_pi.sh`
-  One-run installer for a shed controller Pi (service, config, kiosk, labwc autostart)
+  One-run installer for a shed controller Pi (service, config, optional kiosk)
+- `scripts/install_borehole_controller_pi.sh`
+  One-run installer for a borehole controller Pi (service, config, optional kiosk)
+- `Farm Setup Wizard.command`
+  Double-click setup wizard that builds office, shed, and water deployment bundles with configs, setup sheets, and install command files
 
 ## Local Run
 
@@ -55,7 +59,14 @@ Office backup notes:
 - Office Pi runs `dashboard_server.py`
 - Office Pi can boot the dashboard as a background service with `pi_kiosk/install_office_service.sh`
 - Each shed Pi runs `shed_controller_server.py`
-- Each shed Pi can boot into kiosk mode with `pi_kiosk/install_pi_kiosk.sh`
+- Each shed Pi can boot into kiosk mode or service-only mode via `scripts/install_shed_controller_pi.sh`
+- Each borehole Pi can boot into kiosk mode or service-only mode via `scripts/install_borehole_controller_pi.sh`
 - Pico 2 connects to the shed Pi over USB
 - Per-shed controller config comes from `pi_templates/controller_config.template.json`
 - Office-to-shed mapping comes from `pi_templates/controllers.template.json`
+- The setup wizard now outputs:
+  - `farm_setup.json`
+  - `SETUP-SHEET.txt`
+  - office controller mapping files
+  - per-device `controller_config.json`
+  - per-device `install_commands.sh`

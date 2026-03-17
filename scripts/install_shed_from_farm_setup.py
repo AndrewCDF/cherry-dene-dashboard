@@ -9,6 +9,20 @@ def load_json(path):
         return json.load(f)
 
 
+def serial_enabled_for_shed(shed):
+    return any(
+        bool(shed.get(key))
+        for key in [
+            "temp_sensor_enabled",
+            "water_meter_enabled",
+            "feed_bin_enabled",
+            "cross_auger_enabled",
+            "auger_left_enabled",
+            "auger_right_enabled",
+        ]
+    )
+
+
 def main():
     if len(sys.argv) < 4:
         print("Usage: install_shed_from_farm_setup.py <farm_setup.json> <shed_no> <output_config.json>")
@@ -37,6 +51,7 @@ def main():
     cfg["dashboard_url"] = office.get("dashboard_url", cfg.get("dashboard_url"))
     cfg["listen_port"] = int(shed.get("controller_port", cfg.get("listen_port", 8091)))
     cfg["serial_port"] = shed.get("serial_port", cfg.get("serial_port"))
+    cfg["serial_enabled"] = bool(shed.get("serial_enabled", serial_enabled_for_shed(shed)))
     cfg["touch_refresh_seconds"] = int(shed.get("touch_refresh_seconds", cfg.get("touch_refresh_seconds", 1)))
     cfg["temp_low_c"] = float(shed.get("temp_low_c", cfg.get("temp_low_c", 18.0)))
     cfg["temp_high_c"] = float(shed.get("temp_high_c", cfg.get("temp_high_c", 24.0)))
@@ -48,6 +63,12 @@ def main():
     cfg["cross_auger_label"] = str(shed.get("cross_auger_label", cfg.get("cross_auger_label", "Cross Auger")))
     cfg["auger_left_label"] = str(shed.get("auger_left_label", cfg.get("auger_left_label", "Auger Left")))
     cfg["auger_right_label"] = str(shed.get("auger_right_label", cfg.get("auger_right_label", "Auger Right")))
+    cfg["deployment_mode"] = farm.get("deployment_mode", shed.get("deployment_mode", "commissioning"))
+    cfg["commissioning_mode"] = bool(farm.get("commissioning_mode", shed.get("commissioning_mode", True)))
+    cfg["service_mode"] = str(shed.get("service_mode", farm.get("controller_service_mode", "kiosk")))
+    cfg["temp_sensor_enabled"] = bool(shed.get("temp_sensor_enabled", True))
+    cfg["water_meter_enabled"] = bool(shed.get("water_meter_enabled", True))
+    cfg["feed_bin_enabled"] = bool(shed.get("feed_bin_enabled", False))
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     with open(output_path, "w") as f:
