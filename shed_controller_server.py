@@ -663,6 +663,38 @@ def deploy_pico_firmware():
     return status
 
 
+def soft_reset_pico():
+    status = load_pico_update_status()
+    status.update({
+        "checked_at": int(time.time()),
+        "ok": False,
+        "status": "Pico soft reset failed",
+    })
+    if not shutil.which("mpremote"):
+        status["status"] = "mpremote is not installed"
+        save_pico_update_status(status)
+        return status
+
+    proc = subprocess.run(
+        ["mpremote", "connect", "auto", "soft-reset"],
+        cwd=APP_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if proc.returncode != 0:
+        status["status"] = (proc.stderr or proc.stdout or "Pico soft reset failed").strip()
+        save_pico_update_status(status)
+        return status
+
+    status.update({
+        "ok": True,
+        "status": "Pico soft reset OK",
+    })
+    save_pico_update_status(status)
+    return status
+
+
 def load_config():
     ensure_data_dir()
     path = os.path.join(DATA_DIR, "controller_config.json")
@@ -3854,6 +3886,9 @@ SETTINGS_HTML = """
                         <form method="post" action="{{ url_for('apply_pico_update_view') }}">
                             <button type="submit">Deploy Pico Firmware</button>
                         </form>
+                        <form method="post" action="{{ url_for('soft_reset_pico_view') }}">
+                            <button type="submit" class="secondary">Soft Reset Pico</button>
+                        </form>
                     </div>
                 </div>
             </div>
@@ -5349,6 +5384,12 @@ def apply_update_view():
 @app.route("/settings/update/pico", methods=["POST"])
 def apply_pico_update_view():
     deploy_pico_firmware()
+    return redirect(url_for("controller_settings_view"))
+
+
+@app.route("/settings/pico/soft-reset", methods=["POST"])
+def soft_reset_pico_view():
+    soft_reset_pico()
     return redirect(url_for("controller_settings_view"))
 
 

@@ -1413,6 +1413,9 @@ SETTINGS_HTML = """
             <form method="post" action="{{ url_for('pico_update_view') }}">
               <button type="submit">Update Pico</button>
             </form>
+            <form method="post" action="{{ url_for('pico_soft_reset_view') }}">
+              <button type="submit" class="secondary">Soft Reset Pico</button>
+            </form>
           </div>
         </div>
       </div>
@@ -2185,6 +2188,26 @@ def pico_update_view():
             mutate_state(lambda state: state.update({"last_pico_update_status": "Pico update OK", "last_pico_deployed_hash": local_hash}))
             return redirect(url_for("settings_view", msg="Pico update OK"))
         msg = proc.stderr.strip() or proc.stdout.strip() or "Pico update failed"
+    except Exception as exc:
+        msg = str(exc)
+    mutate_state(lambda state: state.update({"last_pico_update_status": msg}))
+    return redirect(url_for("settings_view", msg=msg))
+
+
+@app.route("/settings/pico/soft-reset", methods=["POST"])
+def pico_soft_reset_view():
+    try:
+        proc = subprocess.run(
+            ["mpremote", "connect", "auto", "soft-reset"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if proc.returncode == 0:
+            msg = "Pico soft reset OK"
+            mutate_state(lambda state: state.update({"last_pico_update_status": msg}))
+            return redirect(url_for("settings_view", msg=msg))
+        msg = proc.stderr.strip() or proc.stdout.strip() or "Pico soft reset failed"
     except Exception as exc:
         msg = str(exc)
     mutate_state(lambda state: state.update({"last_pico_update_status": msg}))
