@@ -265,6 +265,9 @@ DEFAULT_CONFIG = {
     "shed_no": 1,
     "dashboard_url": "http://127.0.0.1:8090",
     "sync_token": "",
+    "deployment_mode": "commissioning",
+    "commissioning_mode": True,
+    "mode_switch_pin": "2468",
     "listen_port": 8091,
     "serial_port": "/dev/ttyACM0",
     "serial_baudrate": 115200,
@@ -798,9 +801,24 @@ def load_config():
         cfg["feed_kg_per_raw_unit"] = None
     cfg["serial_enabled"] = bool(cfg.get("serial_enabled", True))
     cfg["sync_on_sensor_update"] = bool(cfg.get("sync_on_sensor_update", True))
+    cfg["deployment_mode"] = str(cfg.get("deployment_mode", "commissioning") or "commissioning").strip().lower()
+    if cfg["deployment_mode"] not in ["commissioning", "live"]:
+        cfg["deployment_mode"] = "commissioning"
+    cfg["commissioning_mode"] = bool(cfg.get("commissioning_mode", cfg["deployment_mode"] != "live"))
+    cfg["deployment_mode"] = "commissioning" if cfg["commissioning_mode"] else "live"
+    cfg["mode_switch_pin"] = str(cfg.get("mode_switch_pin", DEFAULT_CONFIG["mode_switch_pin"]) or DEFAULT_CONFIG["mode_switch_pin"]).strip()
     cfg["dashboard_url"] = str(cfg.get("dashboard_url", DEFAULT_CONFIG["dashboard_url"])).rstrip("/")
     cfg["serial_port"] = str(cfg.get("serial_port", DEFAULT_CONFIG["serial_port"]))
     return cfg
+
+
+def commissioning_mode_enabled(cfg=None):
+    cfg = cfg or load_config()
+    return bool(cfg.get("commissioning_mode", True))
+
+
+def current_mode_label(cfg=None):
+    return "Commissioning" if commissioning_mode_enabled(cfg) else "Live"
 
 
 def enabled_auger_keys(cfg):
@@ -1142,7 +1160,8 @@ def evaluate_augers(sensors, now_ts=None):
     augers = ensure_augers_state(sensors)
     changed = False
     controller_alarms = []
-    active_auger_keys = enabled_auger_keys(load_config())
+    cfg = load_config()
+    active_auger_keys = enabled_auger_keys(cfg)
 
     i = 0
     while i < len(AUGER_DEFS):
@@ -1164,14 +1183,14 @@ def evaluate_augers(sensors, now_ts=None):
             auger["overrun"] = overrun
             changed = True
 
-        if overrun and not augers_look_floating(augers, active_auger_keys):
+        if overrun and not augers_look_floating(augers, active_auger_keys, cfg=cfg):
             controller_alarms.append({
                 "alarm_key": "%s_overrun" % key,
                 "message": "%s overrun: running longer than 20 minutes" % label,
             })
         i += 1
 
-    if augers_look_floating(augers, active_auger_keys):
+    if augers_look_floating(augers, active_auger_keys, cfg=cfg):
         i = 0
         while i < len(active_auger_keys):
             active_key = active_auger_keys[i]
@@ -1190,7 +1209,9 @@ def evaluate_augers(sensors, now_ts=None):
     return changed
 
 
-def augers_look_floating(augers, active_auger_keys):
+def augers_look_floating(augers, active_auger_keys, cfg=None):
+    if not commissioning_mode_enabled(cfg):
+        return False
     if not active_auger_keys:
         return False
 
@@ -1208,10 +1229,10 @@ def augers_look_floating(augers, active_auger_keys):
     return True
 
 
-def auger_is_waiting_override(auger_key, augers, active_auger_keys):
+def auger_is_waiting_override(auger_key, augers, active_auger_keys, cfg=None):
     if auger_key not in active_auger_keys:
         return False
-    return augers_look_floating(augers, active_auger_keys)
+    return augers_look_floating(augers, active_auger_keys, cfg=cfg)
 
 
 def auger_status_text(auger):
@@ -2164,7 +2185,7 @@ def build_home_context():
         label = auger_label_for(cfg, auger_key, label)
         if auger_key in active_auger_keys:
             auger = augers.get(auger_key, {})
-            waiting_override = auger_is_waiting_override(auger_key, augers, active_auger_keys)
+            waiting_override = auger_is_waiting_override(auger_key, augers, active_auger_keys, cfg=cfg)
             tile = {
                 "key": auger_key,
                 "label": label,
@@ -3888,6 +3909,7 @@ SETTINGS_HTML = """
             <div class="panel">
                 <h1>Shed {{ shed_no }} Settings</h1>
                 <div class="sub">Controller actions, alarms, logs, config, and commissioning tools.</div>
+                <div class="detail"><span class="label">Current Mode</span><span>{{ current_mode }}</span></div>
                 <div class="action-grid">
                     <a class="button-link" href="{{ url_for('allocation_view') }}">Shed Allocation</a>
                     <a class="button-link" href="{{ url_for('controller_alarms_view') }}">Alarms{% if alarm_count %} ({{ alarm_count }}){% endif %}</a>
@@ -3957,6 +3979,31 @@ SETTINGS_HTML = """
                             <button type="submit" class="secondary">Soft Reset Pico</button>
                         </form>
                     </div>
+                </div>
+            </div>
+            <div class="update-split" style="margin-top:16px;">
+                <div class="update-box">
+                    <h2>Mode Lock</h2>
+                    <div class="detail-list">
+                        <div class="detail"><span class="label">Current Mode</span><span>{{ current_mode }}</span></div>
+                        <div class="detail"><span class="label">Next Mode</span><span>{{ next_mode_label }}</span></div>
+                    </div>
+                    <div class="status-note">A PIN is required before this controller can leave commissioning mode or return to it.</div>
+                    <div class="button-row">
+                        <form method="post" action="{{ url_for('switch_controller_mode_view') }}">
+                            <input type="hidden" name="target_mode" value="{{ next_mode_key }}">
+                            <input type="number" name="mode_pin" inputmode="numeric" enterkeyhint="done" placeholder="Enter mode PIN" style="width:100%; min-height:64px; border-radius:14px; border:1px solid #8a8a8a; background:#686868; color:#ececec; font-size:22px; padding:10px 14px; box-sizing:border-box; margin-bottom:12px;">
+                            <button type="submit">{{ "Go Live" if next_mode_key == "live" else "Return to Commissioning" }}</button>
+                        </form>
+                    </div>
+                </div>
+                <div class="update-box">
+                    <h2>Mode Notes</h2>
+                    <div class="detail-list">
+                        <div class="detail"><span class="label">Commissioning</span><span>Setup safeguards on</span></div>
+                        <div class="detail"><span class="label">Live</span><span>Production behavior on</span></div>
+                    </div>
+                    <div class="status-note">Use commissioning while wiring and proving sensors. Switch to live once the shed is ready for normal alarms and behavior.</div>
                 </div>
             </div>
         </div>
@@ -5349,11 +5396,12 @@ def index():
     maybe_refresh_from_dashboard()
     maybe_heartbeat_to_dashboard()
     ctx = build_home_context()
+    cfg = load_config()
     msg = request.args.get("msg", "")
     ok = request.args.get("ok", "1") == "1"
     ctx["msg"] = msg
     ctx["ok"] = ok
-    ctx["hide_home_alerts"] = HIDE_HOME_ALERTS_DURING_SETUP
+    ctx["hide_home_alerts"] = HIDE_HOME_ALERTS_DURING_SETUP and commissioning_mode_enabled(cfg)
     return render_template_string(HTML, **ctx)
 
 
@@ -5362,6 +5410,7 @@ def controller_settings_view():
     maybe_refresh_from_dashboard()
     maybe_heartbeat_to_dashboard()
     ctx = build_home_context()
+    cfg = load_config()
     # Always reconcile the settings page with the live repo state on disk after updates.
     update_status = load_update_status()
     live_git = get_local_git_status()
@@ -5379,6 +5428,10 @@ def controller_settings_view():
     ctx["pico_update_status"] = pico_update_status
     ctx["pico_deployed_at"] = fmt_ts(pico_update_status.get("last_deployed_at"))
     ctx["msg"] = request.args.get("msg", "")
+    ctx["current_mode"] = current_mode_label(cfg)
+    ctx["current_mode_key"] = cfg.get("deployment_mode", "commissioning")
+    ctx["next_mode_key"] = "live" if commissioning_mode_enabled(cfg) else "commissioning"
+    ctx["next_mode_label"] = "Live" if commissioning_mode_enabled(cfg) else "Commissioning"
     return render_template_string(SETTINGS_HTML, **ctx)
 
 
@@ -5458,6 +5511,24 @@ def apply_pico_update_view():
 def soft_reset_pico_view():
     soft_reset_pico()
     return redirect(url_for("controller_settings_view"))
+
+
+@app.route("/settings/mode/switch", methods=["POST"])
+def switch_controller_mode_view():
+    cfg = load_config()
+    target_mode = str(request.form.get("target_mode", "") or "").strip().lower()
+    entered_pin = str(request.form.get("mode_pin", "") or "").strip()
+    expected_pin = str(cfg.get("mode_switch_pin", DEFAULT_CONFIG["mode_switch_pin"]) or DEFAULT_CONFIG["mode_switch_pin"]).strip()
+
+    if target_mode not in ["commissioning", "live"]:
+        return redirect(url_for("controller_settings_view", msg="Invalid mode selection"))
+    if not entered_pin or entered_pin != expected_pin:
+        return redirect(url_for("controller_settings_view", msg="Mode switch PIN incorrect"))
+
+    cfg["deployment_mode"] = target_mode
+    cfg["commissioning_mode"] = target_mode == "commissioning"
+    save_config(cfg)
+    return redirect(url_for("controller_settings_view", msg="Controller switched to %s mode" % current_mode_label(cfg)))
 
 
 @app.route("/settings/system/reboot", methods=["POST"])
@@ -5608,7 +5679,7 @@ def controller_health_view():
         auger_key, label = AUGER_DEFS[i]
         label = auger_label_for(cfg, auger_key, label)
         auger = augers.get(auger_key, {})
-        waiting_override = auger_is_waiting_override(auger_key, augers, active_auger_keys)
+        waiting_override = auger_is_waiting_override(auger_key, augers, active_auger_keys, cfg=cfg)
         auger_rows.append({
             "label": label,
             "status": "Waiting" if waiting_override else auger_status_text(auger),

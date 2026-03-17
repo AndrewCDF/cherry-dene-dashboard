@@ -49,6 +49,7 @@ def main():
     cfg = dict(template)
     cfg["shed_no"] = int(shed_no)
     cfg["dashboard_url"] = office.get("dashboard_url", cfg.get("dashboard_url"))
+    cfg["mode_switch_pin"] = str(shed.get("mode_switch_pin", cfg.get("mode_switch_pin", "2468")) or "2468")
     cfg["listen_port"] = int(shed.get("controller_port", cfg.get("listen_port", 8091)))
     cfg["serial_port"] = shed.get("serial_port", cfg.get("serial_port"))
     cfg["serial_enabled"] = bool(shed.get("serial_enabled", serial_enabled_for_shed(shed)))

@@ -28,6 +28,7 @@ CONTROLLER_TEMPLATE = load_json(TEMPLATE_DIR / "controller_config.template.json"
 BOREHOLE_CONTROLLER_TEMPLATE = {
     "dashboard_url": "http://127.0.0.1:8090",
     "sync_token": "",
+    "mode_switch_pin": "2468",
     "listen_port": 8092,
     "touch_refresh_seconds": 1,
     "water_low_lpm": 0.1,
@@ -210,6 +211,7 @@ def build_controller_config_payload(farm_setup, shed_no):
     cfg["shed_no"] = int(shed_no)
     cfg["dashboard_url"] = farm_setup["office"]["dashboard_url"]
     cfg["sync_token"] = ""
+    cfg["mode_switch_pin"] = "2468"
     cfg["listen_port"] = int(shed.get("controller_port", 8091))
     cfg["serial_port"] = shed.get("serial_port", "/dev/ttyACM0")
     cfg["serial_enabled"] = bool(shed.get("serial_enabled", True))
@@ -238,6 +240,7 @@ def build_borehole_controller_config_payload(farm_setup):
     cfg = deepcopy(BOREHOLE_CONTROLLER_TEMPLATE)
     cfg["dashboard_url"] = farm_setup["office"]["dashboard_url"]
     cfg["sync_token"] = ""
+    cfg["mode_switch_pin"] = "2468"
     cfg["deployment_mode"] = farm_setup.get("deployment_mode", "commissioning")
     cfg["commissioning_mode"] = bool(farm_setup.get("commissioning_mode", True))
     cfg["service_mode"] = borehole.get("service_mode", "kiosk")
@@ -415,7 +418,7 @@ if [ ! -d "$APP_DIR" ]; then
   exit 1
 fi
 
-bash "$APP_DIR/scripts/install_shed_controller_pi.sh" "$APP_DIR" "$USER_NAME" "%(shed_no)s" "%(dashboard_url)s" "" "%(service_mode)s"
+bash "$APP_DIR/scripts/install_shed_controller_pi.sh" "$APP_DIR" "$USER_NAME" "%(shed_no)s" "%(dashboard_url)s" "" "%(service_mode)s" "%(deployment_mode)s"
 mkdir -p "$APP_DIR/controller_data"
 cp "$SCRIPT_DIR/controller_config.json" "$APP_DIR/controller_data/controller_config.json"
 sudo systemctl restart shed-controller.service
@@ -423,10 +426,11 @@ sudo systemctl restart shed-controller.service
 echo
 echo "Shed %(shed_no)s controller updated from bundle."
 echo "Config copied from: $SCRIPT_DIR/controller_config.json"
-""" % {
+    """ % {
         "shed_no": shed_no,
         "dashboard_url": farm_setup["office"]["dashboard_url"],
         "service_mode": cfg.get("service_mode", "kiosk"),
+        "deployment_mode": cfg.get("deployment_mode", "commissioning"),
     }
 
 
@@ -444,7 +448,7 @@ if [ ! -d "$APP_DIR" ]; then
   exit 1
 fi
 
-bash "$APP_DIR/scripts/install_borehole_controller_pi.sh" "$APP_DIR" "$USER_NAME" "%(dashboard_url)s" "" "%(service_mode)s"
+bash "$APP_DIR/scripts/install_borehole_controller_pi.sh" "$APP_DIR" "$USER_NAME" "%(dashboard_url)s" "" "%(service_mode)s" "%(deployment_mode)s"
 mkdir -p "$APP_DIR/borehole_controller_data"
 cp "$SCRIPT_DIR/controller_config.json" "$APP_DIR/borehole_controller_data/controller_config.json"
 sudo systemctl restart borehole-controller.service
@@ -452,9 +456,10 @@ sudo systemctl restart borehole-controller.service
 echo
 echo "Water controller updated from bundle."
 echo "Config copied from: $SCRIPT_DIR/controller_config.json"
-""" % {
+    """ % {
         "dashboard_url": farm_setup["office"]["dashboard_url"],
         "service_mode": farm_setup.get("borehole", {}).get("service_mode", farm_setup.get("controller_service_mode", "kiosk")),
+        "deployment_mode": farm_setup.get("borehole", {}).get("deployment_mode", farm_setup.get("deployment_mode", "commissioning")),
     }
 
 

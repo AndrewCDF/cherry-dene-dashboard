@@ -7,6 +7,7 @@ SHED_NO="${3:-1}"
 DASHBOARD_URL="${4:-http://192.168.1.19:8090}"
 SYNC_TOKEN="${5:-}"
 SERVICE_MODE="${6:-kiosk}"
+DEPLOYMENT_MODE="${7:-commissioning}"
 
 APP_DIR="$(cd "$APP_DIR" && pwd)"
 USER_HOME="$(getent passwd "$USER_NAME" | cut -d: -f6)"
@@ -23,6 +24,7 @@ echo "  user home     : $USER_HOME"
 echo "  shed number   : $SHED_NO"
 echo "  dashboard url : $DASHBOARD_URL"
 echo "  service mode  : $SERVICE_MODE"
+echo "  deploy mode   : $DEPLOYMENT_MODE"
 
 sudo apt update
 sudo apt install -y python3-flask python3-serial
@@ -32,6 +34,17 @@ if [ "$SERVICE_MODE" = "kiosk" ]; then
 elif [ "$SERVICE_MODE" != "service_only" ]; then
   echo "Unknown service mode: $SERVICE_MODE" >&2
   exit 1
+fi
+
+if [ "$DEPLOYMENT_MODE" != "commissioning" ] && [ "$DEPLOYMENT_MODE" != "live" ]; then
+  echo "Unknown deployment mode: $DEPLOYMENT_MODE" >&2
+  exit 1
+fi
+
+if [ "$DEPLOYMENT_MODE" = "commissioning" ]; then
+  COMMISSIONING_MODE=true
+else
+  COMMISSIONING_MODE=false
 fi
 
 mkdir -p "$APP_DIR/controller_data"
@@ -46,6 +59,9 @@ cat > "$APP_DIR/controller_data/controller_config.json" <<EOF
   "shed_no": $SHED_NO,
   "dashboard_url": "$DASHBOARD_URL",
   "sync_token": "$SYNC_TOKEN",
+  "deployment_mode": "$DEPLOYMENT_MODE",
+  "commissioning_mode": $COMMISSIONING_MODE,
+  "mode_switch_pin": "2468",
   "listen_port": 8091,
   "serial_port": "/dev/ttyACM0",
   "serial_baudrate": 115200,

@@ -6,6 +6,7 @@ USER_NAME="${2:-$(id -un)}"
 DASHBOARD_URL="${3:-http://192.168.1.19:8090}"
 SYNC_TOKEN="${4:-}"
 SERVICE_MODE="${5:-kiosk}"
+DEPLOYMENT_MODE="${6:-commissioning}"
 
 APP_DIR="$(cd "$APP_DIR" && pwd)"
 USER_HOME="$(getent passwd "$USER_NAME" | cut -d: -f6)"
@@ -21,6 +22,7 @@ echo "  user          : $USER_NAME"
 echo "  user home     : $USER_HOME"
 echo "  dashboard url : $DASHBOARD_URL"
 echo "  service mode  : $SERVICE_MODE"
+echo "  deploy mode   : $DEPLOYMENT_MODE"
 
 sudo apt update
 sudo apt install -y python3-flask python3-serial
@@ -32,12 +34,26 @@ elif [ "$SERVICE_MODE" != "service_only" ]; then
   exit 1
 fi
 
+if [ "$DEPLOYMENT_MODE" != "commissioning" ] && [ "$DEPLOYMENT_MODE" != "live" ]; then
+  echo "Unknown deployment mode: $DEPLOYMENT_MODE" >&2
+  exit 1
+fi
+
+if [ "$DEPLOYMENT_MODE" = "commissioning" ]; then
+  COMMISSIONING_MODE=true
+else
+  COMMISSIONING_MODE=false
+fi
+
 mkdir -p "$APP_DIR/borehole_controller_data"
 
 cat > "$APP_DIR/borehole_controller_data/controller_config.json" <<EOF
 {
   "dashboard_url": "$DASHBOARD_URL",
   "sync_token": "$SYNC_TOKEN",
+  "deployment_mode": "$DEPLOYMENT_MODE",
+  "commissioning_mode": $COMMISSIONING_MODE,
+  "mode_switch_pin": "2468",
   "listen_port": 8092,
   "touch_refresh_seconds": 1,
   "water_low_lpm": 0.1,

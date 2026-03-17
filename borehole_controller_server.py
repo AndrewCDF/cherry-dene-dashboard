@@ -22,6 +22,9 @@ STATE_LOCK = threading.Lock()
 DEFAULT_CONFIG = {
     "dashboard_url": "http://127.0.0.1:8090",
     "sync_token": "",
+    "deployment_mode": "commissioning",
+    "commissioning_mode": True,
+    "mode_switch_pin": "2468",
     "listen_port": 8092,
     "touch_refresh_seconds": 1,
     "water_low_lpm": 0.1,
@@ -450,7 +453,22 @@ def load_config():
     merged = dict(DEFAULT_CONFIG)
     if isinstance(cfg, dict):
         merged.update(cfg)
+    merged["deployment_mode"] = str(merged.get("deployment_mode", "commissioning") or "commissioning").strip().lower()
+    if merged["deployment_mode"] not in ["commissioning", "live"]:
+        merged["deployment_mode"] = "commissioning"
+    merged["commissioning_mode"] = bool(merged.get("commissioning_mode", merged["deployment_mode"] != "live"))
+    merged["deployment_mode"] = "commissioning" if merged["commissioning_mode"] else "live"
+    merged["mode_switch_pin"] = str(merged.get("mode_switch_pin", DEFAULT_CONFIG["mode_switch_pin"]) or DEFAULT_CONFIG["mode_switch_pin"]).strip()
     return merged
+
+
+def commissioning_mode_enabled(cfg=None):
+    cfg = cfg or load_config()
+    return bool(cfg.get("commissioning_mode", True))
+
+
+def current_mode_label(cfg=None):
+    return "Commissioning" if commissioning_mode_enabled(cfg) else "Live"
 
 
 def save_config(cfg):
@@ -567,6 +585,8 @@ def mpremote_command():
 
 def build_controller_alarms(state, cfg=None):
     cfg = cfg or load_config()
+    if commissioning_mode_enabled(cfg):
+        return []
     sensors = state.get("sensors", {})
     alarms = []
     now_ts = int(time.time())
@@ -1363,6 +1383,7 @@ SETTINGS_HTML = """
         <h1>Bore Hole Settings</h1>
         <div class="sub">Controller actions, alarms, logs, config, and water tools.</div>
         <div class="action-grid">
+          <div class="detail"><span class="label">Current Mode</span><span>{{ current_mode }}</span></div>
           <a class="button-link" href="{{ url_for('water_settings_view') }}">Water Settings</a>
           <a class="button-link" href="{{ url_for('water_history_view') }}">Water History</a>
           <a class="button-link" href="{{ url_for('commissioning_view') }}">Commissioning</a>
@@ -1430,6 +1451,21 @@ SETTINGS_HTML = """
         </div>
       </div>
       <div class="update-split" style="margin-top:16px;">
+        <div class="update-box">
+          <h2>Mode Lock</h2>
+          <div class="detail-list">
+            <div class="detail"><span class="label">Current Mode</span><span>{{ current_mode }}</span></div>
+            <div class="detail"><span class="label">Next Mode</span><span>{{ next_mode_label }}</span></div>
+          </div>
+          <div class="status-note">A PIN is required before this controller can leave commissioning mode or return to it.</div>
+          <div class="button-row">
+            <form method="post" action="{{ url_for('switch_mode_view') }}">
+              <input type="hidden" name="target_mode" value="{{ next_mode_key }}">
+              <input type="number" name="mode_pin" inputmode="numeric" enterkeyhint="done" placeholder="Enter mode PIN" style="width:100%; min-height:64px; border-radius:14px; border:1px solid #8a8a8a; background:#686868; color:#ececec; font-size:22px; padding:10px 14px; box-sizing:border-box; margin-bottom:12px;">
+              <button type="submit">{{ "Go Live" if next_mode_key == "live" else "Return to Commissioning" }}</button>
+            </form>
+          </div>
+        </div>
         <div class="update-box">
           <h2>Backup</h2>
           <div class="button-row">
@@ -1734,7 +1770,7 @@ HISTORY_HTML = """
 def index():
     maybe_heartbeat_to_dashboard()
     ctx = home_context()
-    ctx["hide_home_alerts"] = HIDE_HOME_ALERTS_DURING_SETUP
+    ctx["hide_home_alerts"] = HIDE_HOME_ALERTS_DURING_SETUP and commissioning_mode_enabled(load_config())
     return render_template_string(HOME_HTML, msg=request.args.get("msg", ""), **ctx)
 
 
@@ -1770,6 +1806,7 @@ def pico_ingest_api():
 @app.route("/settings")
 def settings_view():
     state = load_state()
+    cfg = load_config()
     ctx = home_context()
     alarm_count = len(state.get("sensors", {}).get("controller_alarms", []))
     return render_template_string(
@@ -1788,6 +1825,10 @@ def settings_view():
         log_short=ctx.get("log_short", "--"),
         office_short=ctx.get("office_short", "--"),
         alarm_short=ctx.get("alarm_short", "--"),
+        current_mode=current_mode_label(cfg),
+        current_mode_key=cfg.get("deployment_mode", "commissioning"),
+        next_mode_key="live" if commissioning_mode_enabled(cfg) else "commissioning",
+        next_mode_label="Live" if commissioning_mode_enabled(cfg) else "Commissioning",
     )
 
 
@@ -2224,6 +2265,24 @@ def pico_soft_reset_view():
         msg = str(exc)
     mutate_state(lambda state: state.update({"last_pico_update_status": msg}))
     return redirect(url_for("settings_view", msg=msg))
+
+
+@app.route("/settings/mode/switch", methods=["POST"])
+def switch_mode_view():
+    cfg = load_config()
+    target_mode = str(request.form.get("target_mode", "") or "").strip().lower()
+    entered_pin = str(request.form.get("mode_pin", "") or "").strip()
+    expected_pin = str(cfg.get("mode_switch_pin", DEFAULT_CONFIG["mode_switch_pin"]) or DEFAULT_CONFIG["mode_switch_pin"]).strip()
+
+    if target_mode not in ["commissioning", "live"]:
+        return redirect(url_for("settings_view", msg="Invalid mode selection"))
+    if not entered_pin or entered_pin != expected_pin:
+        return redirect(url_for("settings_view", msg="Mode switch PIN incorrect"))
+
+    cfg["deployment_mode"] = target_mode
+    cfg["commissioning_mode"] = target_mode == "commissioning"
+    save_config(cfg)
+    return redirect(url_for("settings_view", msg="Controller switched to %s mode" % current_mode_label(cfg)))
 
 
 @app.route("/settings/system/reboot", methods=["POST"])
