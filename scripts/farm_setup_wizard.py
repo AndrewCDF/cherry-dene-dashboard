@@ -26,6 +26,21 @@ def load_json(path):
 FARM_TEMPLATE = load_json(TEMPLATE_DIR / "farm_setup.template.json")
 CONTROLLER_TEMPLATE = load_json(TEMPLATE_DIR / "controller_config.template.json")
 CONTROLLERS_TEMPLATE = load_json(TEMPLATE_DIR / "controllers.template.json")
+BOREHOLE_CONTROLLER_TEMPLATE = {
+    "dashboard_url": "http://127.0.0.1:8090",
+    "sync_token": "",
+    "listen_port": 8092,
+    "touch_refresh_seconds": 1,
+    "water_low_lpm": 0.1,
+    "water_pulses_per_litre": 450.0,
+    "backup_keep": 6,
+}
+SYSTEM_TYPE_LABELS = {
+    "dashboard": "Dashboard Controller",
+    "shed": "Shed Controller",
+    "water": "Water Controller",
+    "other": "Other",
+}
 
 
 def slugify(text):
@@ -120,6 +135,13 @@ def build_controller_config_payload(farm_setup, shed_no, sync_token):
     return cfg
 
 
+def build_borehole_controller_config_payload(dashboard_url, sync_token):
+    cfg = deepcopy(BOREHOLE_CONTROLLER_TEMPLATE)
+    cfg["dashboard_url"] = dashboard_url
+    cfg["sync_token"] = sync_token
+    return cfg
+
+
 def write_json(path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as handle:
@@ -180,23 +202,85 @@ def build_install_notes(farm_setup, sync_token, output_dir):
     return "\n".join(lines)
 
 
+def build_shed_install_notes(form_data, bundle_dir):
+    cfg_path = bundle_dir / "shed" / "controller_config.json"
+    office_fragment = bundle_dir / "office" / "controllers.fragment.json"
+    return "\n".join([
+        "Cherry Dene Shed Controller Export",
+        "",
+        "Farm: %s" % form_data["farm_name"],
+        "Office dashboard: http://%s:%s" % (form_data["dashboard_ip"], form_data["dashboard_port"]),
+        "Shed: %s" % form_data["sheds"][0]["shed_no"],
+        "",
+        "Shed Pi",
+        "- Copy %s to ~/cherry-dene-dashboard/controller_data/controller_config.json" % cfg_path,
+        "- Restart: sudo systemctl restart shed-controller.service",
+        "",
+        "Office Pi",
+        "- Merge %s into data/controllers.json" % office_fragment,
+        "- Restart: sudo systemctl restart office-dashboard.service",
+        "",
+    ])
+
+
+def build_water_install_notes(form_data, bundle_dir):
+    cfg_path = bundle_dir / "water" / "controller_config.json"
+    office_fragment = bundle_dir / "office" / "controllers.fragment.json"
+    return "\n".join([
+        "Cherry Dene Water Controller Export",
+        "",
+        "Farm: %s" % form_data["farm_name"],
+        "Office dashboard: http://%s:%s" % (form_data["dashboard_ip"], form_data["dashboard_port"]),
+        "Water controller IP: %s" % form_data["borehole_ip"],
+        "",
+        "Water Controller Pi",
+        "- Copy %s to borehole_controller_data/controller_config.json" % cfg_path,
+        "- Restart the borehole controller service/app",
+        "",
+        "Office Pi",
+        "- Merge %s into data/controllers.json" % office_fragment,
+        "- Restart: sudo systemctl restart office-dashboard.service",
+        "",
+    ])
+
+
 def build_bundle(form_data, output_root):
+    system_type = form_data["system_type"]
     farm_setup = build_farm_setup_payload(form_data)
     sync_token = str(form_data["sync_token"]).strip()
     office_controllers = build_office_controllers_payload(farm_setup, sync_token)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    bundle_dir = Path(output_root) / ("%s_%s" % (slugify(farm_setup["farm_name"]), timestamp))
+    bundle_dir = Path(output_root) / ("%s_%s_%s" % (slugify(farm_setup["farm_name"]), system_type, timestamp))
     bundle_dir.mkdir(parents=True, exist_ok=True)
 
-    write_json(bundle_dir / "farm_setup.json", farm_setup)
-    write_json(bundle_dir / "office" / "controllers.json", office_controllers)
-
-    for shed_no in sorted(farm_setup["sheds"].keys(), key=lambda value: int(value)):
+    if system_type in ["dashboard", "other"]:
+        write_json(bundle_dir / "farm_setup.json", farm_setup)
+        write_json(bundle_dir / "office" / "controllers.json", office_controllers)
+        for shed_no in sorted(farm_setup["sheds"].keys(), key=lambda value: int(value)):
+            cfg = build_controller_config_payload(farm_setup, shed_no, sync_token)
+            write_json(bundle_dir / "sheds" / ("shed_%s" % shed_no) / "controller_config.json", cfg)
+        notes = build_install_notes(farm_setup, sync_token, bundle_dir)
+    elif system_type == "shed":
+        shed_no = form_data["sheds"][0]["shed_no"]
         cfg = build_controller_config_payload(farm_setup, shed_no, sync_token)
-        write_json(bundle_dir / "sheds" / ("shed_%s" % shed_no) / "controller_config.json", cfg)
+        write_json(bundle_dir / "shed" / "controller_config.json", cfg)
+        office_fragment = {
+            shed_no: office_controllers[shed_no],
+        }
+        write_json(bundle_dir / "office" / "controllers.fragment.json", office_fragment)
+        notes = build_shed_install_notes(form_data, bundle_dir)
+    elif system_type == "water":
+        borehole_cfg = build_borehole_controller_config_payload(farm_setup["office"]["dashboard_url"], sync_token)
+        write_json(bundle_dir / "water" / "controller_config.json", borehole_cfg)
+        office_fragment = {}
+        if "borehole" in office_controllers:
+            office_fragment["borehole"] = office_controllers["borehole"]
+        write_json(bundle_dir / "office" / "controllers.fragment.json", office_fragment)
+        notes = build_water_install_notes(form_data, bundle_dir)
+    else:
+        raise ValueError("Unknown system type: %s" % system_type)
 
-    notes = build_install_notes(farm_setup, sync_token, bundle_dir)
     write_text(bundle_dir / "README.txt", notes)
     return bundle_dir
 
@@ -243,6 +327,7 @@ class FarmSetupWizard:
         self.root.geometry("980x760")
         self.root.minsize(900, 700)
 
+        self.system_type_var = tk.StringVar(value="dashboard")
         self.farm_name_var = tk.StringVar(value=FARM_TEMPLATE.get("farm_name", ""))
         self.dashboard_ip_var = tk.StringVar(value=FARM_TEMPLATE["office"].get("dashboard_ip", "192.168.1.10"))
         self.dashboard_port_var = tk.StringVar(value=str(FARM_TEMPLATE["office"].get("dashboard_port", 8090)))
@@ -255,49 +340,67 @@ class FarmSetupWizard:
 
         self._build_ui()
         self.rebuild_shed_rows()
+        self.apply_system_type()
 
     def _build_ui(self):
         outer = ttk.Frame(self.root, padding=16)
         outer.pack(fill="both", expand=True)
 
-        header = ttk.Label(
+        self.header_label = ttk.Label(
             outer,
             text="Build a ready-to-copy office and shed config bundle for a new farm.",
             font=("Helvetica", 15, "bold"),
         )
-        header.pack(anchor="w", pady=(0, 12))
+        self.header_label.pack(anchor="w", pady=(0, 12))
 
         top = ttk.LabelFrame(outer, text="Farm Details", padding=12)
         top.pack(fill="x")
 
-        ttk.Label(top, text="Farm Name").grid(row=0, column=0, sticky="w", padx=6, pady=6)
-        ttk.Entry(top, textvariable=self.farm_name_var, width=36).grid(row=0, column=1, sticky="ew", padx=6, pady=6)
-        ttk.Label(top, text="Dashboard IP").grid(row=0, column=2, sticky="w", padx=6, pady=6)
-        ttk.Entry(top, textvariable=self.dashboard_ip_var, width=18).grid(row=0, column=3, sticky="ew", padx=6, pady=6)
-        ttk.Label(top, text="Dashboard Port").grid(row=0, column=4, sticky="w", padx=6, pady=6)
-        ttk.Entry(top, textvariable=self.dashboard_port_var, width=8).grid(row=0, column=5, sticky="ew", padx=6, pady=6)
+        ttk.Label(top, text="System Type").grid(row=0, column=0, sticky="w", padx=6, pady=6)
+        self.system_type_combo = ttk.Combobox(
+            top,
+            state="readonly",
+            textvariable=self.system_type_var,
+            values=["dashboard", "shed", "water", "other"],
+            width=18,
+        )
+        self.system_type_combo.grid(row=0, column=1, sticky="ew", padx=6, pady=6)
+        self.system_type_combo.bind("<<ComboboxSelected>>", lambda _event: self.apply_system_type())
 
-        ttk.Label(top, text="Sync Token").grid(row=1, column=0, sticky="w", padx=6, pady=6)
-        ttk.Entry(top, textvariable=self.sync_token_var, width=36).grid(row=1, column=1, sticky="ew", padx=6, pady=6)
-        ttk.Label(top, text="Shed Numbers").grid(row=1, column=2, sticky="w", padx=6, pady=6)
-        ttk.Entry(top, textvariable=self.shed_numbers_var, width=18).grid(row=1, column=3, sticky="ew", padx=6, pady=6)
-        ttk.Button(top, text="Build Shed Rows", command=self.rebuild_shed_rows).grid(row=1, column=4, columnspan=2, sticky="ew", padx=6, pady=6)
+        ttk.Label(top, text="Farm Name").grid(row=1, column=0, sticky="w", padx=6, pady=6)
+        ttk.Entry(top, textvariable=self.farm_name_var, width=36).grid(row=1, column=1, sticky="ew", padx=6, pady=6)
+        ttk.Label(top, text="Dashboard IP").grid(row=1, column=2, sticky="w", padx=6, pady=6)
+        ttk.Entry(top, textvariable=self.dashboard_ip_var, width=18).grid(row=1, column=3, sticky="ew", padx=6, pady=6)
+        ttk.Label(top, text="Dashboard Port").grid(row=1, column=4, sticky="w", padx=6, pady=6)
+        ttk.Entry(top, textvariable=self.dashboard_port_var, width=8).grid(row=1, column=5, sticky="ew", padx=6, pady=6)
 
-        ttk.Checkbutton(top, text="Include Bore Hole", variable=self.borehole_enabled_var).grid(row=2, column=0, sticky="w", padx=6, pady=6)
-        ttk.Label(top, text="Bore Hole IP").grid(row=2, column=2, sticky="w", padx=6, pady=6)
-        ttk.Entry(top, textvariable=self.borehole_ip_var, width=18).grid(row=2, column=3, sticky="ew", padx=6, pady=6)
+        ttk.Label(top, text="Sync Token").grid(row=2, column=0, sticky="w", padx=6, pady=6)
+        ttk.Entry(top, textvariable=self.sync_token_var, width=36).grid(row=2, column=1, sticky="ew", padx=6, pady=6)
+        self.shed_numbers_label = ttk.Label(top, text="Shed Numbers")
+        self.shed_numbers_label.grid(row=2, column=2, sticky="w", padx=6, pady=6)
+        self.shed_numbers_entry = ttk.Entry(top, textvariable=self.shed_numbers_var, width=18)
+        self.shed_numbers_entry.grid(row=2, column=3, sticky="ew", padx=6, pady=6)
+        self.build_rows_button = ttk.Button(top, text="Build Shed Rows", command=self.rebuild_shed_rows)
+        self.build_rows_button.grid(row=2, column=4, columnspan=2, sticky="ew", padx=6, pady=6)
 
-        ttk.Label(top, text="Output Folder").grid(row=3, column=0, sticky="w", padx=6, pady=6)
-        ttk.Entry(top, textvariable=self.output_root_var).grid(row=3, column=1, columnspan=4, sticky="ew", padx=6, pady=6)
-        ttk.Button(top, text="Choose…", command=self.choose_output_root).grid(row=3, column=5, sticky="ew", padx=6, pady=6)
+        self.borehole_check = ttk.Checkbutton(top, text="Include Bore Hole", variable=self.borehole_enabled_var)
+        self.borehole_check.grid(row=3, column=0, sticky="w", padx=6, pady=6)
+        self.borehole_ip_label = ttk.Label(top, text="Bore Hole IP")
+        self.borehole_ip_label.grid(row=3, column=2, sticky="w", padx=6, pady=6)
+        self.borehole_ip_entry = ttk.Entry(top, textvariable=self.borehole_ip_var, width=18)
+        self.borehole_ip_entry.grid(row=3, column=3, sticky="ew", padx=6, pady=6)
+
+        ttk.Label(top, text="Output Folder").grid(row=4, column=0, sticky="w", padx=6, pady=6)
+        ttk.Entry(top, textvariable=self.output_root_var).grid(row=4, column=1, columnspan=4, sticky="ew", padx=6, pady=6)
+        ttk.Button(top, text="Choose…", command=self.choose_output_root).grid(row=4, column=5, sticky="ew", padx=6, pady=6)
 
         for column in range(6):
             top.columnconfigure(column, weight=1 if column in [1, 3, 4] else 0)
 
-        shed_box = ttk.LabelFrame(outer, text="Shed Controllers", padding=12)
-        shed_box.pack(fill="both", expand=True, pady=(14, 0))
+        self.shed_box = ttk.LabelFrame(outer, text="Shed Controllers", padding=12)
+        self.shed_box.pack(fill="both", expand=True, pady=(14, 0))
 
-        headings = ttk.Frame(shed_box)
+        headings = ttk.Frame(self.shed_box)
         headings.pack(fill="x")
         ttk.Label(headings, text="Shed", width=10).grid(row=0, column=0, sticky="w", padx=(0, 6))
         ttk.Label(headings, text="Controller IP", width=18).grid(row=0, column=1, sticky="w", padx=6)
@@ -305,7 +408,7 @@ class FarmSetupWizard:
         ttk.Label(headings, text="Left", width=8).grid(row=0, column=3, sticky="w", padx=6)
         ttk.Label(headings, text="Right", width=8).grid(row=0, column=4, sticky="w", padx=6)
 
-        self.shed_rows_frame = ttk.Frame(shed_box)
+        self.shed_rows_frame = ttk.Frame(self.shed_box)
         self.shed_rows_frame.pack(fill="both", expand=True, pady=(8, 0))
 
         footer = ttk.Frame(outer)
@@ -335,26 +438,69 @@ class FarmSetupWizard:
             self.shed_rows.append(row)
         self.shed_rows_frame.columnconfigure(0, weight=1)
 
+    def apply_system_type(self):
+        system_type = self.system_type_var.get().strip() or "dashboard"
+        self.header_label.config(
+            text="Build a ready-to-copy %s setup bundle." % SYSTEM_TYPE_LABELS.get(system_type, "setup")
+        )
+
+        show_sheds = system_type in ["dashboard", "shed", "other"]
+        show_borehole = system_type in ["dashboard", "water", "other"]
+
+        if system_type == "shed":
+            self.shed_numbers_label.config(text="Shed Number")
+            if "," in self.shed_numbers_var.get():
+                self.shed_numbers_var.set(self.shed_numbers_var.get().split(",")[0].strip())
+        else:
+            self.shed_numbers_label.config(text="Shed Numbers")
+
+        if show_sheds:
+            if not self.shed_box.winfo_manager():
+                self.shed_box.pack(fill="both", expand=True, pady=(14, 0))
+            self.rebuild_shed_rows()
+        elif self.shed_box.winfo_manager():
+            self.shed_box.pack_forget()
+
+        if system_type == "water":
+            self.borehole_enabled_var.set(True)
+        elif system_type == "shed":
+            self.borehole_enabled_var.set(False)
+
+        for widget in [self.borehole_check, self.borehole_ip_label, self.borehole_ip_entry]:
+            if show_borehole:
+                widget.grid()
+            else:
+                widget.grid_remove()
+
+        self.borehole_check.configure(state="normal" if system_type in ["dashboard", "other"] else "disabled")
+
     def validate(self):
         if not self.farm_name_var.get().strip():
             raise ValueError("Farm name is required.")
         if not self.dashboard_ip_var.get().strip():
             raise ValueError("Dashboard IP is required.")
         int(self.dashboard_port_var.get().strip())
-        if not self.shed_rows:
-            raise ValueError("Add at least one shed.")
+        system_type = self.system_type_var.get().strip() or "dashboard"
         sheds = []
-        for row in self.shed_rows:
-            payload = row.to_payload()
-            if not payload["controller_ip"]:
-                raise ValueError("Shed %s needs a controller IP." % payload["shed_no"])
-            sheds.append(payload)
+        if system_type in ["dashboard", "shed", "other"]:
+            if not self.shed_rows:
+                raise ValueError("Add at least one shed.")
+            for row in self.shed_rows:
+                payload = row.to_payload()
+                if not payload["controller_ip"]:
+                    raise ValueError("Shed %s needs a controller IP." % payload["shed_no"])
+                sheds.append(payload)
+            if system_type == "shed" and len(sheds) != 1:
+                raise ValueError("Shed controller mode expects exactly one shed.")
+        if system_type == "water" and not self.borehole_ip_var.get().strip():
+            raise ValueError("Water controller mode needs a bore hole IP.")
         return {
+            "system_type": system_type,
             "farm_name": self.farm_name_var.get().strip(),
             "dashboard_ip": self.dashboard_ip_var.get().strip(),
             "dashboard_port": int(self.dashboard_port_var.get().strip()),
             "sync_token": self.sync_token_var.get().strip(),
-            "borehole_enabled": bool(self.borehole_enabled_var.get()),
+            "borehole_enabled": bool(self.borehole_enabled_var.get()) if system_type in ["dashboard", "other"] else bool(system_type == "water"),
             "borehole_ip": self.borehole_ip_var.get().strip(),
             "sheds": sheds,
         }
@@ -369,8 +515,8 @@ class FarmSetupWizard:
 
         messagebox.showinfo(
             "Setup bundle created",
-            "Created:\n%s\n\nThis folder now contains the office controllers.json, per-shed controller_config.json files, and a README."
-            % bundle_dir,
+            "Created:\n%s\n\nThis folder now contains the files for the selected %s bundle."
+            % (bundle_dir, SYSTEM_TYPE_LABELS.get(form_data["system_type"], "setup")),
         )
 
 
