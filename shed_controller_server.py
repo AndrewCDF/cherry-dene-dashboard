@@ -1179,6 +1179,28 @@ def evaluate_augers(sensors, now_ts=None):
     return changed
 
 
+def auger_is_waiting_override(auger_key, augers, active_auger_keys):
+    if auger_key not in active_auger_keys:
+        return False
+    if not active_auger_keys:
+        return False
+
+    i = 0
+    while i < len(active_auger_keys):
+        active_key = active_auger_keys[i]
+        auger = augers.get(active_key, {})
+        if not auger.get("on"):
+            return False
+        if auger.get("overrun"):
+            return False
+        if auger.get("last_stopped_ts") not in [None, ""]:
+            return False
+        if auger.get("last_duration_s") not in [None, ""]:
+            return False
+        i += 1
+    return True
+
+
 def auger_status_text(auger):
     if auger.get("overrun"):
         return "Overrun"
@@ -2129,13 +2151,14 @@ def build_home_context():
         label = auger_label_for(cfg, auger_key, label)
         if auger_key in active_auger_keys:
             auger = augers.get(auger_key, {})
+            waiting_override = auger_is_waiting_override(auger_key, augers, active_auger_keys)
             tile = {
                 "key": auger_key,
                 "label": label,
-                "status": auger_status_text(auger),
-                "runtime": auger_runtime_text(auger, now_ts=now_ts),
+                "status": "Waiting" if waiting_override else auger_status_text(auger),
+                "runtime": "Off / waiting" if waiting_override else auger_runtime_text(auger, now_ts=now_ts),
                 "last_run": auger_last_run_text(auger),
-                "glow": auger_glow_class(auger),
+                "glow": "state-warn" if waiting_override else auger_glow_class(auger),
             }
             auger_tiles.append(tile)
             auger_slots.append(tile)
@@ -5565,16 +5588,18 @@ def controller_health_view():
     sensors = state.get("sensors", default_sensor_state())
     now_ts = int(time.time())
     augers = ensure_augers_state(sensors)
+    active_auger_keys = enabled_auger_keys(cfg)
     auger_rows = []
     i = 0
     while i < len(AUGER_DEFS):
         auger_key, label = AUGER_DEFS[i]
         label = auger_label_for(cfg, auger_key, label)
         auger = augers.get(auger_key, {})
+        waiting_override = auger_is_waiting_override(auger_key, augers, active_auger_keys)
         auger_rows.append({
             "label": label,
-            "status": auger_status_text(auger),
-            "runtime": auger_runtime_text(auger, now_ts=now_ts),
+            "status": "Waiting" if waiting_override else auger_status_text(auger),
+            "runtime": "Off / waiting" if waiting_override else auger_runtime_text(auger, now_ts=now_ts),
             "last_run": auger_last_run_text(auger),
         })
         i += 1
