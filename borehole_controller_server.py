@@ -555,6 +555,16 @@ def pico_firmware_hash():
     return h.hexdigest()[:10]
 
 
+def mpremote_command():
+    direct = shutil.which("mpremote")
+    if direct:
+        return [direct]
+    user_local = os.path.join(os.path.expanduser("~"), ".local", "bin", "mpremote")
+    if os.path.exists(user_local):
+        return [user_local]
+    return [sys.executable, "-m", "mpremote"]
+
+
 def build_controller_alarms(state, cfg=None):
     cfg = cfg or load_config()
     sensors = state.get("sensors", {})
@@ -2176,9 +2186,10 @@ def apply_update_view():
 @app.route("/settings/pico/update", methods=["POST"])
 def pico_update_view():
     path = os.path.join(APP_ROOT, "pico_firmware", "main.py")
+    mpremote = mpremote_command()
     try:
         proc = subprocess.run(
-            ["mpremote", "connect", "auto", "fs", "cp", path, ":main.py"],
+            mpremote + ["connect", "auto", "fs", "cp", path, ":main.py"],
             capture_output=True,
             text=True,
             timeout=60,
@@ -2196,9 +2207,10 @@ def pico_update_view():
 
 @app.route("/settings/pico/soft-reset", methods=["POST"])
 def pico_soft_reset_view():
+    mpremote = mpremote_command()
     try:
         proc = subprocess.run(
-            ["mpremote", "connect", "auto", "soft-reset"],
+            mpremote + ["connect", "auto", "soft-reset"],
             capture_output=True,
             text=True,
             timeout=30,

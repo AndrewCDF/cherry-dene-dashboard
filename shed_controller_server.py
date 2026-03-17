@@ -488,6 +488,16 @@ def pico_firmware_hash():
     return h.hexdigest()[:10]
 
 
+def mpremote_command():
+    direct = shutil.which("mpremote")
+    if direct:
+        return [direct]
+    user_local = os.path.join(os.path.expanduser("~"), ".local", "bin", "mpremote")
+    if os.path.exists(user_local):
+        return [user_local]
+    return [sys.executable, "-m", "mpremote"]
+
+
 def run_git_command(args, timeout=20):
     proc = subprocess.run(
         ["git"] + args,
@@ -625,17 +635,13 @@ def deploy_pico_firmware():
         save_pico_update_status(status)
         return status
 
-    if not shutil.which("mpremote"):
-        status["status"] = "mpremote is not installed"
-        save_pico_update_status(status)
-        return status
-
     source_path = pico_firmware_path()
     code, stdout, stderr = run_git_command(["rev-parse", "--short", "HEAD"])
     controller_commit = stdout if code == 0 and stdout else "--"
+    mpremote = mpremote_command()
 
     proc = subprocess.run(
-        ["mpremote", "connect", "auto", "fs", "cp", source_path, ":main.py"],
+        mpremote + ["connect", "auto", "fs", "cp", source_path, ":main.py"],
         cwd=APP_ROOT,
         capture_output=True,
         text=True,
@@ -647,7 +653,7 @@ def deploy_pico_firmware():
         return status
 
     subprocess.run(
-        ["mpremote", "connect", "auto", "soft-reset"],
+        mpremote + ["connect", "auto", "soft-reset"],
         cwd=APP_ROOT,
         capture_output=True,
         text=True,
@@ -670,13 +676,9 @@ def soft_reset_pico():
         "ok": False,
         "status": "Pico soft reset failed",
     })
-    if not shutil.which("mpremote"):
-        status["status"] = "mpremote is not installed"
-        save_pico_update_status(status)
-        return status
-
+    mpremote = mpremote_command()
     proc = subprocess.run(
-        ["mpremote", "connect", "auto", "soft-reset"],
+        mpremote + ["connect", "auto", "soft-reset"],
         cwd=APP_ROOT,
         capture_output=True,
         text=True,
