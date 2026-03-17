@@ -5672,7 +5672,7 @@ def build_water_settings_context(cfg, state):
         elif calib.get("completed"):
             calibration_status = "Complete"
             calibration_ready = True
-            calibration_can_start = False
+            calibration_can_start = True
             calibration_remaining = "0m 00s"
             calibration_pulse_delta = fmt_value(calib.get("pulse_delta"), "i")
 
