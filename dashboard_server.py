@@ -13,6 +13,9 @@ from datetime import datetime, timedelta
 
 app = Flask(__name__)
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
+CDF_APP_ICON_PATH = os.path.join(
+    APP_ROOT, "ios", "CherryDeneMobile", "Assets.xcassets", "AppIcon.appiconset", "AppIcon-1024.png"
+)
 
 CDF_FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
   <defs>
@@ -33,12 +36,24 @@ CDF_FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1
   <rect x="126" y="126" width="772" height="772" rx="156" fill="none" stroke="#35d07f" stroke-width="26"/>
   <text x="512" y="610" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="304" font-weight="700" letter-spacing="-20" fill="#f3f3f3">CDF</text>
 </svg>"""
+FAVICON_HEAD_HTML = (
+    '<link rel="icon" type="image/svg+xml" href="/favicon.svg">'
+    '<link rel="apple-touch-icon" href="/apple-touch-icon.png">'
+    '<meta name="apple-mobile-web-app-capable" content="yes">'
+    '<meta name="apple-mobile-web-app-title" content="CDF">'
+)
 
 
 @app.route("/favicon.ico")
 @app.route("/favicon.svg")
 def favicon_view():
     return Response(CDF_FAVICON_SVG, mimetype="image/svg+xml")
+
+
+@app.route("/apple-touch-icon.png")
+@app.route("/apple-touch-icon-precomposed.png")
+def apple_touch_icon_view():
+    return send_file(CDF_APP_ICON_PATH, mimetype="image/png", max_age=300)
 
 
 @app.after_request
@@ -48,7 +63,7 @@ def inject_favicon(response):
         if "text/html" in content_type and response.direct_passthrough is False:
             body = response.get_data(as_text=True)
             if "<head>" in body and 'rel="icon"' not in body:
-                body = body.replace('<head>', '<head><link rel="icon" type="image/svg+xml" href="/favicon.svg">', 1)
+                body = body.replace('<head>', '<head>' + FAVICON_HEAD_HTML, 1)
                 response.set_data(body)
                 response.headers["Content-Length"] = str(len(response.get_data()))
     except Exception:

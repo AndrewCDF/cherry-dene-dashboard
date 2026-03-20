@@ -22,6 +22,14 @@ except Exception:
     serial = None
 
 app = Flask(__name__)
+CDF_APP_ICON_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "ios",
+    "CherryDeneMobile",
+    "Assets.xcassets",
+    "AppIcon.appiconset",
+    "AppIcon-1024.png",
+)
 
 CDF_FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
   <defs>
@@ -45,6 +53,9 @@ CDF_FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1
 
 TOUCH_OPTIMIZE_HEAD = (
     '<link rel="icon" type="image/svg+xml" href="/favicon.svg">'
+    '<link rel="apple-touch-icon" href="/apple-touch-icon.png">'
+    '<meta name="apple-mobile-web-app-capable" content="yes">'
+    '<meta name="apple-mobile-web-app-title" content="CDF">'
     '<style id="cdf-touch-optimize">'
     'html,body{touch-action:pan-y;overscroll-behavior-y:contain;-webkit-overflow-scrolling:touch;}'
     'body,*{-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none;}'
@@ -254,6 +265,12 @@ NUMBER_PAD_BODY = """
 @app.route("/favicon.svg")
 def favicon_view():
     return Response(CDF_FAVICON_SVG, mimetype="image/svg+xml")
+
+
+@app.route("/apple-touch-icon.png")
+@app.route("/apple-touch-icon-precomposed.png")
+def apple_touch_icon_view():
+    return send_file(CDF_APP_ICON_PATH, mimetype="image/png", max_age=300)
 
 
 @app.after_request
