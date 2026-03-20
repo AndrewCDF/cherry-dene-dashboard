@@ -14,10 +14,24 @@ from datetime import datetime, timedelta
 app = Flask(__name__)
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 
-CDF_FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-<rect width="64" height="64" rx="12" fill="#4f4f4f"/>
-<rect x="4" y="4" width="56" height="56" rx="10" fill="none" stroke="#35d07f" stroke-width="2.5"/>
-<text x="32" y="39" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="700" fill="#f1f1f1">CDF</text>
+CDF_FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#5b5b5b"/>
+      <stop offset="100%" stop-color="#3f3f3f"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4a4a4a"/>
+      <stop offset="100%" stop-color="#343434"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="24" stdDeviation="28" flood-color="#000000" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+  <rect width="1024" height="1024" rx="224" fill="url(#bg)"/>
+  <rect x="98" y="98" width="828" height="828" rx="184" fill="url(#panel)" filter="url(#shadow)"/>
+  <rect x="126" y="126" width="772" height="772" rx="156" fill="none" stroke="#35d07f" stroke-width="26"/>
+  <text x="512" y="610" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="304" font-weight="700" letter-spacing="-20" fill="#f3f3f3">CDF</text>
 </svg>"""
 
 
