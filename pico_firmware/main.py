@@ -7,23 +7,22 @@ from machine import I2C, Pin
 SAMPLE_SECONDS = 1.0
 TEMP_RH_MEASURE_SECONDS = 2.5
 DEVICE_NAME = "pico-2-shed"
-DEBUG_ADS1115 = True
 
 # Change these pin numbers to match your wiring.
 SHT_I2C_ID = 0
 SHT_I2C_SDA_PIN = 4
 SHT_I2C_SCL_PIN = 5
-ADS_I2C_ID = 1
-ADS_I2C_SDA_PIN = 6
-ADS_I2C_SCL_PIN = 7
 SHT45_ADDR = 0x44
-ADS1115_ADDR = 0x48
-FLOW_PIN = 3
+FLOW_PIN = 16
+CROSS_AUGER_PIN = 18
+AUGER_LEFT_PIN = 20
+AUGER_RIGHT_PIN = 22
 STATUS_LED_PIN = "LED"
 HX711_DOUT_PIN = 14
 HX711_SCK_PIN = 15
 HX711_READINGS = 8
 FLOW_DEBOUNCE_US = 1200
+AUGER_INPUT_ACTIVE_LOW = True
 
 # SHT4x high precision measurement command.
 SHT45_MEASURE_HIGH_PRECISION = b"\xFD"
@@ -33,31 +32,12 @@ SHT45_MEASURE_HIGH_PRECISION = b"\xFD"
 #   L/min = pulses_per_second / 7.5
 FLOW_HZ_PER_LPM = 7.5
 
-# ADS1115 current transformer inputs.
-# Assumed channel map:
-#   A0 = cross auger
-#   A1 = auger left
-#   A2 = auger right
-CT_CONFIG = {
-    "cross_auger_on": {"channel": 0, "threshold": 2000},
-    "auger_left_on": {"channel": 1, "threshold": 2000},
-    "auger_right_on": {"channel": 2, "threshold": 2000},
-}
-
-ADS1115_REG_CONVERSION = 0x00
-ADS1115_REG_CONFIG = 0x01
-ADS1115_CONFIG_OS_SINGLE = 0x8000
-ADS1115_CONFIG_MUX_BASE = 0x4000
-ADS1115_CONFIG_PGA_4V096 = 0x0200
-ADS1115_CONFIG_MODE_SINGLE = 0x0100
-ADS1115_CONFIG_DR_860SPS = 0x00E0
-ADS1115_CONFIG_COMP_DISABLE = 0x0003
-
-
 status_led = Pin(STATUS_LED_PIN, Pin.OUT)
 sht_i2c = I2C(SHT_I2C_ID, sda=Pin(SHT_I2C_SDA_PIN), scl=Pin(SHT_I2C_SCL_PIN), freq=100000)
-ads_i2c = I2C(ADS_I2C_ID, sda=Pin(ADS_I2C_SDA_PIN), scl=Pin(ADS_I2C_SCL_PIN), freq=100000)
 flow_pin = Pin(FLOW_PIN, Pin.IN, Pin.PULL_UP)
+cross_auger_pin = Pin(CROSS_AUGER_PIN, Pin.IN)
+auger_left_pin = Pin(AUGER_LEFT_PIN, Pin.IN)
+auger_right_pin = Pin(AUGER_RIGHT_PIN, Pin.IN)
 hx711_dout = Pin(HX711_DOUT_PIN, Pin.IN, Pin.PULL_UP)
 hx711_sck = Pin(HX711_SCK_PIN, Pin.OUT)
 
@@ -73,42 +53,6 @@ last_rh_pct = None
 
 def setup_inputs():
     hx711_sck.value(0)
-
-
-def ads1115_write_config(config_value):
-    payload = bytes([
-        ADS1115_REG_CONFIG,
-        (config_value >> 8) & 0xFF,
-        config_value & 0xFF,
-    ])
-    ads_i2c.writeto(ADS1115_ADDR, payload)
-
-
-def ads1115_read_conversion():
-    ads_i2c.writeto(ADS1115_ADDR, bytes([ADS1115_REG_CONVERSION]))
-    raw = ads_i2c.readfrom(ADS1115_ADDR, 2)
-    value = (raw[0] << 8) | raw[1]
-    if value & 0x8000:
-        value -= 0x10000
-    return value
-
-
-def ads1115_read_channel(channel):
-    if channel < 0 or channel > 3:
-        raise ValueError("ADS1115 channel must be 0-3")
-
-    mux_bits = ADS1115_CONFIG_MUX_BASE + (channel << 12)
-    config = (
-        ADS1115_CONFIG_OS_SINGLE
-        | mux_bits
-        | ADS1115_CONFIG_PGA_4V096
-        | ADS1115_CONFIG_MODE_SINGLE
-        | ADS1115_CONFIG_DR_860SPS
-        | ADS1115_CONFIG_COMP_DISABLE
-    )
-    ads1115_write_config(config)
-    time.sleep_ms(2)
-    return ads1115_read_conversion()
 
 
 def flow_pulse_handler(pin):
@@ -164,15 +108,11 @@ def read_sht45():
     return round(temp_c, 1), round(rh_pct, 1)
 
 
-def read_ct_active(channel, threshold, samples=12):
-    peak = 0
-    i = 0
-    while i < samples:
-        val = abs(ads1115_read_channel(channel))
-        if val > peak:
-            peak = val
-        i += 1
-    return peak >= int(threshold), peak
+def read_switch_active(pin):
+    value = pin.value()
+    if AUGER_INPUT_ACTIVE_LOW:
+        return value == 0
+    return value == 1
 
 
 def update_temp_rh():
@@ -270,36 +210,22 @@ def read_value(read_fn, alarm_prefix, alarms, default=None):
         return default
 
 
-def read_ct_block(alarms):
-    ct_payload = {}
-    ct_debug = {}
+def read_auger_inputs(alarms):
+    payload = {}
+    input_map = {
+        "cross_auger_on": cross_auger_pin,
+        "auger_left_on": auger_left_pin,
+        "auger_right_on": auger_right_pin,
+    }
 
-    for key in CT_CONFIG:
-        channel = CT_CONFIG[key]["channel"]
-        threshold = CT_CONFIG[key]["threshold"]
+    for key, pin in input_map.items():
         try:
-            active, peak = read_ct_active(channel, threshold)
-            ct_payload[key] = active
-            ct_payload[key + "_peak"] = peak
-            if DEBUG_ADS1115:
-                ct_debug[key] = {
-                    "channel": channel,
-                    "peak": peak,
-                    "threshold": int(threshold),
-                }
+            payload[key] = read_switch_active(pin)
         except Exception as exc:
-            ct_payload[key] = None
-            ct_payload[key + "_peak"] = None
-            alarms.append("%s CT read failed: %s" % (key, exc))
-            if DEBUG_ADS1115:
-                ct_debug[key] = {
-                    "channel": channel,
-                    "peak": None,
-                    "threshold": int(threshold),
-                    "error": str(exc),
-                }
+            payload[key] = None
+            alarms.append("%s read failed: %s" % (key, exc))
 
-    return ct_payload, ct_debug
+    return payload
 
 
 def build_payload():
@@ -314,7 +240,7 @@ def build_payload():
     feed_raw_units = read_value(read_feed_raw_units, "Feed raw read failed", alarms)
     light_lux = read_value(read_light_lux, "Light read failed", alarms)
     pressure_pa = read_value(read_pressure_pa, "Pressure read failed", alarms)
-    ct_payload, ct_debug = read_ct_block(alarms)
+    auger_payload = read_auger_inputs(alarms)
 
     payload = {
         "device": DEVICE_NAME,
@@ -332,11 +258,8 @@ def build_payload():
         "alarms": alarms,
     }
 
-    for key in ct_payload:
-        payload[key] = ct_payload[key]
-
-    if DEBUG_ADS1115:
-        payload["ct_debug"] = ct_debug
+    for key in auger_payload:
+        payload[key] = auger_payload[key]
 
     return payload
 
