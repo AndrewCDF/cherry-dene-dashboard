@@ -4106,6 +4106,44 @@ HTML = """
             align-items: center;
             gap: 8px;
         }
+        .settings-link.notify-on {
+            border-color: #35d07f;
+            color: #d9ffe8;
+            box-shadow:
+                0 0 8px rgba(53,208,127,0.65),
+                0 0 16px rgba(53,208,127,0.30);
+        }
+        .settings-link.notify-blocked {
+            border-color: #ff7a7a;
+            color: #ffd8d8;
+            box-shadow:
+                0 0 8px rgba(255,122,122,0.65),
+                0 0 16px rgba(255,122,122,0.30);
+        }
+        .settings-link.notify-off {
+            border-color: #ffd06a;
+            color: #fff0c7;
+        }
+        .notify-status {
+            margin-bottom: 12px;
+            text-align: center;
+            font-size: 13px;
+            color: #d7d7d7;
+            min-height: 18px;
+        }
+        .notify-status.state-on {
+            color: #d9ffe8;
+            text-shadow:
+                0 0 8px rgba(53,208,127,0.45);
+        }
+        .notify-status.state-blocked {
+            color: #ffd8d8;
+            text-shadow:
+                0 0 8px rgba(255,122,122,0.45);
+        }
+        .notify-status.state-off {
+            color: #fff0c7;
+        }
         h1 {
             margin: 0;
             font-size: 28px;
@@ -4527,6 +4565,7 @@ HTML = """
                 <div class="access-ip">This device: {{ host_ips }}</div>
             </div>
         </div>
+        <div id="notifyStatus" class="notify-status"></div>
 
         <div class="grid">
             {% for s in sheds %}
@@ -4759,6 +4798,7 @@ const NOTIFY_PREF_KEY = 'cdf-notifications-enabled';
 const NOTIFY_LAST_TS_KEY = 'cdf-notifications-last-ts';
 const NOTIFY_ACTIVE_KEY = 'cdf-notifications-active-alarms';
 let notifyToggleBtn = null;
+let notifyStatusEl = null;
 let swRegistration = null;
 
 function notificationsEnabled() {
@@ -4796,22 +4836,53 @@ function setNotificationLastTs(ts) {
 
 function updateNotifyButton() {
     if (!notifyToggleBtn) return;
+    if (notifyStatusEl) {
+        notifyStatusEl.classList.remove('state-on', 'state-blocked', 'state-off');
+    }
     if (!('Notification' in window)) {
         notifyToggleBtn.textContent = '🔕 Notifications Unsupported';
         notifyToggleBtn.disabled = true;
+        notifyToggleBtn.classList.remove('notify-on', 'notify-off', 'notify-blocked');
+        if (notifyStatusEl) notifyStatusEl.textContent = 'This browser does not support notifications.';
         return;
     }
     const permission = Notification.permission;
     if (!notificationsEnabled()) {
         notifyToggleBtn.textContent = permission === 'granted' ? '🔔 Notifications Off' : '🔔 Enable Notifications';
+        notifyToggleBtn.classList.remove('notify-on', 'notify-blocked');
+        notifyToggleBtn.classList.add('notify-off');
+        if (notifyStatusEl) {
+            notifyStatusEl.textContent = permission === 'granted'
+                ? 'Notifications are currently turned off for this dashboard.'
+                : 'Notifications are not enabled yet.';
+            notifyStatusEl.classList.add('state-off');
+        }
         return;
     }
     if (permission === 'granted') {
         notifyToggleBtn.textContent = '🔔 Notifications On';
+        notifyToggleBtn.classList.remove('notify-off', 'notify-blocked');
+        notifyToggleBtn.classList.add('notify-on');
+        if (notifyStatusEl) {
+            notifyStatusEl.textContent = 'Notifications are enabled for this dashboard.';
+            notifyStatusEl.classList.add('state-on');
+        }
     } else if (permission === 'denied') {
         notifyToggleBtn.textContent = '🔕 Notifications Blocked';
+        notifyToggleBtn.classList.remove('notify-off', 'notify-on');
+        notifyToggleBtn.classList.add('notify-blocked');
+        if (notifyStatusEl) {
+            notifyStatusEl.textContent = 'Notifications are blocked in this browser for the dashboard.';
+            notifyStatusEl.classList.add('state-blocked');
+        }
     } else {
         notifyToggleBtn.textContent = '🔔 Enable Notifications';
+        notifyToggleBtn.classList.remove('notify-on', 'notify-blocked');
+        notifyToggleBtn.classList.add('notify-off');
+        if (notifyStatusEl) {
+            notifyStatusEl.textContent = 'Click Notifications to enable alarm alerts.';
+            notifyStatusEl.classList.add('state-off');
+        }
     }
 }
 
@@ -4884,6 +4955,11 @@ async function enableNotificationsFromUserAction() {
     setNotificationsEnabled(true);
     await baselineNotifications();
     await showDashboardNotification('Cherry Dene Dashboard', 'Notifications enabled for this dashboard.', '/', 'cdf-notify-enabled');
+    if (notifyStatusEl) {
+        notifyStatusEl.textContent = 'Notifications enabled successfully.';
+        notifyStatusEl.classList.remove('state-blocked', 'state-off');
+        notifyStatusEl.classList.add('state-on');
+    }
 }
 
 async function pollNotifications() {
@@ -5043,11 +5119,17 @@ if (window.EventSource) {
 }
 
 notifyToggleBtn = document.getElementById('notifyToggle');
+notifyStatusEl = document.getElementById('notifyStatus');
 if (notifyToggleBtn) {
     notifyToggleBtn.addEventListener('click', async () => {
         if (!('Notification' in window)) return;
         if (notificationsEnabled() && Notification.permission === 'granted') {
             setNotificationsEnabled(false);
+            if (notifyStatusEl) {
+                notifyStatusEl.textContent = 'Notifications turned off for this dashboard.';
+                notifyStatusEl.classList.remove('state-on', 'state-blocked');
+                notifyStatusEl.classList.add('state-off');
+            }
             updateNotifyButton();
             return;
         }
