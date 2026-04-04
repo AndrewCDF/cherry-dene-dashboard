@@ -4092,6 +4092,8 @@ HTML = """
             display: inline-flex;
             align-items: center;
             gap: 10px;
+            flex-wrap: wrap;
+            min-width: 0;
         }
         .topbar-right { justify-self: end; }
         .settings-link {
@@ -4105,6 +4107,10 @@ HTML = """
             display: inline-flex;
             align-items: center;
             gap: 8px;
+            min-width: 0;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+            white-space: normal;
         }
         .settings-link.notify-on {
             border-color: #35d07f;
@@ -4205,6 +4211,8 @@ HTML = """
             min-height: 455px;
             cursor: pointer;
             transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+            min-width: 0;
+            overflow: hidden;
         }
         .card:hover {
             transform: translateY(-2px);
@@ -4253,31 +4261,44 @@ HTML = """
             justify-content: space-between;
             align-items: flex-start;
             margin-bottom: 6px;
+            gap: 8px;
+            min-width: 0;
         }
         .head-left {
             display: flex;
             flex-direction: column;
             gap: 2px;
             align-items: flex-start;
+            min-width: 0;
+            flex: 1 1 auto;
         }
         .shed {
             font-size: 22px;
             font-weight: bold;
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
         .birds-top {
             font-size: 14px;
             color: #d9d9d9;
+            line-height: 1.3;
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
         .alloc-top {
             font-size: 13px;
             color: #d6d6d6;
             line-height: 1.25;
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
         .badge-wrap {
             display: flex;
             flex-direction: column;
             gap: 4px;
             align-items: flex-end;
+            min-width: 0;
+            flex: 0 1 auto;
         }
         .badge {
             font-size: 11px;
@@ -4286,6 +4307,9 @@ HTML = """
             border: 1px solid #8d8d8d;
             color: #f0f0f0;
             background: transparent;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+            text-align: center;
         }
         .badge.online {
             border-color: #35d07f;
@@ -4341,15 +4365,20 @@ HTML = """
         }
         .mini {
             min-width: 70px;
+            min-width: 0;
         }
         .mini-label {
             font-size: 11px;
             color: #d0d0d0;
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
         .mini-val {
             font-size: 20px;
             font-weight: bold;
             line-height: 1.1;
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
         .big-pair {
             display: grid;
@@ -4383,16 +4412,21 @@ HTML = """
             border: 1px solid #858585;
             border-radius: 8px;
             padding: 5px 7px;
+            min-width: 0;
         }
         .metric-label {
             font-size: 10px;
             color: #d2d2d2;
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
         .metric-val {
             font-size: 16px;
             font-weight: bold;
             line-height: 1.1;
             margin-top: 2px;
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
         .metric-big .metric-label {
             font-size: 12px;
@@ -4431,11 +4465,23 @@ HTML = """
         .row {
             margin: 4px 0;
             font-size: 13px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 10px;
+            min-width: 0;
         }
         .label {
             display: inline-block;
             min-width: 92px;
             color: #d0d0d0;
+            flex: 0 0 auto;
+        }
+        .row span:last-child {
+            min-width: 0;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+            text-align: right;
         }
         .alarmbox {
             margin-top: 8px;
@@ -4444,6 +4490,8 @@ HTML = """
             border: 1px solid #6d2b2b;
             background: #30191c;
             font-size: 12px;
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
         .bore-list {
             margin-top: 8px;
@@ -4512,6 +4560,8 @@ HTML = """
         .summary-label {
             font-size: 12px;
             color: #d2d2d2;
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
         .summary-box-compact .summary-label {
             font-size: 11px;
@@ -4521,6 +4571,8 @@ HTML = """
             font-weight: bold;
             margin-top: 4px;
             line-height: 1.1;
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
         .summary-box-compact .summary-val {
             font-size: 28px;
@@ -4538,11 +4590,36 @@ HTML = """
             .summary-grid { grid-template-columns: minmax(0, 1.25fr) repeat(5, minmax(0, 0.95fr)); }
         }
         @media (max-width: 700px) {
+            body { overflow-x: hidden; }
+            .wrap { padding: 8px; }
             .grid { grid-template-columns: 1fr; }
             .datetime { font-size: 16px; }
-            .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+            .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
             .topbar { grid-template-columns: 1fr; }
             .topbar-left, .topbar-center, .topbar-right { justify-self: center; }
+            .topbar-actions { justify-content: center; gap: 8px; }
+            .settings-link { width: 100%; justify-content: center; }
+            .card { min-height: 0; padding: 8px; }
+            .head { flex-direction: column; align-items: stretch; }
+            .badge-wrap { align-items: flex-start; flex-direction: row; flex-wrap: wrap; }
+            .shed { font-size: 20px; }
+            .birds-top, .alloc-top { font-size: 12px; }
+            .topline { gap: 8px; }
+            .mini-val { font-size: 18px; }
+            .big-pair { grid-template-columns: 1fr; }
+            .metric-grid { grid-template-columns: 1fr 1fr; }
+            .metric-grid-2 { grid-template-columns: 1fr; }
+            .metric-big .metric-label { font-size: 11px; }
+            .metric-big .metric-val { font-size: 28px; }
+            .metric-val { font-size: 15px; }
+            .row { flex-direction: column; gap: 2px; }
+            .label { min-width: 0; }
+            .row span:last-child { text-align: left; }
+            .summary-title { font-size: 20px; }
+            .summary-box { padding: 8px 10px; }
+            .summary-label { font-size: 10px; }
+            .summary-val { font-size: 22px; }
+            .summary-box-compact .summary-val { font-size: 20px; }
         }
     </style>
 </head>
