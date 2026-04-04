@@ -1,7 +1,10 @@
 from flask import Flask, render_template_string, abort, url_for, request, redirect, jsonify, Response, send_file
+import csv
 import json
 import os
+import re
 import socket
+import smtplib
 import subprocess
 import tempfile
 import threading
@@ -10,6 +13,8 @@ import urllib.error
 import urllib.request
 import zipfile
 from datetime import datetime, timedelta
+from email.message import EmailMessage
+from xml.sax.saxutils import escape as xml_escape
 
 app = Flask(__name__)
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -39,8 +44,10 @@ CDF_FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1
 FAVICON_HEAD_HTML = (
     '<link rel="icon" type="image/svg+xml" href="/favicon.svg">'
     '<link rel="apple-touch-icon" href="/apple-touch-icon.png">'
+    '<link rel="manifest" href="/manifest.webmanifest">'
     '<meta name="apple-mobile-web-app-capable" content="yes">'
     '<meta name="apple-mobile-web-app-title" content="CDF">'
+    '<meta name="theme-color" content="#5b5b5b">'
 )
 
 
@@ -54,6 +61,80 @@ def favicon_view():
 @app.route("/apple-touch-icon-precomposed.png")
 def apple_touch_icon_view():
     return send_file(CDF_APP_ICON_PATH, mimetype="image/png", max_age=300)
+
+
+@app.route("/manifest.webmanifest")
+def web_manifest_view():
+    return jsonify({
+        "name": "Cherry Dene Dashboard",
+        "short_name": "CDF",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#5b5b5b",
+        "theme_color": "#5b5b5b",
+        "icons": [
+            {
+                "src": "/apple-touch-icon.png",
+                "sizes": "1024x1024",
+                "type": "image/png",
+            }
+        ],
+    })
+
+
+SERVICE_WORKER_JS = """self.addEventListener('install', (event) => {
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(self.clients.claim());
+});
+
+self.addEventListener('push', (event) => {
+  let payload = {};
+  try {
+    payload = event.data ? event.data.json() : {};
+  } catch (err) {
+    payload = { title: 'Cherry Dene Dashboard', body: event.data ? event.data.text() : '' };
+  }
+  const title = payload.title || 'Cherry Dene Dashboard';
+  const options = {
+    body: payload.body || '',
+    icon: payload.icon || '/apple-touch-icon.png',
+    badge: payload.badge || '/apple-touch-icon.png',
+    tag: payload.tag || 'cdf-notification',
+    data: payload.data || {},
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const url = (event.notification.data && event.notification.data.url) || '/';
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
+      for (const client of clients) {
+        if ('focus' in client) {
+          client.navigate(url);
+          return client.focus();
+        }
+      }
+      if (self.clients.openWindow) {
+        return self.clients.openWindow(url);
+      }
+    })
+  );
+});
+"""
+
+
+@app.route("/service-worker.js")
+def service_worker_view():
+    return Response(
+        SERVICE_WORKER_JS,
+        mimetype="application/javascript",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 @app.after_request
@@ -99,6 +180,15 @@ def write_json_file_atomic(path, payload):
     fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".", suffix=".tmp", dir=parent)
     with os.fdopen(fd, "w") as f:
         json.dump(payload, f, indent=2)
+    os.replace(tmp, path)
+
+
+def write_bytes_file_atomic(path, payload):
+    parent = os.path.dirname(path) or "."
+    os.makedirs(parent, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".", suffix=".tmp", dir=parent)
+    with os.fdopen(fd, "wb") as f:
+        f.write(payload)
     os.replace(tmp, path)
 
 
@@ -221,6 +311,92 @@ def crop_age_days(placement_epoch):
 def load_office_config():
     data = read_json_file(os.path.join(DATA_DIR, "office_config.json"), {})
     return data if isinstance(data, dict) else {}
+
+
+def save_office_config(data):
+    write_json_file_atomic(os.path.join(DATA_DIR, "office_config.json"), data if isinstance(data, dict) else {})
+
+
+def office_email_settings_csv_path():
+    return os.path.join(APP_ROOT, "office_email_settings.csv")
+
+
+def import_office_email_settings_csv():
+    path = office_email_settings_csv_path()
+    if not os.path.isfile(path):
+        raise FileNotFoundError("Email settings CSV not found at %s" % path)
+
+    with open(path, "r", newline="") as f:
+        rows = [row for row in csv.reader(f) if row and any(str(cell).strip() for cell in row)]
+
+    if not rows:
+        raise ValueError("Email settings CSV is empty")
+
+    # Allow a simple title row like "office_email_settings" above the real header.
+    if len(rows[0]) == 1 and str(rows[0][0]).strip().lower() == "office_email_settings":
+        rows = rows[1:]
+
+    if len(rows) < 2:
+        raise ValueError("Email settings CSV must contain a header row and one values row")
+
+    headers = [str(cell).strip() for cell in rows[0]]
+    values = rows[1]
+    allowed_keys = {
+        "report_email_enabled",
+        "report_email_to",
+        "report_email_from",
+        "report_smtp_host",
+        "report_smtp_port",
+        "report_smtp_username",
+        "report_smtp_password",
+        "report_smtp_use_tls",
+        "report_smtp_use_ssl",
+        "crop_report_email_to",
+        "crop_report_email_enabled",
+        "crop_report_email_from",
+        "crop_report_smtp_host",
+        "crop_report_smtp_port",
+        "crop_report_smtp_username",
+        "crop_report_smtp_password",
+        "crop_report_smtp_use_tls",
+        "crop_report_smtp_use_ssl",
+    }
+
+    updates = {}
+    i = 0
+    while i < len(headers):
+        key = headers[i]
+        if key in allowed_keys:
+            value = values[i] if i < len(values) else ""
+            updates[key] = str(value).strip()
+        i += 1
+
+    if not updates:
+        raise ValueError("No recognised email settings columns were found in the CSV")
+
+    cfg = load_office_config()
+    cfg.update(updates)
+    save_office_config(cfg)
+    return updates
+
+
+def crop_reports_root():
+    path = os.path.join(DATA_DIR, "crop_reports")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def crop_report_status_path():
+    return os.path.join(DATA_DIR, "crop_report_status.json")
+
+
+def load_crop_report_status():
+    data = read_json_file(crop_report_status_path(), {})
+    return data if isinstance(data, dict) else {}
+
+
+def save_crop_report_status(data):
+    write_json_file_atomic(crop_report_status_path(), data if isinstance(data, dict) else {})
 
 
 def controller_backup_root():
@@ -789,6 +965,98 @@ def get_recent_events(limit=200):
     return rows
 
 
+IMPORTANT_NOTIFICATION_EVENT_TYPES = {
+    "crop_report_ready",
+    "crop_report_emailed",
+    "crop_report_failed",
+    "backup_failed",
+    "controller_backup_failed",
+    "office_updated",
+}
+
+
+def notification_url_for_event(row):
+    if not isinstance(row, dict):
+        return "/"
+    event_type = str(row.get("event_type") or "").strip()
+    if event_type.startswith("crop_report_"):
+        return "/crop-reports"
+    if event_type in ["backup_failed", "controller_backup_failed", "office_updated"]:
+        return "/settings"
+    shed_no = row.get("shed_no")
+    try:
+        if shed_no not in [None, ""]:
+            return "/shed/%d" % int(shed_no)
+    except Exception:
+        pass
+    return "/"
+
+
+def build_notification_events_since(since_ts):
+    rows = read_all_json_lines("events.ndjson")
+    out = []
+    i = 0
+    while i < len(rows):
+        row = rows[i]
+        try:
+            ts = int(row.get("ts") or 0)
+        except Exception:
+            ts = 0
+        event_type = str(row.get("event_type") or "").strip()
+        if ts > int(since_ts or 0) and event_type in IMPORTANT_NOTIFICATION_EVENT_TYPES:
+            out.append({
+                "id": "evt:%s:%s:%s" % (ts, event_type, str(row.get("detail") or row.get("message") or "").strip()),
+                "kind": "event",
+                "title": str(row.get("message") or "Cherry Dene Dashboard"),
+                "body": str(row.get("detail") or row.get("source") or "").strip(),
+                "url": notification_url_for_event(row),
+                "ts": ts,
+            })
+        i += 1
+    out.sort(key=lambda r: int(r.get("ts") or 0))
+    return out
+
+
+def build_active_alarm_notifications():
+    alarms = []
+    alarms_map = active_alarms_by_shed()
+    for shed_name, rows in alarms_map.items():
+        if not isinstance(rows, list):
+            continue
+        i = 0
+        while i < len(rows):
+            row = rows[i]
+            if isinstance(row, dict):
+                shed_label = str(shed_name or "Shed").strip()
+                alarm_key = str(row.get("alarm_key") or "alarm").strip()
+                message = str(row.get("message") or alarm_key).strip()
+                alarms.append({
+                    "id": "alarm:%s:%s:%s" % (shed_label, alarm_key, message),
+                    "kind": "alarm",
+                    "title": "%s Alarm" % shed_label,
+                    "body": message,
+                    "url": "/shed/%d" % shed_number_from_name(shed_label) if shed_number_from_name(shed_label) in SHED_NUMBERS else "/",
+                })
+            i += 1
+
+    borehole_rows = active_borehole_alarms()
+    i = 0
+    while i < len(borehole_rows):
+        row = borehole_rows[i]
+        if isinstance(row, dict):
+            alarm_key = str(row.get("alarm_key") or "alarm").strip()
+            message = str(row.get("message") or alarm_key).strip()
+            alarms.append({
+                "id": "alarm:borehole:%s:%s" % (alarm_key, message),
+                "kind": "alarm",
+                "title": "Bore Hole Alarm",
+                "body": message,
+                "url": "/borehole",
+            })
+        i += 1
+    return alarms
+
+
 def clean_controller_meta(meta):
     if not isinstance(meta, dict):
         meta = {}
@@ -1132,6 +1400,11 @@ def crop_id_for_new_start(state):
 def refresh_farm_crop_current_id(state):
     ensure_data_dir()
     farm_crop = load_farm_crop()
+    previous_crop_id = farm_crop.get("current_crop_id")
+    try:
+        previous_crop_id = int(previous_crop_id) if previous_crop_id not in [None, ""] else None
+    except Exception:
+        previous_crop_id = None
     current_crop_id = current_active_crop_id_from_state(state)
 
     if current_crop_id is None:
@@ -1146,6 +1419,9 @@ def refresh_farm_crop_current_id(state):
             farm_crop["last_crop_id"] = current_crop_id
 
     save_farm_crop(farm_crop)
+    if previous_crop_id is not None and current_crop_id is None:
+        if queue_crop_end_report(previous_crop_id):
+            log_event("office", "crop_report_queued", "Full crop summary queued", detail="Crop %s" % previous_crop_id)
 
 
 def log_crop_event(shed_name, rec, crop_active):
@@ -2123,6 +2399,893 @@ def get_recent_crops_for_shed(shed_name, max_crops=6):
     if max_crops and len(rows) > max_crops:
         rows = rows[:max_crops]
     return rows
+
+
+def get_crop_events_for_shed(shed_name, crop_id):
+    rows = read_all_json_lines("crop.ndjson")
+    out = []
+
+    i = 0
+    while i < len(rows):
+        rec = rows[i]
+        if rec.get("shed") != shed_name:
+            i += 1
+            continue
+
+        try:
+            rec_crop_id = int(rec.get("crop_id"))
+        except Exception:
+            i += 1
+            continue
+
+        if rec_crop_id != int(crop_id):
+            i += 1
+            continue
+
+        out.append(rec)
+        i += 1
+
+    out.sort(key=lambda x: int(x.get("ts", 0) or 0))
+    return out
+
+
+def _safe_int(value, default=None):
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _safe_float(value, default=None):
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def build_crop_summary_for_shed(shed_name, crop_id):
+    events = get_crop_events_for_shed(shed_name, crop_id)
+    hourly_rows = add_running_totals(get_hourly_history_for_shed(shed_name, max_points=0, crop_id=crop_id))
+    daily_rows = add_running_totals(get_daily_history_for_shed(shed_name, max_days=0, crop_id=crop_id))
+    mortality_rows = get_mortality_history_for_shed(shed_name, crop_id=crop_id)
+    mortality_total = mortality_total_for_shed_crop(shed_name, crop_id)
+
+    start_event = None
+    end_event = None
+    max_active_birds = 0
+    latest_event = events[-1] if events else None
+
+    i = 0
+    while i < len(events):
+        rec = events[i]
+        crop_active = 1 if _safe_int(rec.get("crop_active"), 0) == 1 else 0
+        bird_count = _safe_int(rec.get("bird_count"), 0) or 0
+        if crop_active == 1:
+            if start_event is None:
+                start_event = rec
+            if bird_count > max_active_birds:
+                max_active_birds = bird_count
+        else:
+            end_event = rec
+        i += 1
+
+    start_epoch = None
+    if start_event is not None:
+        start_epoch = _safe_int(start_event.get("placement_epoch"))
+        if start_epoch is None:
+            start_epoch = _safe_int(start_event.get("ts"))
+    if start_epoch is None and hourly_rows:
+        start_epoch = _safe_int(hourly_rows[0].get("epoch"))
+    if start_epoch is None and latest_event is not None:
+        start_epoch = _safe_int(latest_event.get("placement_epoch")) or _safe_int(latest_event.get("ts"))
+
+    end_epoch = None
+    if end_event is not None:
+        end_epoch = _safe_int(end_event.get("ts"))
+    if end_epoch is None and hourly_rows:
+        end_epoch = _safe_int(hourly_rows[-1].get("epoch"))
+    if end_epoch is None and latest_event is not None:
+        end_epoch = _safe_int(latest_event.get("ts"))
+
+    birds_remaining_end = None
+    if end_event is not None:
+        birds_remaining_end = _safe_int(end_event.get("bird_count"))
+    if birds_remaining_end is None and latest_event is not None:
+        birds_remaining_end = _safe_int(latest_event.get("bird_count"))
+    if birds_remaining_end is None:
+        birds_remaining_end = 0
+
+    birds_placed_candidates = []
+    if max_active_birds > 0:
+        birds_placed_candidates.append(max_active_birds)
+    if birds_remaining_end is not None:
+        birds_placed_candidates.append((birds_remaining_end or 0) + int(mortality_total or 0))
+    birds_placed = max(birds_placed_candidates) if birds_placed_candidates else None
+
+    total_feed = 0.0
+    total_water = 0.0
+    if hourly_rows:
+        total_feed = float(hourly_rows[-1].get("running_feed") or 0.0)
+        total_water = float(hourly_rows[-1].get("running_water") or 0.0)
+
+    complete_day_count = len(daily_rows)
+    avg_daily_feed = (total_feed / complete_day_count) if complete_day_count > 0 else None
+    avg_daily_water = (total_water / complete_day_count) if complete_day_count > 0 else None
+
+    feed_per_bird = None
+    water_per_bird = None
+    mortality_pct = None
+    if birds_placed not in [None, 0]:
+        feed_per_bird = total_feed / float(birds_placed)
+        water_per_bird = total_water / float(birds_placed)
+        if mortality_total:
+            mortality_pct = (float(mortality_total) / float(birds_placed)) * 100.0
+
+    peak_daily_feed = None
+    peak_daily_water = None
+    if daily_rows:
+        peak_daily_feed = max((_safe_float(r.get("feed"), 0.0) or 0.0) for r in daily_rows)
+        peak_daily_water = max((_safe_float(r.get("water"), 0.0) or 0.0) for r in daily_rows)
+
+    crop_days = None
+    if start_epoch is not None and end_epoch is not None:
+        try:
+            start_date = datetime.fromtimestamp(int(start_epoch)).date()
+            end_date = datetime.fromtimestamp(int(end_epoch)).date()
+            crop_days = max(1, (end_date - start_date).days + 1)
+        except Exception:
+            crop_days = None
+
+    summary_status = "Ended" if end_event is not None else ("In progress" if events else "No crop data")
+
+    return {
+        "crop_id": int(crop_id),
+        "crop_code": fmt_crop_code(crop_id, start_epoch),
+        "status": summary_status,
+        "start_epoch": start_epoch,
+        "end_epoch": end_epoch,
+        "start_label": datetime.fromtimestamp(start_epoch).strftime("%d %b %Y %H:%M") if start_epoch is not None else "--",
+        "end_label": datetime.fromtimestamp(end_epoch).strftime("%d %b %Y %H:%M") if end_epoch is not None else "--",
+        "crop_days": crop_days,
+        "birds_placed": birds_placed,
+        "birds_remaining_end": birds_remaining_end,
+        "mortality_total": mortality_total,
+        "mortality_pct": mortality_pct,
+        "total_feed": total_feed,
+        "total_water": total_water,
+        "avg_daily_feed": avg_daily_feed,
+        "avg_daily_water": avg_daily_water,
+        "peak_daily_feed": peak_daily_feed,
+        "peak_daily_water": peak_daily_water,
+        "feed_per_bird": feed_per_bird,
+        "water_per_bird": water_per_bird,
+        "hourly_points": len(hourly_rows),
+        "complete_days": complete_day_count,
+        "mortality_events": len(mortality_rows),
+        "daily_rows": daily_rows,
+    }
+
+
+def crop_summary_has_data(summary):
+    if not isinstance(summary, dict):
+        return False
+    if summary.get("status") != "No crop data":
+        return True
+    numeric_keys = [
+        "hourly_points",
+        "complete_days",
+        "mortality_events",
+        "birds_placed",
+        "birds_remaining_end",
+        "mortality_total",
+        "total_feed",
+        "total_water",
+    ]
+    i = 0
+    while i < len(numeric_keys):
+        value = summary.get(numeric_keys[i])
+        try:
+            if float(value or 0) != 0.0:
+                return True
+        except Exception:
+            pass
+        i += 1
+    return False
+
+
+def farm_identity():
+    cfg = load_office_config()
+    farm_name = str(cfg.get("farm_name") or cfg.get("name") or "Farm").strip() or "Farm"
+    farm_id = str(cfg.get("farm_id") or "").strip()
+    return farm_name, farm_id
+
+
+def build_farm_crop_summary(crop_id):
+    farm_name, farm_id = farm_identity()
+    shed_rows = []
+    start_epochs = []
+    end_epochs = []
+    total_birds_placed = 0
+    total_birds_remaining = 0
+    total_mortality = 0
+    total_feed = 0.0
+    total_water = 0.0
+    total_complete_days = 0
+    total_mortality_events = 0
+    max_crop_days = 0
+
+    i = 0
+    while i < len(SHED_NUMBERS):
+        shed_no = SHED_NUMBERS[i]
+        shed_name = shed_name_from_number(shed_no)
+        summary = build_crop_summary_for_shed(shed_name, crop_id)
+        if crop_summary_has_data(summary):
+            shed_rows.append({
+                "shed_no": shed_no,
+                "shed_name": shed_name,
+                "summary": summary,
+            })
+            if summary.get("start_epoch") is not None:
+                start_epochs.append(int(summary["start_epoch"]))
+            if summary.get("end_epoch") is not None:
+                end_epochs.append(int(summary["end_epoch"]))
+            total_birds_placed += int(summary.get("birds_placed") or 0)
+            total_birds_remaining += int(summary.get("birds_remaining_end") or 0)
+            total_mortality += int(summary.get("mortality_total") or 0)
+            total_feed += float(summary.get("total_feed") or 0.0)
+            total_water += float(summary.get("total_water") or 0.0)
+            total_complete_days += int(summary.get("complete_days") or 0)
+            total_mortality_events += int(summary.get("mortality_events") or 0)
+            try:
+                max_crop_days = max(max_crop_days, int(summary.get("crop_days") or 0))
+            except Exception:
+                pass
+        i += 1
+
+    overall_start_epoch = min(start_epochs) if start_epochs else None
+    overall_end_epoch = max(end_epochs) if end_epochs else None
+    crop_days = max_crop_days or None
+    if overall_start_epoch is not None and overall_end_epoch is not None:
+        try:
+            start_date = datetime.fromtimestamp(int(overall_start_epoch)).date()
+            end_date = datetime.fromtimestamp(int(overall_end_epoch)).date()
+            crop_days = max(1, (end_date - start_date).days + 1)
+        except Exception:
+            pass
+
+    mortality_pct = None
+    feed_per_bird = None
+    water_per_bird = None
+    if total_birds_placed > 0:
+        mortality_pct = (float(total_mortality) / float(total_birds_placed)) * 100.0
+        feed_per_bird = float(total_feed) / float(total_birds_placed)
+        water_per_bird = float(total_water) / float(total_birds_placed)
+
+    avg_daily_feed = None
+    avg_daily_water = None
+    if crop_days not in [None, 0]:
+        avg_daily_feed = float(total_feed) / float(crop_days)
+        avg_daily_water = float(total_water) / float(crop_days)
+
+    return {
+        "farm_name": farm_name,
+        "farm_id": farm_id,
+        "crop_id": int(crop_id),
+        "crop_code": fmt_crop_code(crop_id, overall_start_epoch),
+        "start_epoch": overall_start_epoch,
+        "end_epoch": overall_end_epoch,
+        "start_label": datetime.fromtimestamp(overall_start_epoch).strftime("%d %b %Y %H:%M") if overall_start_epoch is not None else "--",
+        "end_label": datetime.fromtimestamp(overall_end_epoch).strftime("%d %b %Y %H:%M") if overall_end_epoch is not None else "--",
+        "crop_days": crop_days,
+        "participating_sheds": len(shed_rows),
+        "birds_placed": total_birds_placed if shed_rows else None,
+        "birds_remaining_end": total_birds_remaining if shed_rows else None,
+        "mortality_total": total_mortality if shed_rows else None,
+        "mortality_pct": mortality_pct,
+        "total_feed": total_feed if shed_rows else None,
+        "total_water": total_water if shed_rows else None,
+        "avg_daily_feed": avg_daily_feed,
+        "avg_daily_water": avg_daily_water,
+        "feed_per_bird": feed_per_bird,
+        "water_per_bird": water_per_bird,
+        "complete_days": total_complete_days,
+        "mortality_events": total_mortality_events,
+        "shed_rows": shed_rows,
+    }
+
+
+def _xlsx_col_name(index):
+    out = ""
+    value = int(index) + 1
+    while value > 0:
+        value, remainder = divmod(value - 1, 26)
+        out = chr(65 + remainder) + out
+    return out
+
+
+def _xlsx_cell_xml(row_idx, col_idx, value):
+    ref = "%s%d" % (_xlsx_col_name(col_idx), row_idx)
+    if value in [None, ""]:
+        return '<c r="%s"/>' % ref
+    if isinstance(value, bool):
+        return '<c r="%s" t="b"><v>%d</v></c>' % (ref, 1 if value else 0)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return '<c r="%s"><v>%s</v></c>' % (ref, value)
+    text = xml_escape(str(value), {'"': "&quot;", "'": "&apos;"})
+    return '<c r="%s" t="inlineStr"><is><t xml:space="preserve">%s</t></is></c>' % (ref, text)
+
+
+def _xlsx_col_widths(rows):
+    max_cols = 0
+    i = 0
+    while i < len(rows):
+        try:
+            max_cols = max(max_cols, len(rows[i]))
+        except Exception:
+            pass
+        i += 1
+
+    widths = []
+    col_idx = 0
+    while col_idx < max_cols:
+        max_len = 0
+        row_idx = 0
+        while row_idx < len(rows):
+            value = rows[row_idx][col_idx] if col_idx < len(rows[row_idx]) else ""
+            if value in [None, ""]:
+                text = ""
+            elif isinstance(value, float):
+                text = ("%.4f" % value).rstrip("0").rstrip(".")
+            else:
+                text = str(value)
+            line_len = 0
+            for part in text.splitlines() or [""]:
+                line_len = max(line_len, len(part))
+            max_len = max(max_len, line_len)
+            row_idx += 1
+
+        if col_idx == 0:
+            width = max(16, min(max_len + 3, 28))
+        else:
+            width = max(12, min(max_len + 3, 32))
+        widths.append(width)
+        col_idx += 1
+    return widths
+
+
+def _xlsx_sheet_xml(rows):
+    col_widths = _xlsx_col_widths(rows)
+    row_xml = []
+    row_idx = 1
+    while row_idx <= len(rows):
+        values = rows[row_idx - 1]
+        cell_xml = []
+        col_idx = 0
+        while col_idx < len(values):
+            cell_xml.append(_xlsx_cell_xml(row_idx, col_idx, values[col_idx]))
+            col_idx += 1
+        row_xml.append('<row r="%d">%s</row>' % (row_idx, "".join(cell_xml)))
+        row_idx += 1
+
+    cols_xml = []
+    col_idx = 0
+    while col_idx < len(col_widths):
+        width = col_widths[col_idx]
+        cols_xml.append('<col min="%d" max="%d" width="%s" customWidth="1"/>' % (col_idx + 1, col_idx + 1, width))
+        col_idx += 1
+
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<sheetFormatPr defaultRowHeight="15"/>'
+        '%s'
+        '<sheetData>%s</sheetData>'
+        '</worksheet>'
+    ) % (('<cols>%s</cols>' % "".join(cols_xml)) if cols_xml else "", "".join(row_xml))
+
+
+def _xlsx_safe_sheet_name(name, used_names):
+    cleaned = re.sub(r'[\[\]\:\*\?\/\\\\]', "-", str(name or "").strip()) or "Sheet"
+    cleaned = cleaned[:31] or "Sheet"
+    candidate = cleaned
+    suffix = 2
+    while candidate in used_names:
+        tail = " %d" % suffix
+        candidate = (cleaned[: max(0, 31 - len(tail))] + tail) or ("Sheet %d" % suffix)
+        suffix += 1
+    used_names.add(candidate)
+    return candidate
+
+
+def build_simple_xlsx_bytes(sheets):
+    workbook_parts = []
+    rel_parts = []
+    content_override_parts = []
+    sheet_files = []
+    used_names = set()
+
+    i = 0
+    while i < len(sheets):
+        sheet = sheets[i]
+        sheet_name = _xlsx_safe_sheet_name(sheet.get("name"), used_names)
+        sheet_xml = _xlsx_sheet_xml(sheet.get("rows") or [])
+        sheet_path = "xl/worksheets/sheet%d.xml" % (i + 1)
+        sheet_files.append((sheet_path, sheet_xml))
+        workbook_parts.append('<sheet name="%s" sheetId="%d" r:id="rId%d"/>' % (xml_escape(sheet_name, {'"': "&quot;", "'": "&apos;"}), i + 1, i + 1))
+        rel_parts.append('<Relationship Id="rId%d" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet%d.xml"/>' % (i + 1, i + 1))
+        content_override_parts.append('<Override PartName="/xl/worksheets/sheet%d.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' % (i + 1))
+        i += 1
+
+    workbook_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<sheets>%s</sheets>'
+        '</workbook>'
+    ) % "".join(workbook_parts)
+    workbook_rels_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">%s</Relationships>'
+    ) % "".join(rel_parts)
+    root_rels_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>'
+        '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>'
+        '</Relationships>'
+    )
+    content_types_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>'
+        '<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>'
+        '%s'
+        '</Types>'
+    ) % "".join(content_override_parts)
+    now_iso = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    core_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" '
+        'xmlns:dc="http://purl.org/dc/elements/1.1/" '
+        'xmlns:dcterms="http://purl.org/dc/terms/" '
+        'xmlns:dcmitype="http://purl.org/dc/dcmitype/" '
+        'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
+        '<dc:title>Crop Summary</dc:title>'
+        '<dc:creator>Cherry Dene Dashboard</dc:creator>'
+        '<cp:lastModifiedBy>Cherry Dene Dashboard</cp:lastModifiedBy>'
+        '<dcterms:created xsi:type="dcterms:W3CDTF">%s</dcterms:created>'
+        '<dcterms:modified xsi:type="dcterms:W3CDTF">%s</dcterms:modified>'
+        '</cp:coreProperties>'
+    ) % (now_iso, now_iso)
+    app_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" '
+        'xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">'
+        '<Application>Cherry Dene Dashboard</Application>'
+        '</Properties>'
+    )
+
+    buffer = tempfile.SpooledTemporaryFile()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", content_types_xml)
+        zf.writestr("_rels/.rels", root_rels_xml)
+        zf.writestr("docProps/core.xml", core_xml)
+        zf.writestr("docProps/app.xml", app_xml)
+        zf.writestr("xl/workbook.xml", workbook_xml)
+        zf.writestr("xl/_rels/workbook.xml.rels", workbook_rels_xml)
+        i = 0
+        while i < len(sheet_files):
+            path, payload = sheet_files[i]
+            zf.writestr(path, payload)
+            i += 1
+    buffer.seek(0)
+    payload = buffer.read()
+    buffer.close()
+    return payload
+
+
+def crop_report_metric_rows(summary):
+    return [
+        ["Crop ID", summary.get("crop_code")],
+        ["Status", summary.get("status", "Ended")],
+        ["Start", summary.get("start_label")],
+        ["End", summary.get("end_label")],
+        ["Crop Days", summary.get("crop_days")],
+        ["Birds Placed", summary.get("birds_placed")],
+        ["Birds Remaining", summary.get("birds_remaining_end")],
+        ["Mortality", summary.get("mortality_total")],
+        ["Mortality %", round(summary.get("mortality_pct"), 2) if summary.get("mortality_pct") is not None else None],
+        ["Total Feed KG", round(summary.get("total_feed"), 2) if summary.get("total_feed") is not None else None],
+        ["Total Water L", round(summary.get("total_water"), 2) if summary.get("total_water") is not None else None],
+        ["Avg Daily Feed KG", round(summary.get("avg_daily_feed"), 2) if summary.get("avg_daily_feed") is not None else None],
+        ["Avg Daily Water L", round(summary.get("avg_daily_water"), 2) if summary.get("avg_daily_water") is not None else None],
+        ["Feed Per Bird KG", round(summary.get("feed_per_bird"), 4) if summary.get("feed_per_bird") is not None else None],
+        ["Water Per Bird L", round(summary.get("water_per_bird"), 4) if summary.get("water_per_bird") is not None else None],
+        ["Complete Days", summary.get("complete_days")],
+        ["Mortality Events", summary.get("mortality_events")],
+    ]
+
+
+def build_crop_report_workbook(crop_id):
+    farm_summary = build_farm_crop_summary(crop_id)
+    generated_ts = int(time.time())
+
+    sheets = []
+    farm_rows = [
+        ["Farm", farm_summary.get("farm_name")],
+        ["Farm ID", farm_summary.get("farm_id") or "--"],
+        ["Crop", farm_summary.get("crop_code")],
+        ["Generated", datetime.fromtimestamp(generated_ts).strftime("%d %b %Y %H:%M")],
+    ]
+    farm_rows.extend(crop_report_metric_rows(farm_summary))
+    farm_rows.append([])
+    farm_rows.append([
+        "Shed",
+        "Crop",
+        "Start",
+        "End",
+        "Crop Days",
+        "Birds Placed",
+        "Birds Remaining",
+        "Mortality",
+        "Mortality %",
+        "Feed KG",
+        "Water L",
+        "Avg Feed/Day",
+        "Avg Water/Day",
+        "Feed/Bird",
+        "Water/Bird",
+        "Complete Days",
+        "Mortality Events",
+    ])
+
+    i = 0
+    shed_rows = farm_summary.get("shed_rows", [])
+    while i < len(shed_rows):
+        row = shed_rows[i]
+        summary = row["summary"]
+        farm_rows.append([
+            row["shed_name"],
+            summary.get("crop_code"),
+            summary.get("start_label"),
+            summary.get("end_label"),
+            summary.get("crop_days"),
+            summary.get("birds_placed"),
+            summary.get("birds_remaining_end"),
+            summary.get("mortality_total"),
+            round(summary.get("mortality_pct"), 2) if summary.get("mortality_pct") is not None else None,
+            round(summary.get("total_feed"), 2) if summary.get("total_feed") is not None else None,
+            round(summary.get("total_water"), 2) if summary.get("total_water") is not None else None,
+            round(summary.get("avg_daily_feed"), 2) if summary.get("avg_daily_feed") is not None else None,
+            round(summary.get("avg_daily_water"), 2) if summary.get("avg_daily_water") is not None else None,
+            round(summary.get("feed_per_bird"), 4) if summary.get("feed_per_bird") is not None else None,
+            round(summary.get("water_per_bird"), 4) if summary.get("water_per_bird") is not None else None,
+            summary.get("complete_days"),
+            summary.get("mortality_events"),
+        ])
+        i += 1
+    sheets.append({"name": "Farm Summary", "rows": farm_rows})
+
+    i = 0
+    while i < len(shed_rows):
+        row = shed_rows[i]
+        summary = row["summary"]
+        rows = [
+            ["Shed", row["shed_name"]],
+            ["Crop", summary.get("crop_code")],
+            [],
+        ]
+        rows.extend(crop_report_metric_rows(summary))
+        rows.append([])
+        rows.append(["Day", "Water L", "Feed KG", "Running Water L", "Running Feed KG"])
+        daily_rows = summary.get("daily_rows", [])
+        j = 0
+        while j < len(daily_rows):
+            daily = daily_rows[j]
+            rows.append([
+                daily.get("label"),
+                round(float(daily.get("water") or 0.0), 2),
+                round(float(daily.get("feed") or 0.0), 2),
+                round(float(daily.get("running_water") or 0.0), 2),
+                round(float(daily.get("running_feed") or 0.0), 2),
+            ])
+            j += 1
+        sheets.append({"name": "Shed %d" % row["shed_no"], "rows": rows})
+        i += 1
+
+    workbook_bytes = build_simple_xlsx_bytes(sheets)
+    return farm_summary, workbook_bytes
+
+
+def _filename_slug(value):
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", str(value or "").strip()).strip("-").lower()
+    return slug or "farm"
+
+
+def crop_report_output_path(farm_summary):
+    farm_slug = _filename_slug(farm_summary.get("farm_name"))
+    crop_slug = _filename_slug(farm_summary.get("crop_code") or ("crop-%s" % farm_summary.get("crop_id")))
+    return os.path.join(crop_reports_root(), "%s-%s-summary.xlsx" % (farm_slug, crop_slug))
+
+
+def crop_report_email_config():
+    cfg = load_office_config()
+    recipients = cfg.get("crop_report_email_to")
+    if not recipients:
+        recipients = cfg.get("report_email_to")
+    if isinstance(recipients, str):
+        recipients = [part.strip() for part in re.split(r"[,;\n]+", recipients) if part.strip()]
+    elif isinstance(recipients, list):
+        recipients = [str(item).strip() for item in recipients if str(item).strip()]
+    else:
+        recipients = []
+
+    def first_value(*keys, default=""):
+        i = 0
+        while i < len(keys):
+            value = cfg.get(keys[i])
+            if value not in [None, ""]:
+                return value
+            i += 1
+        return default
+
+    return {
+        "enabled": str(first_value("crop_report_email_enabled", "report_email_enabled", default="1")).strip().lower() not in ["0", "false", "no", "off"],
+        "smtp_host": str(first_value("crop_report_smtp_host", "report_smtp_host", default="")).strip(),
+        "smtp_port": int(first_value("crop_report_smtp_port", "report_smtp_port", default=587) or 587),
+        "smtp_username": str(first_value("crop_report_smtp_username", "report_smtp_username", default="")).strip(),
+        "smtp_password": str(first_value("crop_report_smtp_password", "report_smtp_password", default="")),
+        "smtp_use_tls": str(first_value("crop_report_smtp_use_tls", "report_smtp_use_tls", default="1")).strip().lower() not in ["0", "false", "no", "off"],
+        "smtp_use_ssl": str(first_value("crop_report_smtp_use_ssl", "report_smtp_use_ssl", default="0")).strip().lower() in ["1", "true", "yes", "on"],
+        "email_from": str(first_value("crop_report_email_from", "report_email_from", default="")).strip(),
+        "email_to": recipients,
+    }
+
+
+def send_crop_report_email(farm_summary, report_path):
+    cfg = crop_report_email_config()
+    if not cfg.get("enabled", True):
+        return False, "Email sending disabled in office config"
+    if not cfg.get("smtp_host"):
+        return False, "No SMTP host configured"
+    if not cfg.get("email_to"):
+        return False, "No crop report recipients configured"
+
+    with open(report_path, "rb") as f:
+        payload = f.read()
+
+    subject = "%s %s End of Crop Summary" % (farm_summary.get("farm_name") or "Farm", farm_summary.get("crop_code") or ("Crop %s" % farm_summary.get("crop_id")))
+    body = "\n".join([
+        "Attached is the end-of-crop summary workbook.",
+        "",
+        "Farm: %s" % (farm_summary.get("farm_name") or "--"),
+        "Crop: %s" % (farm_summary.get("crop_code") or "--"),
+        "Participating sheds: %s" % (farm_summary.get("participating_sheds") or 0),
+        "Total feed (kg): %s" % (round(float(farm_summary.get("total_feed") or 0.0), 2)),
+        "Total water (L): %s" % (round(float(farm_summary.get("total_water") or 0.0), 2)),
+        "",
+        "Generated by Cherry Dene Dashboard.",
+    ])
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = cfg.get("email_from") or cfg.get("smtp_username") or "noreply@localhost"
+    msg["To"] = ", ".join(cfg.get("email_to") or [])
+    msg.set_content(body)
+    msg.add_attachment(
+        payload,
+        maintype="application",
+        subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=os.path.basename(report_path),
+    )
+
+    smtp_host = cfg.get("smtp_host")
+    smtp_port = int(cfg.get("smtp_port") or 587)
+    smtp_username = cfg.get("smtp_username")
+    smtp_password = cfg.get("smtp_password")
+
+    if cfg.get("smtp_use_ssl"):
+        with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=20) as server:
+            if smtp_username:
+                server.login(smtp_username, smtp_password)
+            server.send_message(msg)
+    else:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as server:
+            server.ehlo()
+            if cfg.get("smtp_use_tls"):
+                server.starttls()
+                server.ehlo()
+            if smtp_username:
+                server.login(smtp_username, smtp_password)
+            server.send_message(msg)
+    return True, "Email sent"
+
+
+def run_crop_end_report(crop_id):
+    status = load_crop_report_status()
+    key = str(crop_id)
+    entry = status.get(key)
+    if not isinstance(entry, dict):
+        entry = {}
+    entry["status"] = "processing"
+    entry["processing_ts"] = int(time.time())
+    status[key] = entry
+    save_crop_report_status(status)
+
+    try:
+        farm_summary, workbook_bytes = build_crop_report_workbook(crop_id)
+        report_path = crop_report_output_path(farm_summary)
+        write_bytes_file_atomic(report_path, workbook_bytes)
+
+        email_ok = False
+        email_message = "Email not attempted"
+        try:
+            email_ok, email_message = send_crop_report_email(farm_summary, report_path)
+        except Exception as exc:
+            email_ok = False
+            email_message = str(exc)
+
+        status = load_crop_report_status()
+        entry = status.get(key)
+        if not isinstance(entry, dict):
+            entry = {}
+        entry.update({
+            "status": "emailed" if email_ok else "generated",
+            "generated_ts": int(time.time()),
+            "report_path": report_path,
+            "crop_code": farm_summary.get("crop_code"),
+            "farm_name": farm_summary.get("farm_name"),
+            "email_sent": bool(email_ok),
+            "email_message": email_message,
+        })
+        status[key] = entry
+        save_crop_report_status(status)
+        log_event("office", "crop_report_ready", "Crop summary workbook generated", detail=report_path)
+        if email_ok:
+            log_event("office", "crop_report_emailed", "Crop summary workbook emailed", detail=farm_summary.get("crop_code"))
+        else:
+            log_event("office", "crop_report_email_skipped", "Crop summary workbook not emailed", detail=email_message)
+    except Exception as exc:
+        status = load_crop_report_status()
+        entry = status.get(key)
+        if not isinstance(entry, dict):
+            entry = {}
+        entry.update({
+            "status": "failed",
+            "failed_ts": int(time.time()),
+            "error": str(exc),
+        })
+        status[key] = entry
+        save_crop_report_status(status)
+        log_event("office", "crop_report_failed", "Crop summary workbook failed", detail=str(exc))
+
+
+def queue_crop_end_report(crop_id):
+    try:
+        crop_id = int(crop_id)
+    except Exception:
+        return False
+
+    status = load_crop_report_status()
+    key = str(crop_id)
+    existing = status.get(key)
+    if isinstance(existing, dict) and existing.get("status") in ["queued", "processing", "generated", "emailed"]:
+        return False
+
+    status[key] = {
+        "status": "queued",
+        "queued_ts": int(time.time()),
+    }
+    save_crop_report_status(status)
+
+    threading.Thread(target=run_crop_end_report, args=(crop_id,), daemon=True).start()
+    return True
+
+
+def crop_report_status_ts(rec):
+    if not isinstance(rec, dict):
+        return 0
+    keys = ["generated_ts", "processing_ts", "queued_ts", "failed_ts", "last_resent_ts"]
+    i = 0
+    while i < len(keys):
+        try:
+            value = int(rec.get(keys[i]) or 0)
+        except Exception:
+            value = 0
+        if value > 0:
+            return value
+        i += 1
+    return 0
+
+
+def list_crop_report_rows():
+    status = load_crop_report_status()
+    rows = []
+    for key, rec in status.items():
+        if not isinstance(rec, dict):
+            continue
+        try:
+            crop_id = int(key)
+        except Exception:
+            continue
+        report_path = str(rec.get("report_path") or "").strip()
+        path_exists = bool(report_path) and os.path.isfile(report_path)
+        ts = crop_report_status_ts(rec)
+        rows.append({
+            "crop_id": crop_id,
+            "crop_code": str(rec.get("crop_code") or ("Crop %s" % crop_id)),
+            "farm_name": str(rec.get("farm_name") or farm_identity()[0]),
+            "status": str(rec.get("status") or "--"),
+            "generated_label": datetime.fromtimestamp(ts).strftime("%d %b %Y %H:%M:%S") if ts else "--",
+            "email_sent": bool(rec.get("email_sent", False)),
+            "email_message": str(rec.get("email_message") or "--"),
+            "report_path": report_path,
+            "report_name": os.path.basename(report_path) if report_path else "--",
+            "file_exists": path_exists,
+            "sort_ts": ts,
+        })
+    rows.sort(key=lambda row: (row.get("sort_ts") or 0, row.get("crop_id") or 0), reverse=True)
+    return rows
+
+
+def crop_report_record(crop_id):
+    status = load_crop_report_status()
+    rec = status.get(str(int(crop_id)))
+    return rec if isinstance(rec, dict) else {}
+
+
+def ensure_crop_report_file(crop_id, force_rebuild=False):
+    rec = crop_report_record(crop_id)
+    report_path = str(rec.get("report_path") or "").strip()
+    if not force_rebuild and report_path and os.path.isfile(report_path):
+        return report_path
+
+    farm_summary, workbook_bytes = build_crop_report_workbook(crop_id)
+    report_path = crop_report_output_path(farm_summary)
+    write_bytes_file_atomic(report_path, workbook_bytes)
+
+    status = load_crop_report_status()
+    entry = status.get(str(int(crop_id)))
+    if not isinstance(entry, dict):
+        entry = {}
+    entry.update({
+        "status": entry.get("status") or "generated",
+        "generated_ts": int(time.time()),
+        "report_path": report_path,
+        "crop_code": farm_summary.get("crop_code"),
+        "farm_name": farm_summary.get("farm_name"),
+    })
+    status[str(int(crop_id))] = entry
+    save_crop_report_status(status)
+    return report_path
+
+
+def resend_crop_report(crop_id):
+    crop_id = int(crop_id)
+    farm_summary = build_farm_crop_summary(crop_id)
+    report_path = ensure_crop_report_file(crop_id, force_rebuild=True)
+    email_ok, email_message = send_crop_report_email(farm_summary, report_path)
+
+    status = load_crop_report_status()
+    entry = status.get(str(crop_id))
+    if not isinstance(entry, dict):
+        entry = {}
+    entry.update({
+        "status": "emailed" if email_ok else entry.get("status") or "generated",
+        "last_resent_ts": int(time.time()),
+        "email_sent": bool(email_ok),
+        "email_message": email_message,
+        "report_path": report_path,
+        "crop_code": farm_summary.get("crop_code"),
+        "farm_name": farm_summary.get("farm_name"),
+    })
+    status[str(crop_id)] = entry
+    save_crop_report_status(status)
+    return email_ok, email_message, report_path
 
 
 def get_active_crop_id_for_shed(shed_name):
@@ -3353,7 +4516,9 @@ HTML = """
             </div>
             <div class="topbar-center">
                 <div class="topbar-actions">
+                    <button id="notifyToggle" class="settings-link" type="button">🔔 Notifications</button>
                     <a class="settings-link" href="{{ url_for('office_farm_health_view') }}">⚕ Farm Health</a>
+                    <a class="settings-link" href="{{ url_for('office_crop_reports_view') }}">🧾 Crop Reports</a>
                     <a class="settings-link" href="{{ url_for('office_settings_view') }}">⚙ Settings</a>
                 </div>
             </div>
@@ -3590,6 +4755,169 @@ function updateTopDateTime() {
 updateTopDateTime();
 setInterval(updateTopDateTime, 1000);
 
+const NOTIFY_PREF_KEY = 'cdf-notifications-enabled';
+const NOTIFY_LAST_TS_KEY = 'cdf-notifications-last-ts';
+const NOTIFY_ACTIVE_KEY = 'cdf-notifications-active-alarms';
+let notifyToggleBtn = null;
+let swRegistration = null;
+
+function notificationsEnabled() {
+    return localStorage.getItem(NOTIFY_PREF_KEY) === '1';
+}
+
+function setNotificationsEnabled(enabled) {
+    localStorage.setItem(NOTIFY_PREF_KEY, enabled ? '1' : '0');
+    updateNotifyButton();
+}
+
+function getKnownActiveAlarmIds() {
+    try {
+        const raw = localStorage.getItem(NOTIFY_ACTIVE_KEY);
+        const parsed = JSON.parse(raw || '[]');
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (err) {
+        return [];
+    }
+}
+
+function setKnownActiveAlarmIds(ids) {
+    localStorage.setItem(NOTIFY_ACTIVE_KEY, JSON.stringify(Array.isArray(ids) ? ids : []));
+}
+
+function getNotificationLastTs() {
+    const raw = localStorage.getItem(NOTIFY_LAST_TS_KEY);
+    const parsed = parseInt(raw || '0', 10);
+    return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function setNotificationLastTs(ts) {
+    localStorage.setItem(NOTIFY_LAST_TS_KEY, String(ts || 0));
+}
+
+function updateNotifyButton() {
+    if (!notifyToggleBtn) return;
+    if (!('Notification' in window)) {
+        notifyToggleBtn.textContent = '🔕 Notifications Unsupported';
+        notifyToggleBtn.disabled = true;
+        return;
+    }
+    const permission = Notification.permission;
+    if (!notificationsEnabled()) {
+        notifyToggleBtn.textContent = permission === 'granted' ? '🔔 Notifications Off' : '🔔 Enable Notifications';
+        return;
+    }
+    if (permission === 'granted') {
+        notifyToggleBtn.textContent = '🔔 Notifications On';
+    } else if (permission === 'denied') {
+        notifyToggleBtn.textContent = '🔕 Notifications Blocked';
+    } else {
+        notifyToggleBtn.textContent = '🔔 Enable Notifications';
+    }
+}
+
+async function registerDashboardServiceWorker() {
+    if (!('serviceWorker' in navigator)) return null;
+    try {
+        swRegistration = await navigator.serviceWorker.register('/service-worker.js');
+        return swRegistration;
+    } catch (err) {
+        return null;
+    }
+}
+
+async function showDashboardNotification(title, body, url, tag) {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    const options = {
+        body: body || '',
+        icon: '/apple-touch-icon.png',
+        badge: '/apple-touch-icon.png',
+        data: { url: url || '/' },
+        tag: tag || undefined,
+    };
+    try {
+        const reg = swRegistration || await registerDashboardServiceWorker();
+        if (reg && reg.showNotification) {
+            await reg.showNotification(title || 'Cherry Dene Dashboard', options);
+            return;
+        }
+    } catch (err) {
+    }
+    try {
+        const n = new Notification(title || 'Cherry Dene Dashboard', options);
+        n.onclick = () => {
+            window.focus();
+            window.location.href = url || '/';
+        };
+    } catch (err) {
+    }
+}
+
+async function baselineNotifications() {
+    try {
+        const resp = await fetch('/api/notifications?since=0', { cache: 'no-store' });
+        if (!resp.ok) return;
+        const payload = await resp.json();
+        const activeIds = (payload.active_alarms || []).map((row) => row.id);
+        setKnownActiveAlarmIds(activeIds);
+        setNotificationLastTs(payload.latest_ts || Math.floor(Date.now() / 1000));
+    } catch (err) {
+        setNotificationLastTs(Math.floor(Date.now() / 1000));
+    }
+}
+
+async function enableNotificationsFromUserAction() {
+    if (!('Notification' in window)) return;
+    await registerDashboardServiceWorker();
+    if (Notification.permission === 'denied') {
+        setNotificationsEnabled(false);
+        updateNotifyButton();
+        return;
+    }
+    if (Notification.permission !== 'granted') {
+        const permission = await Notification.requestPermission();
+        if (permission !== 'granted') {
+            setNotificationsEnabled(false);
+            updateNotifyButton();
+            return;
+        }
+    }
+    setNotificationsEnabled(true);
+    await baselineNotifications();
+    await showDashboardNotification('Cherry Dene Dashboard', 'Notifications enabled for this dashboard.', '/', 'cdf-notify-enabled');
+}
+
+async function pollNotifications() {
+    if (!notificationsEnabled()) return;
+    if (!('Notification' in window) || Notification.permission !== 'granted') {
+        updateNotifyButton();
+        return;
+    }
+    try {
+        const lastTs = getNotificationLastTs();
+        const resp = await fetch(`/api/notifications?since=${lastTs}`, { cache: 'no-store' });
+        if (!resp.ok) return;
+        const payload = await resp.json();
+
+        const knownActive = new Set(getKnownActiveAlarmIds());
+        const nextActive = [];
+
+        (payload.active_alarms || []).forEach((alarm) => {
+            nextActive.push(alarm.id);
+            if (!knownActive.has(alarm.id)) {
+                showDashboardNotification(alarm.title, alarm.body, alarm.url, alarm.id);
+            }
+        });
+        setKnownActiveAlarmIds(nextActive);
+
+        (payload.events || []).forEach((event) => {
+            showDashboardNotification(event.title, event.body, event.url, event.id);
+        });
+
+        setNotificationLastTs(payload.latest_ts || lastTs);
+    } catch (err) {
+    }
+}
+
 function setDashText(id, value) {
     const el = document.getElementById(id);
     if (el) el.textContent = value;
@@ -3713,6 +5041,28 @@ if (window.EventSource) {
         }
     };
 }
+
+notifyToggleBtn = document.getElementById('notifyToggle');
+if (notifyToggleBtn) {
+    notifyToggleBtn.addEventListener('click', async () => {
+        if (!('Notification' in window)) return;
+        if (notificationsEnabled() && Notification.permission === 'granted') {
+            setNotificationsEnabled(false);
+            updateNotifyButton();
+            return;
+        }
+        await enableNotificationsFromUserAction();
+        updateNotifyButton();
+    });
+}
+
+registerDashboardServiceWorker().then(() => {
+    updateNotifyButton();
+    if (('Notification' in window) && notificationsEnabled() && Notification.permission === 'granted') {
+        pollNotifications();
+    }
+});
+setInterval(pollNotifications, 8000);
 </script>
 </body>
 </html>
@@ -4002,6 +5352,7 @@ OFFICE_SETTINGS_HTML = """
                 <div class="detail"><span class="label">Backup Path</span><span class="mono">{{ backup_dir }}</span></div>
                 <div class="detail"><span class="label">Auto Backup</span><span>Hourly, keep newest {{ backup_keep_count }}</span></div>
                 <div class="detail"><span class="label">Latest Backup</span><span>{{ latest_backup_name }}</span></div>
+                <div class="detail"><span class="label">Email CSV</span><span class="mono">{{ email_settings_csv_path }}</span></div>
                 <div class="action-grid">
                     <a class="action-link" href="{{ url_for('office_events_view') }}">Event Log</a>
                     <a class="action-link" href="{{ url_for('office_versions_view') }}">Versions</a>
@@ -4009,6 +5360,9 @@ OFFICE_SETTINGS_HTML = """
                     <a class="action-link" href="{{ url_for('create_office_backup_view') }}">Create Backup</a>
                     <a class="action-link" href="{{ url_for('download_latest_office_backup_view') }}">Download Backup</a>
                     <a class="action-link" href="{{ url_for('collect_controller_backups_now_view') }}">Collect Controller Backups</a>
+                    <form method="post" action="{{ url_for('office_import_email_settings_view') }}">
+                        <button type="submit">Import Email CSV</button>
+                    </form>
                 </div>
             </div>
             <div class="panel">
@@ -4809,6 +6163,7 @@ HISTORY_HTML = """
                         <td>{{ c.start_label }}</td>
                         <td>{{ c.end_label }}</td>
                         <td class="actions">
+                            <a href="{{ url_for('shed_crop_summary_view', shed_no=shed_no, crop_id=c.crop_id) }}">Summary</a>
                             <a href="{{ url_for('shed_crop_period_view', shed_no=shed_no, crop_id=c.crop_id, period='hourly') }}">Hourly</a>
                             <a href="{{ url_for('shed_crop_period_view', shed_no=shed_no, crop_id=c.crop_id, period='daily') }}">Daily</a>
                         </td>
@@ -4818,6 +6173,395 @@ HISTORY_HTML = """
             </table>
             {% else %}
             <div class="empty">No crop history found yet.</div>
+            {% endif %}
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+
+CROP_SUMMARY_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>{{ shed_name }} {{ summary.crop_code }} Summary</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: #5b5b5b;
+            color: #ececec;
+        }
+        .wrap {
+            max-width: 1650px;
+            margin: 0 auto;
+            padding: 16px;
+        }
+        a {
+            color: #f0f0f0;
+            text-decoration: none;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+        h1 {
+            margin: 0 0 6px 0;
+            font-size: 30px;
+        }
+        .sub {
+            color: #d2d2d2;
+            margin-bottom: 16px;
+            font-size: 14px;
+        }
+        .topbar {
+            margin-bottom: 14px;
+        }
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin-bottom: 14px;
+        }
+        .card {
+            background: #737373;
+            border: 2px solid #8a8a8a;
+            border-radius: 12px;
+            padding: 14px;
+        }
+        .metric-label {
+            color: #d2d2d2;
+            font-size: 13px;
+            margin-bottom: 6px;
+        }
+        .metric-value {
+            font-size: 28px;
+            font-weight: 700;
+            color: #f5f5f5;
+        }
+        .metric-sub {
+            color: #d2d2d2;
+            font-size: 12px;
+            margin-top: 6px;
+        }
+        .status-pill {
+            display: inline-block;
+            padding: 6px 10px;
+            border-radius: 999px;
+            background: #4a4a4a;
+            border: 1px solid #8a8a8a;
+            color: #f3f3f3;
+            font-size: 13px;
+            font-weight: 700;
+        }
+        .actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 14px;
+        }
+        .actions a {
+            display: inline-block;
+            padding: 10px 12px;
+            border-radius: 10px;
+            background: #727272;
+            border: 1px solid #8a8a8a;
+        }
+        .two-col {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px;
+        }
+        .table-wrap {
+            max-height: 780px;
+            overflow: auto;
+            border: 1px solid #818181;
+            border-radius: 10px;
+            background: #686868;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        th, td {
+            border-bottom: 1px solid #818181;
+            padding: 8px 6px;
+            text-align: left;
+        }
+        th {
+            color: #f0f0f0;
+            position: sticky;
+            top: 0;
+            background: #686868;
+        }
+        .empty {
+            color: #d2d2d2;
+            font-size: 14px;
+        }
+        @media (max-width: 1200px) {
+            .two-col {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="topbar">
+            <a href="{{ url_for('dashboard') }}">← Dashboard</a>
+            &nbsp;|&nbsp;
+            <a href="{{ url_for('shed_detail', shed_no=shed_no) }}">← {{ shed_name }}</a>
+            &nbsp;|&nbsp;
+            <a href="{{ url_for('shed_crop_history', shed_no=shed_no) }}">← Crop history</a>
+        </div>
+
+        <h1>{{ shed_name }} {{ summary.crop_code }} End of Crop Summary</h1>
+        <div class="sub">Historic crop roll-up using crop events, mortality, hourly water, and hourly feed history.</div>
+
+        <div class="actions">
+            <span class="status-pill">{{ summary.status }}</span>
+            <a href="{{ url_for('shed_crop_period_view', shed_no=shed_no, crop_id=summary.crop_id, period='hourly') }}">Open hourly history</a>
+            <a href="{{ url_for('shed_crop_period_view', shed_no=shed_no, crop_id=summary.crop_id, period='daily') }}">Open daily history</a>
+        </div>
+
+        <div class="summary-grid">
+            <div class="card"><div class="metric-label">Start</div><div class="metric-value" style="font-size:20px">{{ summary.start_label }}</div></div>
+            <div class="card"><div class="metric-label">End</div><div class="metric-value" style="font-size:20px">{{ summary.end_label }}</div></div>
+            <div class="card"><div class="metric-label">Crop Days</div><div class="metric-value">{{ summary.crop_days }}</div></div>
+            <div class="card"><div class="metric-label">Birds Placed</div><div class="metric-value">{{ summary.birds_placed }}</div></div>
+            <div class="card"><div class="metric-label">Birds Remaining</div><div class="metric-value">{{ summary.birds_remaining_end }}</div><div class="metric-sub">At crop end</div></div>
+            <div class="card"><div class="metric-label">Mortality</div><div class="metric-value">{{ summary.mortality_display }}</div><div class="metric-sub">{{ summary.mortality_events }} entries</div></div>
+            <div class="card"><div class="metric-label">Total Feed KG</div><div class="metric-value">{{ summary.total_feed }}</div></div>
+            <div class="card"><div class="metric-label">Total Water L</div><div class="metric-value">{{ summary.total_water }}</div></div>
+            <div class="card"><div class="metric-label">Avg Daily Feed KG</div><div class="metric-value">{{ summary.avg_daily_feed }}</div></div>
+            <div class="card"><div class="metric-label">Avg Daily Water L</div><div class="metric-value">{{ summary.avg_daily_water }}</div></div>
+            <div class="card"><div class="metric-label">Feed / Bird KG</div><div class="metric-value">{{ summary.feed_per_bird }}</div></div>
+            <div class="card"><div class="metric-label">Water / Bird L</div><div class="metric-value">{{ summary.water_per_bird }}</div></div>
+            <div class="card"><div class="metric-label">Peak Daily Feed KG</div><div class="metric-value">{{ summary.peak_daily_feed }}</div></div>
+            <div class="card"><div class="metric-label">Peak Daily Water L</div><div class="metric-value">{{ summary.peak_daily_water }}</div></div>
+            <div class="card"><div class="metric-label">Hourly Points</div><div class="metric-value">{{ summary.hourly_points }}</div></div>
+            <div class="card"><div class="metric-label">Completed Days</div><div class="metric-value">{{ summary.complete_days }}</div></div>
+        </div>
+
+        <div class="two-col">
+            <div class="card">
+                <h2>Daily Performance</h2>
+                {% if daily_rows %}
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Day</th>
+                                <th>Water L</th>
+                                <th>Feed KG</th>
+                                <th>Running Water L</th>
+                                <th>Running Feed KG</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for r in daily_rows %}
+                            <tr>
+                                <td>{{ r.label }}</td>
+                                <td>{{ "%.1f"|format(r.water) if r.water is not none else "--" }}</td>
+                                <td>{{ "%.2f"|format(r.feed) if r.feed is not none else "--" }}</td>
+                                <td>{{ "%.1f"|format(r.running_water) if r.running_water is not none else "--" }}</td>
+                                <td>{{ "%.2f"|format(r.running_feed) if r.running_feed is not none else "--" }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="empty">No completed daily history found for this crop yet.</div>
+                {% endif %}
+            </div>
+
+            <div class="card">
+                <h2>Summary Notes</h2>
+                <table>
+                    <tbody>
+                        <tr><th>Crop ID</th><td>{{ summary.crop_code }}</td></tr>
+                        <tr><th>Status</th><td>{{ summary.status }}</td></tr>
+                        <tr><th>Start</th><td>{{ summary.start_label }}</td></tr>
+                        <tr><th>End</th><td>{{ summary.end_label }}</td></tr>
+                        <tr><th>Mortality %</th><td>{{ summary.mortality_pct }}</td></tr>
+                        <tr><th>Based on</th><td>Crop events, hourly feed/water, and mortality history</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+
+CROP_REPORTS_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>End of Crop Reports</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: #5b5b5b;
+            color: #ececec;
+        }
+        .wrap {
+            max-width: 1500px;
+            margin: 0 auto;
+            padding: 16px;
+        }
+        a { color: #ececec; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        h1 {
+            margin: 0 0 8px 0;
+            font-size: 30px;
+        }
+        .sub {
+            color: #d2d2d2;
+            margin-bottom: 16px;
+            font-size: 14px;
+        }
+        .topbar { margin-bottom: 14px; }
+        .card {
+            background: #737373;
+            border: 2px solid #8a8a8a;
+            border-radius: 12px;
+            padding: 14px;
+        }
+        .msg {
+            margin-bottom: 14px;
+            padding: 10px 12px;
+            border-radius: 10px;
+            border: 1px solid #8a8a8a;
+            background: #686868;
+        }
+        .msg.ok {
+            border-color: #35d07f;
+            color: #d8ffe9;
+        }
+        .msg.bad {
+            border-color: #ff6c6c;
+            color: #ffd2d2;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+        th, td {
+            border-bottom: 1px solid #818181;
+            padding: 10px 8px;
+            text-align: left;
+            vertical-align: top;
+        }
+        th { color: #f0f0f0; }
+        .actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .actions a, .actions button {
+            padding: 8px 10px;
+            border-radius: 9px;
+            border: 1px solid #8a8a8a;
+            background: #666;
+            color: #f2f2f2;
+            text-decoration: none;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .actions form {
+            margin: 0;
+        }
+        .pill {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 999px;
+            border: 1px solid #8a8a8a;
+            background: #666;
+            font-size: 12px;
+            font-weight: 700;
+        }
+        .pill.emailed { border-color: #35d07f; color: #d8ffe9; }
+        .pill.generated { border-color: #ffd06a; color: #fff0c0; }
+        .pill.failed { border-color: #ff6c6c; color: #ffd2d2; }
+        .pill.processing, .pill.queued { border-color: #8ec7ff; color: #d9ecff; }
+        .empty { color: #d2d2d2; }
+        .path {
+            font-size: 12px;
+            color: #d0d0d0;
+            word-break: break-all;
+        }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="topbar">
+            <a href="{{ url_for('dashboard') }}">← Back to dashboard</a>
+        </div>
+
+        <h1>End of Crop Reports</h1>
+        <div class="sub">Stored locally on the office Pi and available to download or resend by email.</div>
+
+        {% if status_msg %}
+        <div class="msg {% if status_ok %}ok{% else %}bad{% endif %}">{{ status_msg }}</div>
+        {% endif %}
+
+        <div class="card">
+            {% if rows %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Crop</th>
+                        <th>Farm</th>
+                        <th>Created</th>
+                        <th>Status</th>
+                        <th>File</th>
+                        <th>Email</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in rows %}
+                    <tr>
+                        <td>{{ row.crop_code }}</td>
+                        <td>{{ row.farm_name }}</td>
+                        <td>{{ row.generated_label }}</td>
+                        <td><span class="pill {{ row.status }}">{{ row.status }}</span></td>
+                        <td>
+                            {{ row.report_name }}
+                            {% if row.file_exists and row.report_path %}
+                            <div class="path">{{ row.report_path }}</div>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if row.email_sent %}Sent{% else %}Not sent{% endif %}
+                            <div class="path">{{ row.email_message }}</div>
+                        </td>
+                        <td>
+                            <div class="actions">
+                                {% if row.file_exists %}
+                                <a href="{{ url_for('office_crop_report_download', crop_id=row.crop_id) }}">Download XLSX</a>
+                                {% endif %}
+                                <form method="post" action="{{ url_for('office_crop_report_resend', crop_id=row.crop_id) }}">
+                                    <button type="submit">Resend Email</button>
+                                </form>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty">No end-of-crop reports have been generated yet.</div>
             {% endif %}
         </div>
     </div>
@@ -5445,6 +7189,54 @@ def office_events_view():
     return render_template_string(EVENTS_HTML, rows=get_recent_events(250))
 
 
+@app.route("/crop-reports")
+def office_crop_reports_view():
+    return render_template_string(
+        CROP_REPORTS_HTML,
+        rows=list_crop_report_rows(),
+        status_msg=request.args.get("msg", ""),
+        status_ok=request.args.get("ok", "1") == "1",
+    )
+
+
+@app.route("/crop-reports/<int:crop_id>/download")
+def office_crop_report_download(crop_id):
+    report_path = ensure_crop_report_file(crop_id, force_rebuild=True)
+    if not report_path or not os.path.isfile(report_path):
+        return redirect(url_for("office_crop_reports_view", ok=0, msg="Crop report file not found"))
+    return send_file(
+        report_path,
+        as_attachment=True,
+        download_name=os.path.basename(report_path),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+@app.route("/crop-reports/<int:crop_id>/resend", methods=["POST"])
+def office_crop_report_resend(crop_id):
+    try:
+        ok, message, _ = resend_crop_report(crop_id)
+    except Exception as exc:
+        ok = False
+        message = str(exc)
+    return redirect(url_for("office_crop_reports_view", ok=1 if ok else 0, msg=message))
+
+
+@app.route("/settings/import-email-csv", methods=["POST"])
+def office_import_email_settings_view():
+    try:
+        updates = import_office_email_settings_csv()
+        return redirect(
+            url_for(
+                "office_settings_view",
+                ok=1,
+                msg="Imported email settings from CSV (%d fields updated)" % len(updates),
+            )
+        )
+    except Exception as exc:
+        return redirect(url_for("office_settings_view", ok=0, msg=str(exc)))
+
+
 @app.route("/settings")
 def office_settings_view():
     update_status = load_office_update_status()
@@ -5488,6 +7280,7 @@ def office_settings_view():
         backup_dir=backups_dir(),
         backup_keep_count=OFFICE_BACKUP_KEEP_COUNT,
         latest_backup_name=os.path.basename(latest_backups[0]) if latest_backups else "--",
+        email_settings_csv_path=office_email_settings_csv_path(),
         farm_health=farm_health,
         controller_backup_rows=controller_backup_rows,
         status_msg=request.args.get("msg", ""),
@@ -5792,6 +7585,33 @@ def office_versions_view():
 @app.route("/api/overview")
 def dashboard_overview_api():
     return jsonify(build_dashboard_context())
+
+
+@app.route("/api/notifications")
+def dashboard_notifications_api():
+    try:
+        since_ts = int(request.args.get("since", "0") or 0)
+    except Exception:
+        since_ts = 0
+
+    events = build_notification_events_since(since_ts)
+    active_alarms = build_active_alarm_notifications()
+    latest_ts = since_ts
+
+    i = 0
+    while i < len(events):
+        try:
+            latest_ts = max(latest_ts, int(events[i].get("ts") or 0))
+        except Exception:
+            pass
+        i += 1
+
+    return jsonify({
+        "generated_ts": int(time.time()),
+        "latest_ts": latest_ts,
+        "events": events,
+        "active_alarms": active_alarms,
+    })
 
 
 @app.route("/api/water-stream")
@@ -6399,6 +8219,50 @@ def shed_crop_history(shed_no):
         shed_name=shed_name,
         shed_no=shed_no,
         crops=crops,
+    )
+
+
+@app.route("/shed/<int:shed_no>/crop/<int:crop_id>")
+def shed_crop_summary_view(shed_no, crop_id):
+    if shed_no not in SHED_NUMBERS:
+        abort(404)
+
+    shed_name = shed_name_from_number(shed_no)
+    summary = build_crop_summary_for_shed(shed_name, crop_id)
+    daily_rows = summary.pop("daily_rows", [])
+
+    summary["birds_placed"] = fmt_value(summary.get("birds_placed"), "i")
+    summary["birds_remaining_end"] = fmt_value(summary.get("birds_remaining_end"), "i")
+    summary["mortality_total"] = fmt_value(summary.get("mortality_total"), "i")
+    summary["mortality_pct"] = fmt_value(summary.get("mortality_pct"), "f1")
+    summary["total_feed"] = fmt_value(summary.get("total_feed"), "f1")
+    summary["total_water"] = fmt_value(summary.get("total_water"), "f0")
+    summary["avg_daily_feed"] = fmt_value(summary.get("avg_daily_feed"), "f1")
+    summary["avg_daily_water"] = fmt_value(summary.get("avg_daily_water"), "f0")
+    summary["peak_daily_feed"] = fmt_value(summary.get("peak_daily_feed"), "f1")
+    summary["peak_daily_water"] = fmt_value(summary.get("peak_daily_water"), "f0")
+    summary["feed_per_bird"] = fmt_value(summary.get("feed_per_bird"), "f3")
+    summary["water_per_bird"] = fmt_value(summary.get("water_per_bird"), "f1")
+    summary["crop_days"] = fmt_value(summary.get("crop_days"), "i")
+    summary["hourly_points"] = fmt_value(summary.get("hourly_points"), "i")
+    summary["complete_days"] = fmt_value(summary.get("complete_days"), "i")
+    summary["mortality_events"] = fmt_value(summary.get("mortality_events"), "i")
+    try:
+        mortality_total_i = int(summary.get("mortality_total").replace(",", "")) if summary.get("mortality_total") not in [None, "--"] else 0
+    except Exception:
+        mortality_total_i = 0
+    summary["mortality_display"] = (
+        "%s (%s%%)" % (summary["mortality_total"], summary["mortality_pct"])
+        if mortality_total_i > 0 and summary.get("mortality_pct") not in [None, "--"]
+        else summary["mortality_total"]
+    )
+
+    return render_template_string(
+        CROP_SUMMARY_HTML,
+        shed_name=shed_name,
+        shed_no=shed_no,
+        summary=summary,
+        daily_rows=daily_rows,
     )
 
 
