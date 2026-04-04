@@ -4596,8 +4596,19 @@ HTML = """
             .datetime { font-size: 16px; }
             .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
             .topbar { grid-template-columns: 1fr; }
-            .topbar-left, .topbar-center, .topbar-right { justify-self: center; }
+            .topbar-left, .topbar-center, .topbar-right { justify-self: center; width: 100%; }
+            .topbar-left { order: 1; }
+            .topbar-right {
+                order: 2;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                text-align: center;
+                gap: 6px;
+            }
+            .topbar-center { order: 3; }
             .topbar-actions { justify-content: center; gap: 8px; }
+            .access-ip { text-align: center; margin-top: 0; }
             .settings-link { width: 100%; justify-content: center; }
             .card { min-height: 0; padding: 8px; }
             .head { flex-direction: column; align-items: stretch; }
@@ -4606,11 +4617,11 @@ HTML = """
             .birds-top, .alloc-top { font-size: 12px; }
             .topline { gap: 8px; }
             .mini-val { font-size: 18px; }
-            .big-pair { grid-template-columns: 1fr; }
+            .big-pair { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; }
             .metric-grid { grid-template-columns: 1fr 1fr; }
             .metric-grid-2 { grid-template-columns: 1fr; }
             .metric-big .metric-label { font-size: 11px; }
-            .metric-big .metric-val { font-size: 28px; }
+            .metric-big .metric-val { font-size: 26px; }
             .metric-val { font-size: 15px; }
             .row { flex-direction: column; gap: 2px; }
             .label { min-width: 0; }
@@ -5236,17 +5247,30 @@ EVENTS_HTML = """
     <title>Office Event Log</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { margin:0; font-family:Arial, sans-serif; background:#5b5b5b; color:#ececec; }
+        * { box-sizing:border-box; }
+        body { margin:0; font-family:Arial, sans-serif; background:#5b5b5b; color:#ececec; overflow-x:hidden; }
         .wrap { max-width:1400px; margin:0 auto; padding:16px; }
         a { color:#f0f0f0; text-decoration:none; }
         .topbar { margin-bottom:16px; }
-        .panel { background:#737373; border:1px solid #8a8a8a; border-radius:14px; padding:16px; }
+        .panel { background:#737373; border:1px solid #8a8a8a; border-radius:14px; padding:16px; min-width:0; }
         h1 { margin:0 0 8px 0; }
         .sub { color:#d2d2d2; margin-bottom:14px; }
-        table { width:100%; border-collapse:collapse; font-size:14px; }
-        th, td { padding:10px 8px; border-bottom:1px solid #818181; text-align:left; vertical-align:top; }
+        .collapse { margin-top:14px; }
+        .collapse summary { cursor:pointer; list-style:none; padding:12px 14px; border:1px solid #8a8a8a; border-radius:10px; background:#686868; font-weight:700; }
+        .collapse summary::-webkit-details-marker { display:none; }
+        .collapse[open] summary { margin-bottom:12px; }
+        .table-wrap { overflow:auto; -webkit-overflow-scrolling:touch; border:1px solid #818181; border-radius:10px; background:#686868; }
+        table { width:100%; border-collapse:collapse; font-size:14px; table-layout:fixed; }
+        th, td { padding:10px 8px; border-bottom:1px solid #818181; text-align:left; vertical-align:top; overflow-wrap:anywhere; word-break:break-word; }
         th { color:#f0f0f0; }
         .mono { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; }
+        @media (max-width: 700px) {
+            .wrap { padding:12px; }
+            h1 { font-size:24px; }
+            .panel { padding:12px; }
+            table { font-size:13px; }
+            th, td { padding:9px 7px; }
+        }
     </style>
 </head>
 <body>
@@ -5255,23 +5279,28 @@ EVENTS_HTML = """
         <div class="panel">
             <h1>Office Event Log</h1>
             <div class="sub">Recent office, controller, crop, sync, and mortality events.</div>
-            <table>
-                <thead>
-                    <tr><th>Time</th><th>Source</th><th>Type</th><th>Shed</th><th>Message</th><th>Detail</th></tr>
-                </thead>
-                <tbody>
-                    {% for row in rows %}
-                    <tr>
-                        <td>{{ row.ts_label }}</td>
-                        <td>{{ row.source }}</td>
-                        <td>{{ row.event_type }}</td>
-                        <td>{{ row.shed if row.shed else "--" }}</td>
-                        <td>{{ row.message }}</td>
-                        <td class="mono">{{ row.detail if row.detail else "--" }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+            <details class="collapse" open>
+                <summary>Open event log table</summary>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr><th>Time</th><th>Source</th><th>Type</th><th>Shed</th><th>Message</th><th>Detail</th></tr>
+                        </thead>
+                        <tbody>
+                            {% for row in rows %}
+                            <tr>
+                                <td>{{ row.ts_label }}</td>
+                                <td>{{ row.source }}</td>
+                                <td>{{ row.event_type }}</td>
+                                <td>{{ row.shed if row.shed else "--" }}</td>
+                                <td>{{ row.message }}</td>
+                                <td class="mono">{{ row.detail if row.detail else "--" }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </details>
         </div>
     </div>
 </body>
@@ -5287,7 +5316,8 @@ RESTORE_HTML = """
     <title>Office Backup Restore</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { margin:0; font-family:Arial, sans-serif; background:#5b5b5b; color:#ececec; }
+        * { box-sizing:border-box; }
+        body { margin:0; font-family:Arial, sans-serif; background:#5b5b5b; color:#ececec; overflow-x:hidden; }
         .wrap { max-width:1400px; margin:0 auto; padding:16px; }
         a { color:#f0f0f0; text-decoration:none; }
         .topbar { margin-bottom:16px; }
@@ -5295,7 +5325,7 @@ RESTORE_HTML = """
         .status.ok { border-color:#35d07f; color:#e4ffed; }
         .status.err { border-color:#c65460; color:#ffdbe1; }
         .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-        .panel { background:#737373; border:1px solid #8a8a8a; border-radius:14px; padding:16px; }
+        .panel { background:#737373; border:1px solid #8a8a8a; border-radius:14px; padding:16px; min-width:0; }
         h1 { margin:0 0 8px 0; }
         h2 { margin:0 0 10px 0; }
         .sub { color:#d2d2d2; margin-bottom:14px; }
@@ -5305,10 +5335,22 @@ RESTORE_HTML = """
         select { width:100%; box-sizing:border-box; padding:10px 12px; border-radius:8px; border:1px solid #8a8a8a; background:#686868; color:#ececec; margin-bottom:12px; }
         button { background:#727272; color:#ececec; border:1px solid #8a8a8a; border-radius:8px; padding:10px 14px; cursor:pointer; width:100%; }
         button.danger { border-color:#8e3e3e; }
-        table { width:100%; border-collapse:collapse; font-size:14px; }
-        th, td { padding:10px 8px; border-bottom:1px solid #818181; text-align:left; }
+        .collapse { margin-top:14px; }
+        .collapse summary { cursor:pointer; list-style:none; padding:12px 14px; border:1px solid #8a8a8a; border-radius:10px; background:#686868; font-weight:700; }
+        .collapse summary::-webkit-details-marker { display:none; }
+        .collapse[open] summary { margin-bottom:12px; }
+        .table-wrap { overflow:auto; -webkit-overflow-scrolling:touch; border:1px solid #818181; border-radius:10px; background:#686868; }
+        table { width:100%; border-collapse:collapse; font-size:14px; table-layout:fixed; }
+        th, td { padding:10px 8px; border-bottom:1px solid #818181; text-align:left; overflow-wrap:anywhere; word-break:break-word; }
         th { color:#f0f0f0; }
         @media (max-width: 900px) { .grid { grid-template-columns:1fr; } }
+        @media (max-width: 700px) {
+            .wrap { padding:12px; }
+            h1 { font-size:24px; }
+            .panel { padding:12px; }
+            .detail { flex-direction:column; align-items:flex-start; }
+            table { font-size:13px; }
+        }
     </style>
 </head>
 <body>
@@ -5365,44 +5407,54 @@ RESTORE_HTML = """
         <div class="panel" style="margin-top:16px;">
             <h2>Restore From Collected Controller Copies</h2>
             <div class="sub">Use the latest backup ZIP collected from each controller by the office.</div>
-            <table>
-                <thead><tr><th>Controller</th><th>Latest Office Copy</th><th>Action</th></tr></thead>
-                <tbody>
-                    {% for row in controller_copy_rows %}
-                    <tr>
-                        <td>{{ row.label }}</td>
-                        <td>{{ row.latest_name }}</td>
-                        <td>
-                            {% if row.restore_kind == 'shed' %}
-                            <form method="post" action="{{ url_for('restore_controller_copy_shed_view') }}" onsubmit="return confirm('Restore this shed from the latest office-collected controller copy?');">
-                                <input type="hidden" name="controller_key" value="{{ row.controller_key }}">
-                                <input type="hidden" name="shed_no" value="{{ row.shed_no }}">
-                                <button type="submit">Restore {{ row.label }}</button>
-                            </form>
-                            {% elif row.restore_kind == 'borehole' %}
-                            <form method="post" action="{{ url_for('restore_controller_copy_borehole_view') }}" onsubmit="return confirm('Restore the bore hole from the latest office-collected controller copy?');">
-                                <input type="hidden" name="controller_key" value="{{ row.controller_key }}">
-                                <button type="submit">Restore Bore Hole</button>
-                            </form>
-                            {% else %}
-                            --
-                            {% endif %}
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+            <details class="collapse" open>
+                <summary>Open controller copy restore list</summary>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>Controller</th><th>Latest Office Copy</th><th>Action</th></tr></thead>
+                        <tbody>
+                            {% for row in controller_copy_rows %}
+                            <tr>
+                                <td>{{ row.label }}</td>
+                                <td>{{ row.latest_name }}</td>
+                                <td>
+                                    {% if row.restore_kind == 'shed' %}
+                                    <form method="post" action="{{ url_for('restore_controller_copy_shed_view') }}" onsubmit="return confirm('Restore this shed from the latest office-collected controller copy?');">
+                                        <input type="hidden" name="controller_key" value="{{ row.controller_key }}">
+                                        <input type="hidden" name="shed_no" value="{{ row.shed_no }}">
+                                        <button type="submit">Restore {{ row.label }}</button>
+                                    </form>
+                                    {% elif row.restore_kind == 'borehole' %}
+                                    <form method="post" action="{{ url_for('restore_controller_copy_borehole_view') }}" onsubmit="return confirm('Restore the bore hole from the latest office-collected controller copy?');">
+                                        <input type="hidden" name="controller_key" value="{{ row.controller_key }}">
+                                        <button type="submit">Restore Bore Hole</button>
+                                    </form>
+                                    {% else %}
+                                    --
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </details>
         </div>
         <div class="panel" style="margin-top:16px;">
             <h2>Available Backups</h2>
-            <table>
-                <thead><tr><th>Name</th><th>Modified</th></tr></thead>
-                <tbody>
-                    {% for b in backups %}
-                    <tr><td>{{ b.name }}</td><td>{{ b.mtime }}</td></tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+            <details class="collapse" open>
+                <summary>Open available backups</summary>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>Name</th><th>Modified</th></tr></thead>
+                        <tbody>
+                            {% for b in backups %}
+                            <tr><td>{{ b.name }}</td><td>{{ b.mtime }}</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </details>
         </div>
     </div>
 <script>
@@ -5425,16 +5477,17 @@ OFFICE_SETTINGS_HTML = """
     <title>Office Settings</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { margin:0; font-family:Arial, sans-serif; background:#5b5b5b; color:#ececec; }
+        * { box-sizing:border-box; }
+        body { margin:0; font-family:Arial, sans-serif; background:#5b5b5b; color:#ececec; overflow-x:hidden; }
         .wrap { max-width:1400px; margin:0 auto; padding:16px; }
         a { color:#f0f0f0; text-decoration:none; }
         .topbar { margin-bottom:16px; }
         h1 { margin:0 0 8px 0; }
         .sub { color:#d2d2d2; margin-bottom:14px; }
         .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-        .panel { background:#737373; border:1px solid #8a8a8a; border-radius:14px; padding:16px; }
+        .panel { background:#737373; border:1px solid #8a8a8a; border-radius:14px; padding:16px; min-width:0; }
         .health-grid { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:12px; margin-top:12px; }
-        .health-card { background:#686868; border:1px solid #8a8a8a; border-radius:12px; padding:12px; }
+        .health-card { background:#686868; border:1px solid #8a8a8a; border-radius:12px; padding:12px; min-width:0; overflow-wrap:anywhere; word-break:break-word; }
         .health-label { color:#d2d2d2; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; }
         .health-value { margin-top:6px; font-size:24px; font-weight:700; }
         .health-note { margin-top:6px; color:#dcdcdc; font-size:12px; line-height:1.35; }
@@ -5464,10 +5517,23 @@ OFFICE_SETTINGS_HTML = """
         .status.err { border-color:#c65460; color:#ffdbe1; }
         .mono { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; }
         .update-actions { display:grid; grid-template-columns:1fr; gap:10px; margin-top:14px; }
-        table { width:100%; border-collapse:collapse; font-size:14px; }
-        th, td { padding:10px 8px; border-bottom:1px solid #818181; text-align:left; vertical-align:top; }
+        .collapse { margin-top:14px; }
+        .collapse summary { cursor:pointer; list-style:none; padding:12px 14px; border:1px solid #8a8a8a; border-radius:10px; background:#686868; font-weight:700; }
+        .collapse summary::-webkit-details-marker { display:none; }
+        .collapse[open] summary { margin-bottom:12px; }
+        .table-wrap { overflow:auto; -webkit-overflow-scrolling:touch; border:1px solid #818181; border-radius:10px; background:#686868; }
+        table { width:100%; border-collapse:collapse; font-size:14px; table-layout:fixed; }
+        th, td { padding:10px 8px; border-bottom:1px solid #818181; text-align:left; vertical-align:top; overflow-wrap:anywhere; word-break:break-word; }
         th { color:#f0f0f0; }
         @media (max-width: 900px) { .grid, .action-grid, .health-grid { grid-template-columns:1fr; } }
+        @media (max-width: 700px) {
+            .wrap { padding:12px; }
+            h1 { font-size:24px; }
+            .panel { padding:12px; }
+            .detail { flex-direction:column; align-items:flex-start; }
+            .action-link, button { min-height:42px; padding:10px 12px; }
+            table { font-size:13px; }
+        }
     </style>
 </head>
 <body>
@@ -5547,20 +5613,25 @@ OFFICE_SETTINGS_HTML = """
         <div class="panel" style="margin-top:16px;">
             <h2>Shed Controller Backups</h2>
             <div class="sub">Latest controller-reported backup status plus the office-side collected ZIP copy.</div>
-            <table>
-                <thead><tr><th>Controller</th><th>Controller Backup</th><th>Controller Status</th><th>Office Copy</th><th>Office Copy Status</th></tr></thead>
-                <tbody>
-                    {% for row in controller_backup_rows %}
-                    <tr>
-                        <td>{{ row.label }}</td>
-                        <td>{{ row.last_backup }}</td>
-                        <td>{{ row.last_backup_status }}</td>
-                        <td>{{ row.office_copy_at }}</td>
-                        <td>{{ row.office_copy_status }}{% if row.office_copy_name != '--' %} · <a href="{{ url_for('download_collected_controller_backup_view', controller_key=row.controller_key) }}">Download</a>{% endif %}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+            <details class="collapse" open>
+                <summary>Open shed controller backup table</summary>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>Controller</th><th>Controller Backup</th><th>Controller Status</th><th>Office Copy</th><th>Office Copy Status</th></tr></thead>
+                        <tbody>
+                            {% for row in controller_backup_rows %}
+                            <tr>
+                                <td>{{ row.label }}</td>
+                                <td>{{ row.last_backup }}</td>
+                                <td>{{ row.last_backup_status }}</td>
+                                <td>{{ row.office_copy_at }}</td>
+                                <td>{{ row.office_copy_status }}{% if row.office_copy_name != '--' %} · <a href="{{ url_for('download_collected_controller_backup_view', controller_key=row.controller_key) }}">Download</a>{% endif %}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </details>
         </div>
     </div>
 <script>
@@ -5583,17 +5654,30 @@ VERSIONS_HTML = """
     <title>Versions</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { margin:0; font-family:Arial,sans-serif; background:#5b5b5b; color:#ececec; }
+        * { box-sizing:border-box; }
+        body { margin:0; font-family:Arial,sans-serif; background:#5b5b5b; color:#ececec; overflow-x:hidden; }
         .wrap { max-width:1180px; margin:0 auto; padding:24px; }
         .topbar a { color:#ececec; text-decoration:none; }
-        .panel { background:#737373; border:1px solid #8a8a8a; border-radius:14px; padding:16px; margin-top:16px; }
+        .panel { background:#737373; border:1px solid #8a8a8a; border-radius:14px; padding:16px; margin-top:16px; min-width:0; }
         .detail { display:flex; justify-content:space-between; gap:12px; padding:10px 0; border-bottom:1px solid #818181; }
         .detail:last-child { border-bottom:0; }
         .label { color:#d2d2d2; }
         .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
         .sub { color:#d2d2d2; margin-bottom:14px; }
-        table { width:100%; border-collapse:collapse; font-size:14px; }
-        th, td { padding:10px 8px; border-bottom:1px solid #818181; text-align:left; }
+        .collapse { margin-top:14px; }
+        .collapse summary { cursor:pointer; list-style:none; padding:12px 14px; border:1px solid #8a8a8a; border-radius:10px; background:#686868; font-weight:700; }
+        .collapse summary::-webkit-details-marker { display:none; }
+        .collapse[open] summary { margin-bottom:12px; }
+        .table-wrap { overflow:auto; -webkit-overflow-scrolling:touch; border:1px solid #818181; border-radius:10px; background:#686868; }
+        table { width:100%; border-collapse:collapse; font-size:14px; table-layout:fixed; }
+        th, td { padding:10px 8px; border-bottom:1px solid #818181; text-align:left; overflow-wrap:anywhere; word-break:break-word; }
+        @media (max-width: 700px) {
+            .wrap { padding:12px; }
+            h1 { font-size:24px; }
+            .panel { padding:12px; }
+            .detail { flex-direction:column; align-items:flex-start; }
+            table { font-size:13px; }
+        }
     </style>
 </head>
 <body>
@@ -5611,22 +5695,27 @@ VERSIONS_HTML = """
         </div>
         <div class="panel">
             <h2>Controllers</h2>
-            <table>
-                <thead><tr><th>Controller</th><th>App Version</th><th>Pico Local</th><th>Pico Deployed</th><th>Last Seen</th><th>State Ver</th><th>Office Sync Ver</th></tr></thead>
-                <tbody>
-                    {% for row in controller_rows %}
-                    <tr>
-                        <td>{{ row.label }}</td>
-                        <td class="mono">{{ row.app_version }}</td>
-                        <td class="mono">{{ row.pico_local }}</td>
-                        <td class="mono">{{ row.pico_deployed }}</td>
-                        <td>{{ row.last_seen }}</td>
-                        <td>{{ row.state_version }}</td>
-                        <td>{{ row.office_sync_version }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+            <details class="collapse" open>
+                <summary>Open controller version table</summary>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>Controller</th><th>App Version</th><th>Pico Local</th><th>Pico Deployed</th><th>Last Seen</th><th>State Ver</th><th>Office Sync Ver</th></tr></thead>
+                        <tbody>
+                            {% for row in controller_rows %}
+                            <tr>
+                                <td>{{ row.label }}</td>
+                                <td class="mono">{{ row.app_version }}</td>
+                                <td class="mono">{{ row.pico_local }}</td>
+                                <td class="mono">{{ row.pico_deployed }}</td>
+                                <td>{{ row.last_seen }}</td>
+                                <td>{{ row.state_version }}</td>
+                                <td>{{ row.office_sync_version }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </details>
         </div>
     </div>
 </body>
@@ -5642,25 +5731,36 @@ FARM_HEALTH_HTML = """
     <title>Farm Health</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { margin:0; font-family:Arial,sans-serif; background:#5b5b5b; color:#ececec; }
+        * { box-sizing:border-box; }
+        body { margin:0; font-family:Arial,sans-serif; background:#5b5b5b; color:#ececec; overflow-x:hidden; }
         .wrap { max-width:1400px; margin:0 auto; padding:16px; }
         .topbar { margin-bottom:16px; }
         .topbar a { color:#ececec; text-decoration:none; }
         h1 { margin:0 0 8px 0; }
         .sub { color:#d2d2d2; margin-bottom:14px; }
         .summary-grid { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:12px; margin-bottom:16px; }
-        .panel { background:#737373; border:1px solid #8a8a8a; border-radius:14px; padding:16px; }
-        .health-card { background:#686868; border:1px solid #8a8a8a; border-radius:12px; padding:12px; }
+        .panel { background:#737373; border:1px solid #8a8a8a; border-radius:14px; padding:16px; min-width:0; }
+        .health-card { background:#686868; border:1px solid #8a8a8a; border-radius:12px; padding:12px; min-width:0; overflow-wrap:anywhere; word-break:break-word; }
         .health-label { color:#d2d2d2; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; }
         .health-value { margin-top:6px; font-size:24px; font-weight:700; }
         .health-note { margin-top:6px; color:#dcdcdc; font-size:12px; line-height:1.35; }
-        table { width:100%; border-collapse:collapse; font-size:14px; }
-        th, td { padding:10px 8px; border-bottom:1px solid #818181; text-align:left; vertical-align:top; }
+        .collapse summary { cursor:pointer; list-style:none; padding:12px 14px; border:1px solid #8a8a8a; border-radius:10px; background:#686868; font-weight:700; }
+        .collapse summary::-webkit-details-marker { display:none; }
+        .collapse[open] summary { margin-bottom:12px; }
+        .table-wrap { overflow:auto; -webkit-overflow-scrolling:touch; border:1px solid #818181; border-radius:10px; background:#686868; }
+        table { width:100%; border-collapse:collapse; font-size:14px; table-layout:fixed; }
+        th, td { padding:10px 8px; border-bottom:1px solid #818181; text-align:left; vertical-align:top; overflow-wrap:anywhere; word-break:break-word; }
         th { color:#f0f0f0; }
         .state-ok { color:#8ff0ba; }
         .state-bad { color:#ffb0b0; }
         @media (max-width: 1000px) { .summary-grid { grid-template-columns:1fr 1fr; } }
-        @media (max-width: 700px) { .summary-grid { grid-template-columns:1fr; } }
+        @media (max-width: 700px) {
+            .wrap { padding:12px; }
+            h1 { font-size:24px; }
+            .summary-grid { grid-template-columns:1fr; }
+            .panel { padding:12px; }
+            table { font-size:13px; }
+        }
     </style>
 </head>
 <body>
@@ -5691,20 +5791,25 @@ FARM_HEALTH_HTML = """
             </div>
         </div>
         <div class="panel">
-            <table>
-                <thead><tr><th>Controller</th><th>Heartbeat</th><th>Pico</th><th>Controller Backup</th><th>Office Copy</th></tr></thead>
-                <tbody>
-                    {% for row in rows %}
-                    <tr>
-                        <td>{{ row.label }}</td>
-                        <td class="{{ 'state-ok' if row.heartbeat_ok else 'state-bad' }}">{{ row.heartbeat }}</td>
-                        <td class="{{ 'state-ok' if row.pico_ok else 'state-bad' }}">{{ row.pico }}</td>
-                        <td class="{{ 'state-ok' if row.backup_ok else 'state-bad' }}">{{ row.backup }}</td>
-                        <td class="{{ 'state-ok' if row.office_copy_ok else 'state-bad' }}">{{ row.office_copy }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+            <details class="collapse" open>
+                <summary>Open controller health table</summary>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>Controller</th><th>Heartbeat</th><th>Pico</th><th>Controller Backup</th><th>Office Copy</th></tr></thead>
+                        <tbody>
+                            {% for row in rows %}
+                            <tr>
+                                <td>{{ row.label }}</td>
+                                <td class="{{ 'state-ok' if row.heartbeat_ok else 'state-bad' }}">{{ row.heartbeat }}</td>
+                                <td class="{{ 'state-ok' if row.pico_ok else 'state-bad' }}">{{ row.pico }}</td>
+                                <td class="{{ 'state-ok' if row.backup_ok else 'state-bad' }}">{{ row.backup }}</td>
+                                <td class="{{ 'state-ok' if row.office_copy_ok else 'state-bad' }}">{{ row.office_copy }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </details>
         </div>
     </div>
 </body>
@@ -5770,11 +5875,15 @@ DETAIL_HTML = """
     <title>{{ shed_name }} Detail</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
+        * {
+            box-sizing: border-box;
+        }
         body {
             margin: 0;
             font-family: Arial, sans-serif;
             background: #5b5b5b;
             color: #ececec;
+            overflow-x: hidden;
         }
         .wrap {
             max-width: 1500px;
@@ -5817,7 +5926,7 @@ DETAIL_HTML = """
         }
         .grid {
             display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
             gap: 14px;
             margin-bottom: 16px;
         }
@@ -5829,6 +5938,9 @@ DETAIL_HTML = """
             padding: 18px;
             color: inherit;
             text-decoration: none;
+            min-width: 0;
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
         .navcard:hover {
             border-color: #a4a4a4;
@@ -5847,21 +5959,50 @@ DETAIL_HTML = """
             border: 2px solid #8a8a8a;
             border-radius: 12px;
             padding: 14px;
+            min-width: 0;
         }
         .table-card h2 {
             margin-top: 0;
             font-size: 22px;
         }
+        .collapse {
+            margin-top: 14px;
+        }
+        .collapse summary {
+            cursor: pointer;
+            list-style: none;
+            padding: 12px 14px;
+            border: 1px solid #8a8a8a;
+            border-radius: 10px;
+            background: #686868;
+            font-weight: 700;
+        }
+        .collapse summary::-webkit-details-marker {
+            display: none;
+        }
+        .collapse[open] summary {
+            margin-bottom: 12px;
+        }
+        .table-wrap {
+            overflow: auto;
+            -webkit-overflow-scrolling: touch;
+            border: 1px solid #818181;
+            border-radius: 10px;
+            background: #686868;
+        }
         table {
             width: 100%;
             border-collapse: collapse;
             font-size: 14px;
+            table-layout: fixed;
         }
         th, td {
             border-bottom: 1px solid #818181;
             padding: 10px 8px;
             text-align: left;
             vertical-align: middle;
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
         th {
             color: #f0f0f0;
@@ -5910,16 +6051,40 @@ DETAIL_HTML = """
             margin-right: 6px;
             margin-bottom: 4px;
             vertical-align: top;
+            flex-wrap: wrap;
+            max-width: 100%;
         }
         @media (max-width: 1200px) {
-            .grid {
-                grid-template-columns: 1fr;
-            }
             table {
                 font-size: 13px;
             }
             input[type="number"] {
                 width: 90px;
+            }
+        }
+        @media (max-width: 700px) {
+            .wrap {
+                padding: 12px;
+            }
+            h1 {
+                font-size: 24px;
+            }
+            .navcard {
+                padding: 14px;
+            }
+            .navtitle {
+                font-size: 20px;
+            }
+            .table-card {
+                padding: 12px;
+            }
+            button {
+                width: 100%;
+            }
+            .form-inline {
+                display: flex;
+                margin-right: 0;
+                width: 100%;
             }
         }
     </style>
@@ -5961,55 +6126,60 @@ DETAIL_HTML = """
 
         <div class="table-card">
             <h2>Shed entries</h2>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Entry Shed</th>
-                        <th>Birds</th>
-                        <th>Pens</th>
-                        <th>Started</th>
-                        <th>Active</th>
-                        <th>Update</th>
-                        <th>Controls</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for r in entry_rows %}
-                    <tr>
-                        <td>Shed {{ r.dest_shed }}</td>
-                        <td>
-                            <form id="entry-form-{{ r.dest_shed }}" class="form-inline" method="post" action="{{ url_for('shed_entry_save', shed_no=shed_no, dest_shed=r.dest_shed) }}">
-                                <input type="number" name="bird_count" min="0" step="1" value="{{ '' if r.bird_count == 0 else r.bird_count }}">
-                            </form>
-                        </td>
-                        <td>{{ r.pens_text if r.pens_text else "--" }}</td>
-                        <td>{{ r.placement_str }}</td>
-                        <td>
-                            {% if r.crop_active == 1 %}
-                                <span class="entry-yes">Yes</span>
-                            {% else %}
-                                <span class="entry-no">No</span>
-                            {% endif %}
-                        </td>
-                        <td>
-                            <button form="entry-form-{{ r.dest_shed }}" formaction="{{ url_for('shed_entry_start', shed_no=shed_no, dest_shed=r.dest_shed) }}" type="submit">Start</button>
-                            <form class="form-inline" method="post" action="{{ url_for('shed_entry_end', shed_no=shed_no, dest_shed=r.dest_shed) }}">
-                                <button class="danger" type="submit">End</button>
-                            </form>
-                        </td>
-                        <td>
-                            {% if r.can_move %}
-                            <form class="form-inline" method="post" action="{{ url_for('shed_entry_move', shed_no=shed_no, dest_shed=r.dest_shed) }}">
-                                <button class="move" type="submit">Move to Shed {{ r.dest_shed }}</button>
-                            </form>
-                            {% else %}
-                            <span class="empty">--</span>
-                            {% endif %}
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+            <details class="collapse" open>
+                <summary>Open shed entry table</summary>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Entry Shed</th>
+                                <th>Birds</th>
+                                <th>Pens</th>
+                                <th>Started</th>
+                                <th>Active</th>
+                                <th>Update</th>
+                                <th>Controls</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for r in entry_rows %}
+                            <tr>
+                                <td>Shed {{ r.dest_shed }}</td>
+                                <td>
+                                    <form id="entry-form-{{ r.dest_shed }}" class="form-inline" method="post" action="{{ url_for('shed_entry_save', shed_no=shed_no, dest_shed=r.dest_shed) }}">
+                                        <input type="number" name="bird_count" min="0" step="1" value="{{ '' if r.bird_count == 0 else r.bird_count }}">
+                                    </form>
+                                </td>
+                                <td>{{ r.pens_text if r.pens_text else "--" }}</td>
+                                <td>{{ r.placement_str }}</td>
+                                <td>
+                                    {% if r.crop_active == 1 %}
+                                        <span class="entry-yes">Yes</span>
+                                    {% else %}
+                                        <span class="entry-no">No</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    <button form="entry-form-{{ r.dest_shed }}" formaction="{{ url_for('shed_entry_start', shed_no=shed_no, dest_shed=r.dest_shed) }}" type="submit">Start</button>
+                                    <form class="form-inline" method="post" action="{{ url_for('shed_entry_end', shed_no=shed_no, dest_shed=r.dest_shed) }}">
+                                        <button class="danger" type="submit">End</button>
+                                    </form>
+                                </td>
+                                <td>
+                                    {% if r.can_move %}
+                                    <form class="form-inline" method="post" action="{{ url_for('shed_entry_move', shed_no=shed_no, dest_shed=r.dest_shed) }}">
+                                        <button class="move" type="submit">Move to Shed {{ r.dest_shed }}</button>
+                                    </form>
+                                    {% else %}
+                                    <span class="empty">--</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </details>
         </div>
     </div>
 <script>
@@ -6032,7 +6202,8 @@ MORTALITY_HTML = """
     <title>{{ shed_name }} Mortality</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { margin: 0; font-family: Arial, sans-serif; background: #5b5b5b; color: #ececec; }
+        * { box-sizing: border-box; }
+        body { margin: 0; font-family: Arial, sans-serif; background: #5b5b5b; color: #ececec; overflow-x:hidden; }
         .wrap { max-width: 1200px; margin: 0 auto; padding: 16px; }
         a { color: #f0f0f0; text-decoration: none; }
         h1 { margin: 0 0 6px 0; font-size: 30px; }
@@ -6042,16 +6213,28 @@ MORTALITY_HTML = """
         .status.ok { border-color: #35d07f; color: #dff9ea; }
         .status.err { border-color: #ff5b5b; color: #ffd6d6; }
         .grid { display: grid; grid-template-columns: 0.9fr 1.1fr; gap: 14px; }
-        .card { background: #737373; border: 2px solid #8a8a8a; border-radius: 12px; padding: 14px; }
+        .card { background: #737373; border: 2px solid #8a8a8a; border-radius: 12px; padding: 14px; min-width:0; }
         .card h2 { margin-top: 0; font-size: 22px; }
         label { display: block; color: #f0f0f0; margin-bottom: 6px; font-size: 14px; }
         input[type="number"], input[type="text"], select { width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 8px; border: 1px solid #8a8a8a; background: #686868; color: #ececec; margin-bottom: 12px; }
         button { background: #727272; color: #f2f2f2; border: 1px solid #8a8a8a; border-radius: 8px; padding: 10px 14px; cursor: pointer; }
-        table { width: 100%; border-collapse: collapse; font-size: 14px; }
-        th, td { border-bottom: 1px solid #818181; padding: 10px 8px; text-align: left; vertical-align: middle; }
+        .collapse { margin-top: 14px; }
+        .collapse summary { cursor: pointer; list-style: none; padding: 12px 14px; border: 1px solid #8a8a8a; border-radius: 10px; background: #686868; font-weight: 700; }
+        .collapse summary::-webkit-details-marker { display:none; }
+        .collapse[open] summary { margin-bottom: 12px; }
+        .table-wrap { overflow:auto; -webkit-overflow-scrolling:touch; border:1px solid #818181; border-radius:10px; background:#686868; }
+        table { width: 100%; border-collapse: collapse; font-size: 14px; table-layout:fixed; }
+        th, td { border-bottom: 1px solid #818181; padding: 10px 8px; text-align: left; vertical-align: middle; overflow-wrap:anywhere; word-break:break-word; }
         th { color: #f0f0f0; }
         .empty { color: #d2d2d2; }
         @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+        @media (max-width: 700px) {
+            .wrap { padding: 12px; }
+            h1 { font-size: 24px; }
+            .card { padding: 12px; }
+            table { font-size: 13px; }
+            button { width: 100%; }
+        }
     </style>
 </head>
 <body>
@@ -6091,31 +6274,36 @@ MORTALITY_HTML = """
                         <tr><th>Active birds</th><td>{{ active_birds }}</td></tr>
                     </tbody>
                 </table>
+                <details class="collapse" open>
+                <summary>Open mortality log</summary>
                 <h2 style="margin-top:18px;">Mortality Log</h2>
                 {% if history_rows %}
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Time</th>
-                            <th>Entry Shed</th>
-                            <th>Loss</th>
-                            <th>Note</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for row in history_rows %}
-                        <tr>
-                            <td>{{ row.ts_label }}</td>
-                            <td>Shed {{ row.dest_shed }}</td>
-                            <td>{{ row.bird_loss }}</td>
-                            <td>{{ row.note if row.note else "--" }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Entry Shed</th>
+                                <th>Loss</th>
+                                <th>Note</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for row in history_rows %}
+                            <tr>
+                                <td>{{ row.ts_label }}</td>
+                                <td>Shed {{ row.dest_shed }}</td>
+                                <td>{{ row.bird_loss }}</td>
+                                <td>{{ row.note if row.note else "--" }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
                 {% else %}
                 <div class="empty">No mortality logged for this crop yet.</div>
                 {% endif %}
+                </details>
             </div>
         </div>
     </div>
@@ -6140,11 +6328,15 @@ BOREHOLE_DETAIL_HTML = """
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta http-equiv="refresh" content="30">
     <style>
+        * {
+            box-sizing: border-box;
+        }
         body {
             margin: 0;
             font-family: Arial, sans-serif;
             background: #5b5b5b;
             color: #ececec;
+            overflow-x: hidden;
         }
         .wrap {
             max-width: 1200px;
@@ -6184,6 +6376,9 @@ BOREHOLE_DETAIL_HTML = """
             color: inherit;
             text-decoration: none;
             transition: transform 0.12s ease, border-color 0.12s ease;
+            min-width: 0;
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
         .navcard:hover {
             transform: translateY(-2px);
@@ -6200,6 +6395,12 @@ BOREHOLE_DETAIL_HTML = """
         }
         @media (max-width: 800px) {
             .grid { grid-template-columns: 1fr; }
+        }
+        @media (max-width: 700px) {
+            .wrap { padding: 12px; }
+            h1 { font-size: 24px; }
+            .navcard { padding: 14px; }
+            .navtitle { font-size: 20px; }
         }
     </style>
 </head>
@@ -6237,11 +6438,15 @@ HISTORY_HTML = """
     <title>{{ shed_name }} Crop History</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
+        * {
+            box-sizing: border-box;
+        }
         body {
             margin: 0;
             font-family: Arial, sans-serif;
             background: #5b5b5b;
             color: #ececec;
+            overflow-x: hidden;
         }
         .wrap {
             max-width: 1200px;
@@ -6272,16 +6477,42 @@ HISTORY_HTML = """
             border: 2px solid #8a8a8a;
             border-radius: 12px;
             padding: 14px;
+            min-width: 0;
+        }
+        .collapse summary {
+            cursor: pointer;
+            list-style: none;
+            padding: 12px 14px;
+            border: 1px solid #8a8a8a;
+            border-radius: 10px;
+            background: #686868;
+            font-weight: 700;
+        }
+        .collapse summary::-webkit-details-marker {
+            display: none;
+        }
+        .collapse[open] summary {
+            margin-bottom: 12px;
+        }
+        .table-wrap {
+            overflow: auto;
+            -webkit-overflow-scrolling: touch;
+            border: 1px solid #818181;
+            border-radius: 10px;
+            background: #686868;
         }
         table {
             width: 100%;
             border-collapse: collapse;
             font-size: 14px;
+            table-layout: fixed;
         }
         th, td {
             border-bottom: 1px solid #818181;
             padding: 10px 8px;
             text-align: left;
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
         th {
             color: #f0f0f0;
@@ -6292,6 +6523,13 @@ HISTORY_HTML = """
         }
         .actions a {
             margin-right: 12px;
+        }
+        @media (max-width: 700px) {
+            .wrap { padding: 12px; }
+            h1 { font-size: 24px; }
+            .card { padding: 12px; }
+            .actions a { display:block; margin:0 0 8px 0; }
+            table { font-size: 13px; }
         }
     </style>
 </head>
@@ -6306,30 +6544,35 @@ HISTORY_HTML = """
 
         <div class="card">
             {% if crops %}
-            <table>
-                <thead>
-                    <tr>
-                        <th>Crop ID</th>
-                        <th>Start</th>
-                        <th>End</th>
-                        <th>Open</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for c in crops %}
-                    <tr>
-                        <td>{{ c.crop_code }}</td>
-                        <td>{{ c.start_label }}</td>
-                        <td>{{ c.end_label }}</td>
-                        <td class="actions">
-                            <a href="{{ url_for('shed_crop_summary_view', shed_no=shed_no, crop_id=c.crop_id) }}">Summary</a>
-                            <a href="{{ url_for('shed_crop_period_view', shed_no=shed_no, crop_id=c.crop_id, period='hourly') }}">Hourly</a>
-                            <a href="{{ url_for('shed_crop_period_view', shed_no=shed_no, crop_id=c.crop_id, period='daily') }}">Daily</a>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+            <details class="collapse" open>
+                <summary>Open crop history table</summary>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Crop ID</th>
+                                <th>Start</th>
+                                <th>End</th>
+                                <th>Open</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for c in crops %}
+                            <tr>
+                                <td>{{ c.crop_code }}</td>
+                                <td>{{ c.start_label }}</td>
+                                <td>{{ c.end_label }}</td>
+                                <td class="actions">
+                                    <a href="{{ url_for('shed_crop_summary_view', shed_no=shed_no, crop_id=c.crop_id) }}">Summary</a>
+                                    <a href="{{ url_for('shed_crop_period_view', shed_no=shed_no, crop_id=c.crop_id, period='hourly') }}">Hourly</a>
+                                    <a href="{{ url_for('shed_crop_period_view', shed_no=shed_no, crop_id=c.crop_id, period='daily') }}">Daily</a>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </details>
             {% else %}
             <div class="empty">No crop history found yet.</div>
             {% endif %}
@@ -6348,11 +6591,15 @@ CROP_SUMMARY_HTML = """
     <title>{{ shed_name }} {{ summary.crop_code }} Summary</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
+        * {
+            box-sizing: border-box;
+        }
         body {
             margin: 0;
             font-family: Arial, sans-serif;
             background: #5b5b5b;
             color: #ececec;
+            overflow-x: hidden;
         }
         .wrap {
             max-width: 1650px;
@@ -6389,6 +6636,7 @@ CROP_SUMMARY_HTML = """
             border: 2px solid #8a8a8a;
             border-radius: 12px;
             padding: 14px;
+            min-width: 0;
         }
         .metric-label {
             color: #d2d2d2;
@@ -6433,22 +6681,41 @@ CROP_SUMMARY_HTML = """
             grid-template-columns: 1fr 1fr;
             gap: 14px;
         }
+        .collapse summary {
+            cursor: pointer;
+            list-style: none;
+            padding: 12px 14px;
+            border: 1px solid #8a8a8a;
+            border-radius: 10px;
+            background: #686868;
+            font-weight: 700;
+        }
+        .collapse summary::-webkit-details-marker {
+            display: none;
+        }
+        .collapse[open] summary {
+            margin-bottom: 12px;
+        }
         .table-wrap {
             max-height: 780px;
             overflow: auto;
             border: 1px solid #818181;
             border-radius: 10px;
             background: #686868;
+            -webkit-overflow-scrolling: touch;
         }
         table {
             width: 100%;
             border-collapse: collapse;
             font-size: 13px;
+            table-layout: fixed;
         }
         th, td {
             border-bottom: 1px solid #818181;
             padding: 8px 6px;
             text-align: left;
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
         th {
             color: #f0f0f0;
@@ -6464,6 +6731,15 @@ CROP_SUMMARY_HTML = """
             .two-col {
                 grid-template-columns: 1fr;
             }
+        }
+        @media (max-width: 700px) {
+            .wrap { padding: 12px; }
+            h1 { font-size: 24px; }
+            .summary-grid { grid-template-columns: 1fr; }
+            .card { padding: 12px; }
+            .metric-value { font-size: 24px; }
+            .actions a, .status-pill { width: 100%; text-align: center; }
+            table { font-size: 12px; }
         }
     </style>
 </head>
@@ -6509,30 +6785,33 @@ CROP_SUMMARY_HTML = """
             <div class="card">
                 <h2>Daily Performance</h2>
                 {% if daily_rows %}
-                <div class="table-wrap">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Day</th>
-                                <th>Water L</th>
-                                <th>Feed KG</th>
-                                <th>Running Water L</th>
-                                <th>Running Feed KG</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for r in daily_rows %}
-                            <tr>
-                                <td>{{ r.label }}</td>
-                                <td>{{ "%.1f"|format(r.water) if r.water is not none else "--" }}</td>
-                                <td>{{ "%.2f"|format(r.feed) if r.feed is not none else "--" }}</td>
-                                <td>{{ "%.1f"|format(r.running_water) if r.running_water is not none else "--" }}</td>
-                                <td>{{ "%.2f"|format(r.running_feed) if r.running_feed is not none else "--" }}</td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
+                <details class="collapse" open>
+                    <summary>Open daily performance table</summary>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Day</th>
+                                    <th>Water L</th>
+                                    <th>Feed KG</th>
+                                    <th>Running Water L</th>
+                                    <th>Running Feed KG</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for r in daily_rows %}
+                                <tr>
+                                    <td>{{ r.label }}</td>
+                                    <td>{{ "%.1f"|format(r.water) if r.water is not none else "--" }}</td>
+                                    <td>{{ "%.2f"|format(r.feed) if r.feed is not none else "--" }}</td>
+                                    <td>{{ "%.1f"|format(r.running_water) if r.running_water is not none else "--" }}</td>
+                                    <td>{{ "%.2f"|format(r.running_feed) if r.running_feed is not none else "--" }}</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </details>
                 {% else %}
                 <div class="empty">No completed daily history found for this crop yet.</div>
                 {% endif %}
@@ -6566,11 +6845,15 @@ CROP_REPORTS_HTML = """
     <title>End of Crop Reports</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
+        * {
+            box-sizing: border-box;
+        }
         body {
             margin: 0;
             font-family: Arial, sans-serif;
             background: #5b5b5b;
             color: #ececec;
+            overflow-x: hidden;
         }
         .wrap {
             max-width: 1500px;
@@ -6594,6 +6877,7 @@ CROP_REPORTS_HTML = """
             border: 2px solid #8a8a8a;
             border-radius: 12px;
             padding: 14px;
+            min-width: 0;
         }
         .msg {
             margin-bottom: 14px;
@@ -6610,16 +6894,41 @@ CROP_REPORTS_HTML = """
             border-color: #ff6c6c;
             color: #ffd2d2;
         }
+        .collapse summary {
+            cursor: pointer;
+            list-style: none;
+            padding: 12px 14px;
+            border: 1px solid #8a8a8a;
+            border-radius: 10px;
+            background: #686868;
+            font-weight: 700;
+        }
+        .collapse summary::-webkit-details-marker {
+            display: none;
+        }
+        .collapse[open] summary {
+            margin-bottom: 12px;
+        }
+        .table-wrap {
+            overflow: auto;
+            -webkit-overflow-scrolling: touch;
+            border: 1px solid #818181;
+            border-radius: 10px;
+            background: #686868;
+        }
         table {
             width: 100%;
             border-collapse: collapse;
             font-size: 14px;
+            table-layout: fixed;
         }
         th, td {
             border-bottom: 1px solid #818181;
             padding: 10px 8px;
             text-align: left;
             vertical-align: top;
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
         th { color: #f0f0f0; }
         .actions {
@@ -6659,6 +6968,13 @@ CROP_REPORTS_HTML = """
             color: #d0d0d0;
             word-break: break-all;
         }
+        @media (max-width: 700px) {
+            .wrap { padding: 12px; }
+            h1 { font-size: 24px; }
+            .card { padding: 12px; }
+            .actions a, .actions button { width: 100%; text-align: center; }
+            table { font-size: 13px; }
+        }
     </style>
 </head>
 <body>
@@ -6676,49 +6992,54 @@ CROP_REPORTS_HTML = """
 
         <div class="card">
             {% if rows %}
-            <table>
-                <thead>
-                    <tr>
-                        <th>Crop</th>
-                        <th>Farm</th>
-                        <th>Created</th>
-                        <th>Status</th>
-                        <th>File</th>
-                        <th>Email</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for row in rows %}
-                    <tr>
-                        <td>{{ row.crop_code }}</td>
-                        <td>{{ row.farm_name }}</td>
-                        <td>{{ row.generated_label }}</td>
-                        <td><span class="pill {{ row.status }}">{{ row.status }}</span></td>
-                        <td>
-                            {{ row.report_name }}
-                            {% if row.file_exists and row.report_path %}
-                            <div class="path">{{ row.report_path }}</div>
-                            {% endif %}
-                        </td>
-                        <td>
-                            {% if row.email_sent %}Sent{% else %}Not sent{% endif %}
-                            <div class="path">{{ row.email_message }}</div>
-                        </td>
-                        <td>
-                            <div class="actions">
-                                {% if row.file_exists %}
-                                <a href="{{ url_for('office_crop_report_download', crop_id=row.crop_id) }}">Download XLSX</a>
-                                {% endif %}
-                                <form method="post" action="{{ url_for('office_crop_report_resend', crop_id=row.crop_id) }}">
-                                    <button type="submit">Resend Email</button>
-                                </form>
-                            </div>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+            <details class="collapse" open>
+                <summary>Open crop report table</summary>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Crop</th>
+                                <th>Farm</th>
+                                <th>Created</th>
+                                <th>Status</th>
+                                <th>File</th>
+                                <th>Email</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for row in rows %}
+                            <tr>
+                                <td>{{ row.crop_code }}</td>
+                                <td>{{ row.farm_name }}</td>
+                                <td>{{ row.generated_label }}</td>
+                                <td><span class="pill {{ row.status }}">{{ row.status }}</span></td>
+                                <td>
+                                    {{ row.report_name }}
+                                    {% if row.file_exists and row.report_path %}
+                                    <div class="path">{{ row.report_path }}</div>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if row.email_sent %}Sent{% else %}Not sent{% endif %}
+                                    <div class="path">{{ row.email_message }}</div>
+                                </td>
+                                <td>
+                                    <div class="actions">
+                                        {% if row.file_exists %}
+                                        <a href="{{ url_for('office_crop_report_download', crop_id=row.crop_id) }}">Download XLSX</a>
+                                        {% endif %}
+                                        <form method="post" action="{{ url_for('office_crop_report_resend', crop_id=row.crop_id) }}">
+                                            <button type="submit">Resend Email</button>
+                                        </form>
+                                    </div>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </details>
             {% else %}
             <div class="empty">No end-of-crop reports have been generated yet.</div>
             {% endif %}
@@ -6738,11 +7059,15 @@ PERIOD_HTML = """
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta http-equiv="refresh" content="30">
     <style>
+        * {
+            box-sizing: border-box;
+        }
         body {
             margin: 0;
             font-family: Arial, sans-serif;
             background: #5b5b5b;
             color: #ececec;
+            overflow-x: hidden;
         }
         .wrap {
             max-width: 1850px;
@@ -6783,6 +7108,7 @@ PERIOD_HTML = """
             border: 2px solid #8a8a8a;
             border-radius: 12px;
             padding: 14px;
+            min-width: 0;
         }
         .card h2 {
             margin-top: 0;
@@ -6805,6 +7131,21 @@ PERIOD_HTML = """
         .toolbar button:hover {
             background: #808080;
         }
+        .collapse summary {
+            cursor: pointer;
+            list-style: none;
+            padding: 12px 14px;
+            border: 1px solid #8a8a8a;
+            border-radius: 10px;
+            background: #686868;
+            font-weight: 700;
+        }
+        .collapse summary::-webkit-details-marker {
+            display: none;
+        }
+        .collapse[open] summary {
+            margin-bottom: 12px;
+        }
         .chart-wrap {
             background: #686868;
             border: 1px solid #818181;
@@ -6822,16 +7163,20 @@ PERIOD_HTML = """
             border: 1px solid #818181;
             border-radius: 10px;
             background: #686868;
+            -webkit-overflow-scrolling: touch;
         }
         table {
             width: 100%;
             border-collapse: collapse;
             font-size: 13px;
+            table-layout: fixed;
         }
         th, td {
             border-bottom: 1px solid #818181;
             padding: 8px 6px;
             text-align: left;
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
         th {
             color: #f0f0f0;
@@ -6854,6 +7199,13 @@ PERIOD_HTML = """
         }
         @media (max-width: 1200px) {
             .grid { grid-template-columns: 1fr; }
+        }
+        @media (max-width: 700px) {
+            .wrap { padding: 12px; }
+            h1 { font-size: 24px; }
+            .card { padding: 12px; }
+            .toolbar button { width: 100%; }
+            .chart-box { height: 320px; }
         }
     </style>
 
@@ -6879,30 +7231,33 @@ PERIOD_HTML = """
             <div class="card">
                 <h2>{{ period_title }} list</h2>
                 {% if rows %}
-                <div class="table-wrap">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>{{ first_col }}</th>
-                                <th>Water L</th>
-                                <th>Feed KG</th>
-                                <th>Running Water L</th>
-                                <th>Running Feed KG</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for r in rows %}
-                            <tr>
-                                <td>{{ r.label }}</td>
-                                <td>{{ "%.1f"|format(r.water) if r.water is not none else "--" }}</td>
-                                <td>{{ "%.2f"|format(r.feed) if r.feed is not none else "--" }}</td>
-                                <td>{{ "%.1f"|format(r.running_water) if r.running_water is not none else "--" }}</td>
-                                <td>{{ "%.2f"|format(r.running_feed) if r.running_feed is not none else "--" }}</td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
+                <details class="collapse" open>
+                    <summary>Open {{ period_title|lower }} list</summary>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>{{ first_col }}</th>
+                                    <th>Water L</th>
+                                    <th>Feed KG</th>
+                                    <th>Running Water L</th>
+                                    <th>Running Feed KG</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for r in rows %}
+                                <tr>
+                                    <td>{{ r.label }}</td>
+                                    <td>{{ "%.1f"|format(r.water) if r.water is not none else "--" }}</td>
+                                    <td>{{ "%.2f"|format(r.feed) if r.feed is not none else "--" }}</td>
+                                    <td>{{ "%.1f"|format(r.running_water) if r.running_water is not none else "--" }}</td>
+                                    <td>{{ "%.2f"|format(r.running_feed) if r.running_feed is not none else "--" }}</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </details>
                 {% else %}
                 <div class="empty">No data yet.</div>
                 {% endif %}
@@ -7060,11 +7415,15 @@ BOREHOLE_PERIOD_HTML = """
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta http-equiv="refresh" content="30">
     <style>
+        * {
+            box-sizing: border-box;
+        }
         body {
             margin: 0;
             font-family: Arial, sans-serif;
             background: #5b5b5b;
             color: #ececec;
+            overflow-x: hidden;
         }
         .wrap {
             max-width: 1650px;
@@ -7100,6 +7459,7 @@ BOREHOLE_PERIOD_HTML = """
             border: 2px solid #8a8a8a;
             border-radius: 12px;
             padding: 14px;
+            min-width: 0;
         }
         .card h2 {
             margin-top: 0;
@@ -7122,6 +7482,21 @@ BOREHOLE_PERIOD_HTML = """
         .toolbar button:hover {
             background: #808080;
         }
+        .collapse summary {
+            cursor: pointer;
+            list-style: none;
+            padding: 12px 14px;
+            border: 1px solid #8a8a8a;
+            border-radius: 10px;
+            background: #686868;
+            font-weight: 700;
+        }
+        .collapse summary::-webkit-details-marker {
+            display: none;
+        }
+        .collapse[open] summary {
+            margin-bottom: 12px;
+        }
         .chart-wrap {
             background: #686868;
             border: 1px solid #818181;
@@ -7139,16 +7514,20 @@ BOREHOLE_PERIOD_HTML = """
             border: 1px solid #818181;
             border-radius: 10px;
             background: #686868;
+            -webkit-overflow-scrolling: touch;
         }
         table {
             width: 100%;
             border-collapse: collapse;
             font-size: 13px;
+            table-layout: fixed;
         }
         th, td {
             border-bottom: 1px solid #818181;
             padding: 8px 6px;
             text-align: left;
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
         th {
             color: #f0f0f0;
@@ -7172,6 +7551,13 @@ BOREHOLE_PERIOD_HTML = """
         @media (max-width: 1200px) {
             .grid { grid-template-columns: 1fr; }
         }
+        @media (max-width: 700px) {
+            .wrap { padding: 12px; }
+            h1 { font-size: 24px; }
+            .card { padding: 12px; }
+            .toolbar button { width: 100%; }
+            .chart-box { height: 320px; }
+        }
     </style>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -7192,26 +7578,29 @@ BOREHOLE_PERIOD_HTML = """
             <div class="card">
                 <h2>{{ period_title }} list</h2>
                 {% if rows %}
-                <div class="table-wrap">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>{{ first_col }}</th>
-                                <th>Water L</th>
-                                <th>Running Water L</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for r in rows %}
-                            <tr>
-                                <td>{{ r.label }}</td>
-                                <td>{{ "%.1f"|format(r.water) if r.water is not none else "--" }}</td>
-                                <td>{{ "%.1f"|format(r.running_water) if r.running_water is not none else "--" }}</td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
+                <details class="collapse" open>
+                    <summary>Open {{ period_title|lower }} list</summary>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>{{ first_col }}</th>
+                                    <th>Water L</th>
+                                    <th>Running Water L</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for r in rows %}
+                                <tr>
+                                    <td>{{ r.label }}</td>
+                                    <td>{{ "%.1f"|format(r.water) if r.water is not none else "--" }}</td>
+                                    <td>{{ "%.1f"|format(r.running_water) if r.running_water is not none else "--" }}</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </details>
                 {% else %}
                 <div class="empty">No data yet.</div>
                 {% endif %}
