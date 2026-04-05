@@ -1,5 +1,4 @@
 from flask import Flask, render_template_string, abort, url_for, request, redirect, jsonify, Response, send_file
-import csv
 import json
 import os
 import re
@@ -141,6 +140,14 @@ def service_worker_view():
 def inject_favicon(response):
     try:
         content_type = str(response.headers.get("Content-Type", "")).lower()
+        if (
+            "text/html" in content_type
+            or "application/json" in content_type
+            or "javascript" in content_type
+        ):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
         if "text/html" in content_type and response.direct_passthrough is False:
             body = response.get_data(as_text=True)
             if "<head>" in body and 'rel="icon"' not in body:
@@ -317,67 +324,320 @@ def save_office_config(data):
     write_json_file_atomic(os.path.join(DATA_DIR, "office_config.json"), data if isinstance(data, dict) else {})
 
 
-def office_email_settings_csv_path():
-    return os.path.join(APP_ROOT, "office_email_settings.csv")
+def parse_email_recipients(value):
+    if isinstance(value, list):
+        parts = value
+    else:
+        parts = re.split(r"[,;\n]+", str(value or ""))
+    out = []
+    i = 0
+    while i < len(parts):
+        item = str(parts[i] or "").strip()
+        if item and item not in out:
+            out.append(item)
+        i += 1
+    return out
 
 
-def import_office_email_settings_csv():
-    path = office_email_settings_csv_path()
-    if not os.path.isfile(path):
-        raise FileNotFoundError("Email settings CSV not found at %s" % path)
+def office_email_settings_form_state():
+    cfg = load_office_config()
 
-    with open(path, "r", newline="") as f:
-        rows = [row for row in csv.reader(f) if row and any(str(cell).strip() for cell in row)]
+    def text_value(key, default=""):
+        value = cfg.get(key, default)
+        if value in [None]:
+            value = default
+        return str(value)
 
-    if not rows:
-        raise ValueError("Email settings CSV is empty")
+    def bool_value(key, default=False):
+        value = cfg.get(key)
+        if value in [None, ""]:
+            return bool(default)
+        return str(value).strip().lower() not in ["0", "false", "no", "off"]
 
-    # Allow a simple title row like "office_email_settings" above the real header.
-    if len(rows[0]) == 1 and str(rows[0][0]).strip().lower() == "office_email_settings":
-        rows = rows[1:]
+    return {
+        "report_email_enabled": bool_value("report_email_enabled", True),
+        "report_recipients": parse_email_recipients(cfg.get("report_email_to", "")),
+        "report_email_from": text_value("report_email_from", ""),
+        "report_smtp_host": text_value("report_smtp_host", ""),
+        "report_smtp_port": text_value("report_smtp_port", "587"),
+        "report_smtp_username": text_value("report_smtp_username", ""),
+        "report_smtp_password": text_value("report_smtp_password", ""),
+        "report_smtp_use_tls": bool_value("report_smtp_use_tls", True),
+        "report_smtp_use_ssl": bool_value("report_smtp_use_ssl", False),
+    }
 
-    if len(rows) < 2:
-        raise ValueError("Email settings CSV must contain a header row and one values row")
 
-    headers = [str(cell).strip() for cell in rows[0]]
-    values = rows[1]
-    allowed_keys = {
-        "report_email_enabled",
-        "report_email_to",
+def save_office_email_settings_from_form(form):
+    cfg = load_office_config()
+
+    text_keys = [
         "report_email_from",
         "report_smtp_host",
         "report_smtp_port",
         "report_smtp_username",
         "report_smtp_password",
+    ]
+    bool_keys = [
+        "report_email_enabled",
         "report_smtp_use_tls",
         "report_smtp_use_ssl",
-        "crop_report_email_to",
-        "crop_report_email_enabled",
-        "crop_report_email_from",
-        "crop_report_smtp_host",
-        "crop_report_smtp_port",
-        "crop_report_smtp_username",
-        "crop_report_smtp_password",
-        "crop_report_smtp_use_tls",
-        "crop_report_smtp_use_ssl",
-    }
+    ]
 
-    updates = {}
     i = 0
-    while i < len(headers):
-        key = headers[i]
-        if key in allowed_keys:
-            value = values[i] if i < len(values) else ""
-            updates[key] = str(value).strip()
+    while i < len(text_keys):
+        key = text_keys[i]
+        cfg[key] = str(form.get(key, "") or "").strip()
         i += 1
 
-    if not updates:
-        raise ValueError("No recognised email settings columns were found in the CSV")
+    i = 0
+    while i < len(bool_keys):
+        key = bool_keys[i]
+        cfg[key] = "1" if str(form.get(key, "") or "").strip().lower() in ["1", "true", "yes", "on"] else "0"
+        i += 1
 
-    cfg = load_office_config()
-    cfg.update(updates)
+    if not cfg.get("report_smtp_port"):
+        cfg["report_smtp_port"] = "587"
+
     save_office_config(cfg)
-    return updates
+
+
+def add_office_email_recipient(value):
+    recipient = str(value or "").strip()
+    if not recipient:
+        raise ValueError("Recipient email is required")
+    if "@" not in recipient or " " in recipient:
+        raise ValueError("Enter a valid recipient email address")
+    cfg = load_office_config()
+    recipients = parse_email_recipients(cfg.get("report_email_to", ""))
+    if recipient not in recipients:
+        recipients.append(recipient)
+    cfg["report_email_to"] = "\n".join(recipients)
+    save_office_config(cfg)
+
+
+def remove_office_email_recipient(value):
+    recipient = str(value or "").strip()
+    cfg = load_office_config()
+    recipients = parse_email_recipients(cfg.get("report_email_to", ""))
+    recipients = [item for item in recipients if item != recipient]
+    cfg["report_email_to"] = "\n".join(recipients)
+    save_office_config(cfg)
+
+
+DEFAULT_ENVIRONMENT_LIMITS = {
+    "temp_low_c": 18.0,
+    "temp_high_c": 24.0,
+    "temp_amber_margin_c": 1.0,
+    "rh_low_pct": 40.0,
+    "rh_high_pct": 80.0,
+    "rh_amber_margin_pct": 5.0,
+    "water_low_lpm": 0.1,
+    "water_amber_buffer_lpm": 0.05,
+    "feed_low_kg": 2000.0,
+    "feed_amber_buffer_kg": 500.0,
+}
+
+
+def parse_env_limit_value(value, default):
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def clean_environment_limits(raw):
+    raw = raw if isinstance(raw, dict) else {}
+    out = {}
+    for key, default in DEFAULT_ENVIRONMENT_LIMITS.items():
+        out[key] = parse_env_limit_value(raw.get(key), default)
+    if out["temp_low_c"] >= out["temp_high_c"]:
+        out["temp_low_c"] = DEFAULT_ENVIRONMENT_LIMITS["temp_low_c"]
+        out["temp_high_c"] = DEFAULT_ENVIRONMENT_LIMITS["temp_high_c"]
+    if out["temp_amber_margin_c"] < 0:
+        out["temp_amber_margin_c"] = DEFAULT_ENVIRONMENT_LIMITS["temp_amber_margin_c"]
+    if out["rh_low_pct"] >= out["rh_high_pct"]:
+        out["rh_low_pct"] = DEFAULT_ENVIRONMENT_LIMITS["rh_low_pct"]
+        out["rh_high_pct"] = DEFAULT_ENVIRONMENT_LIMITS["rh_high_pct"]
+    if out["rh_amber_margin_pct"] < 0:
+        out["rh_amber_margin_pct"] = DEFAULT_ENVIRONMENT_LIMITS["rh_amber_margin_pct"]
+    if out["water_low_lpm"] < 0:
+        out["water_low_lpm"] = DEFAULT_ENVIRONMENT_LIMITS["water_low_lpm"]
+    if out["water_amber_buffer_lpm"] < 0:
+        out["water_amber_buffer_lpm"] = DEFAULT_ENVIRONMENT_LIMITS["water_amber_buffer_lpm"]
+    if out["feed_low_kg"] < 0:
+        out["feed_low_kg"] = DEFAULT_ENVIRONMENT_LIMITS["feed_low_kg"]
+    if out["feed_amber_buffer_kg"] < 0:
+        out["feed_amber_buffer_kg"] = DEFAULT_ENVIRONMENT_LIMITS["feed_amber_buffer_kg"]
+    return out
+
+
+def controller_environment_limits(meta):
+    meta = meta if isinstance(meta, dict) else {}
+    return clean_environment_limits({
+        "temp_low_c": meta.get("temp_low_c"),
+        "temp_high_c": meta.get("temp_high_c"),
+        "temp_amber_margin_c": meta.get("temp_amber_margin_c"),
+        "rh_low_pct": meta.get("rh_low_pct"),
+        "rh_high_pct": meta.get("rh_high_pct"),
+        "rh_amber_margin_pct": meta.get("rh_amber_margin_pct"),
+        "water_low_lpm": meta.get("water_low_lpm"),
+        "water_amber_buffer_lpm": meta.get("water_amber_buffer_lpm"),
+        "feed_low_kg": meta.get("feed_low_kg"),
+        "feed_amber_buffer_kg": meta.get("feed_amber_buffer_kg"),
+    })
+
+
+def office_environment_limits_map():
+    cfg = load_office_config()
+    raw = cfg.get("shed_environment_limits", {})
+    out = {}
+    if not isinstance(raw, dict):
+        return out
+    for key, value in raw.items():
+        try:
+            shed_no = int(key)
+        except Exception:
+            continue
+        out[str(shed_no)] = clean_environment_limits(value)
+    return out
+
+
+def environment_limits_for_shed(shed_no, office_limits_map=None, controller_meta=None):
+    office_limits_map = office_limits_map if isinstance(office_limits_map, dict) else office_environment_limits_map()
+    shed_key = str(int(shed_no))
+    if shed_key in office_limits_map:
+        return clean_environment_limits(office_limits_map.get(shed_key))
+    return controller_environment_limits(controller_meta)
+
+
+def office_environment_settings_rows(controller_meta=None):
+    controller_meta = controller_meta if isinstance(controller_meta, dict) else load_controller_meta()
+    office_limits = office_environment_limits_map()
+    rows = []
+    i = 0
+    while i < len(SHED_NUMBERS):
+        shed_no = SHED_NUMBERS[i]
+        meta = controller_meta.get(str(int(shed_no)), {}) if isinstance(controller_meta, dict) else {}
+        limits = environment_limits_for_shed(shed_no, office_limits, meta)
+        rows.append({
+            "shed_no": shed_no,
+            "temp_low_c": fmt_value(limits.get("temp_low_c"), "f1"),
+            "temp_high_c": fmt_value(limits.get("temp_high_c"), "f1"),
+            "temp_amber_margin_c": fmt_value(limits.get("temp_amber_margin_c"), "f1"),
+            "rh_low_pct": fmt_value(limits.get("rh_low_pct"), "f0"),
+            "rh_high_pct": fmt_value(limits.get("rh_high_pct"), "f0"),
+            "rh_amber_margin_pct": fmt_value(limits.get("rh_amber_margin_pct"), "f0"),
+            "water_low_lpm": fmt_value(limits.get("water_low_lpm"), "f2"),
+            "water_amber_buffer_lpm": fmt_value(limits.get("water_amber_buffer_lpm"), "f2"),
+            "feed_low_kg": fmt_value(limits.get("feed_low_kg"), "f0"),
+            "feed_amber_buffer_kg": fmt_value(limits.get("feed_amber_buffer_kg"), "f0"),
+        })
+        i += 1
+    return rows
+
+
+def office_environment_settings_row_for_shed(shed_no, controller_meta=None):
+    if shed_no not in SHED_NUMBERS:
+        return None
+    controller_meta = controller_meta if isinstance(controller_meta, dict) else load_controller_meta()
+    meta = controller_meta.get(str(int(shed_no)), {}) if isinstance(controller_meta, dict) else {}
+    limits = environment_limits_for_shed(shed_no, office_environment_limits_map(), meta)
+    return {
+        "shed_no": shed_no,
+        "temp_low_c": fmt_value(limits.get("temp_low_c"), "f1"),
+        "temp_high_c": fmt_value(limits.get("temp_high_c"), "f1"),
+        "temp_amber_margin_c": fmt_value(limits.get("temp_amber_margin_c"), "f1"),
+        "rh_low_pct": fmt_value(limits.get("rh_low_pct"), "f0"),
+        "rh_high_pct": fmt_value(limits.get("rh_high_pct"), "f0"),
+        "rh_amber_margin_pct": fmt_value(limits.get("rh_amber_margin_pct"), "f0"),
+        "water_low_lpm": fmt_value(limits.get("water_low_lpm"), "f2"),
+        "water_amber_buffer_lpm": fmt_value(limits.get("water_amber_buffer_lpm"), "f2"),
+        "feed_low_kg": fmt_value(limits.get("feed_low_kg"), "f0"),
+        "feed_amber_buffer_kg": fmt_value(limits.get("feed_amber_buffer_kg"), "f0"),
+    }
+
+
+def save_office_environment_settings_from_form(form):
+    cfg = load_office_config()
+    out = {}
+    i = 0
+    while i < len(SHED_NUMBERS):
+        shed_no = SHED_NUMBERS[i]
+        low_key = "shed_%d_temp_low_c" % shed_no
+        high_key = "shed_%d_temp_high_c" % shed_no
+        rh_low_key = "shed_%d_rh_low_pct" % shed_no
+        rh_high_key = "shed_%d_rh_high_pct" % shed_no
+        water_low_key = "shed_%d_water_low_lpm" % shed_no
+        feed_low_key = "shed_%d_feed_low_kg" % shed_no
+        temp_amber_key = "shed_%d_temp_amber_margin_c" % shed_no
+        rh_amber_key = "shed_%d_rh_amber_margin_pct" % shed_no
+        water_amber_key = "shed_%d_water_amber_buffer_lpm" % shed_no
+        feed_amber_key = "shed_%d_feed_amber_buffer_kg" % shed_no
+        limits = clean_environment_limits({
+            "temp_low_c": form.get(low_key, DEFAULT_ENVIRONMENT_LIMITS["temp_low_c"]),
+            "temp_high_c": form.get(high_key, DEFAULT_ENVIRONMENT_LIMITS["temp_high_c"]),
+            "temp_amber_margin_c": form.get(temp_amber_key, DEFAULT_ENVIRONMENT_LIMITS["temp_amber_margin_c"]),
+            "rh_low_pct": form.get(rh_low_key, DEFAULT_ENVIRONMENT_LIMITS["rh_low_pct"]),
+            "rh_high_pct": form.get(rh_high_key, DEFAULT_ENVIRONMENT_LIMITS["rh_high_pct"]),
+            "rh_amber_margin_pct": form.get(rh_amber_key, DEFAULT_ENVIRONMENT_LIMITS["rh_amber_margin_pct"]),
+            "water_low_lpm": form.get(water_low_key, DEFAULT_ENVIRONMENT_LIMITS["water_low_lpm"]),
+            "water_amber_buffer_lpm": form.get(water_amber_key, DEFAULT_ENVIRONMENT_LIMITS["water_amber_buffer_lpm"]),
+            "feed_low_kg": form.get(feed_low_key, DEFAULT_ENVIRONMENT_LIMITS["feed_low_kg"]),
+            "feed_amber_buffer_kg": form.get(feed_amber_key, DEFAULT_ENVIRONMENT_LIMITS["feed_amber_buffer_kg"]),
+        })
+        out[str(shed_no)] = limits
+        i += 1
+    cfg["shed_environment_limits"] = out
+    save_office_config(cfg)
+
+
+def save_office_environment_settings_for_shed(shed_no, form):
+    if shed_no not in SHED_NUMBERS:
+        raise ValueError("Invalid shed number")
+    cfg = load_office_config()
+    raw = cfg.get("shed_environment_limits", {})
+    if not isinstance(raw, dict):
+        raw = {}
+    raw[str(shed_no)] = clean_environment_limits({
+        "temp_low_c": form.get("temp_low_c", DEFAULT_ENVIRONMENT_LIMITS["temp_low_c"]),
+        "temp_high_c": form.get("temp_high_c", DEFAULT_ENVIRONMENT_LIMITS["temp_high_c"]),
+        "temp_amber_margin_c": form.get("temp_amber_margin_c", DEFAULT_ENVIRONMENT_LIMITS["temp_amber_margin_c"]),
+        "rh_low_pct": form.get("rh_low_pct", DEFAULT_ENVIRONMENT_LIMITS["rh_low_pct"]),
+        "rh_high_pct": form.get("rh_high_pct", DEFAULT_ENVIRONMENT_LIMITS["rh_high_pct"]),
+        "rh_amber_margin_pct": form.get("rh_amber_margin_pct", DEFAULT_ENVIRONMENT_LIMITS["rh_amber_margin_pct"]),
+        "water_low_lpm": form.get("water_low_lpm", DEFAULT_ENVIRONMENT_LIMITS["water_low_lpm"]),
+        "water_amber_buffer_lpm": form.get("water_amber_buffer_lpm", DEFAULT_ENVIRONMENT_LIMITS["water_amber_buffer_lpm"]),
+        "feed_low_kg": form.get("feed_low_kg", DEFAULT_ENVIRONMENT_LIMITS["feed_low_kg"]),
+        "feed_amber_buffer_kg": form.get("feed_amber_buffer_kg", DEFAULT_ENVIRONMENT_LIMITS["feed_amber_buffer_kg"]),
+    })
+    cfg["shed_environment_limits"] = raw
+    save_office_config(cfg)
+
+
+def range_glow_class(value, low, high, warn_margin, prefix="env"):
+    try:
+        value_f = float(value)
+    except Exception:
+        return "%s-red" % prefix
+    if value_f < float(low) or value_f > float(high):
+        return "%s-red" % prefix
+    if abs(value_f - float(low)) <= float(warn_margin) or abs(value_f - float(high)) <= float(warn_margin):
+        return "%s-warn" % prefix
+    return "%s-green" % prefix
+
+
+def low_threshold_glow_class(value, low, amber_buffer, prefix):
+    try:
+        value_f = float(value)
+    except Exception:
+        return "%s-red" % prefix
+    low_f = float(low)
+    amber_top = low_f + max(0.0, float(amber_buffer))
+    if value_f < low_f:
+        return "%s-red" % prefix
+    if value_f <= amber_top:
+        return "%s-warn" % prefix
+    return "%s-green" % prefix
 
 
 def crop_reports_root():
@@ -671,6 +931,7 @@ def get_office_git_status():
     return {
         "ok": True,
         "branch": branch_out or "main",
+        "local_commit_full": local_out or "--",
         "local_commit": local_out[:7] if local_out else "--",
     }
 
@@ -701,8 +962,10 @@ def check_office_update():
         save_office_update_status(status)
         return status
 
-    status["remote_commit"] = remote_out[:7] if remote_out else "--"
-    status["update_available"] = remote_out != local["local_commit"]
+    remote_full = remote_out or "--"
+    local_full = local.get("local_commit_full", "--")
+    status["remote_commit"] = remote_full[:7] if remote_full and remote_full != "--" else "--"
+    status["update_available"] = bool(remote_full and local_full and remote_full != local_full)
     status["status"] = "Update available" if status["update_available"] else "Up to date"
     save_office_update_status(status)
     return status
@@ -1064,9 +1327,22 @@ def clean_controller_meta(meta):
     out = {
         "temp_c": meta.get("temp_c"),
         "rh_pct": meta.get("rh_pct"),
+        "temp_low_c": meta.get("temp_low_c"),
+        "temp_high_c": meta.get("temp_high_c"),
+        "temp_amber_margin_c": meta.get("temp_amber_margin_c"),
+        "rh_low_pct": meta.get("rh_low_pct"),
+        "rh_high_pct": meta.get("rh_high_pct"),
+        "rh_amber_margin_pct": meta.get("rh_amber_margin_pct"),
         "water_lpm": meta.get("water_lpm"),
+        "water_low_lpm": meta.get("water_low_lpm"),
+        "water_amber_buffer_lpm": meta.get("water_amber_buffer_lpm"),
         "water_total_litres": meta.get("water_total_litres"),
         "feed_kg": meta.get("feed_kg"),
+        "feed_low_kg": meta.get("feed_low_kg"),
+        "feed_amber_buffer_kg": meta.get("feed_amber_buffer_kg"),
+        "feed_daily_burn_kg": meta.get("feed_daily_burn_kg"),
+        "last_feed_delivery_ts": meta.get("last_feed_delivery_ts"),
+        "last_feed_delivery_kg": meta.get("last_feed_delivery_kg"),
         "last_sensor_ts": meta.get("last_sensor_ts"),
         "device_status": meta.get("device_status"),
         "pico_connected": bool(meta.get("pico_connected", False)),
@@ -1605,6 +1881,84 @@ def move_mortality_history_between_sheds(from_shed_name, to_shed_name, dest_shed
     if changed > 0:
         write_named_json_lines_atomic("mortality.ndjson", rows)
     return changed
+
+
+def feed_delivery_exists(shed_name, delivery_ts, delivery_kg):
+    rows = read_all_json_lines("feed_deliveries.ndjson")
+    i = 0
+    while i < len(rows):
+        rec = rows[i]
+        if str(rec.get("shed")) != str(shed_name):
+            i += 1
+            continue
+        try:
+            same_ts = int(rec.get("ts")) == int(delivery_ts)
+        except Exception:
+            same_ts = False
+        try:
+            same_kg = round(float(rec.get("delivery_kg") or 0.0), 1) == round(float(delivery_kg or 0.0), 1)
+        except Exception:
+            same_kg = False
+        if same_ts and same_kg:
+            return True
+        i += 1
+    return False
+
+
+def log_feed_delivery_event(shed_name, shed_no, delivery_ts, delivery_kg, crop_id=None, source="controller_auto"):
+    if delivery_ts in [None, ""] or delivery_kg in [None, ""]:
+        return False
+    try:
+        delivery_ts = int(delivery_ts)
+        delivery_kg = round(float(delivery_kg), 1)
+    except Exception:
+        return False
+    if delivery_kg <= 0:
+        return False
+    if feed_delivery_exists(shed_name, delivery_ts, delivery_kg):
+        return False
+    append_named_json_line("feed_deliveries.ndjson", {
+        "ts": delivery_ts,
+        "shed": str(shed_name),
+        "shed_no": int(shed_no),
+        "crop_id": None if crop_id in [None, ""] else int(crop_id),
+        "delivery_kg": delivery_kg,
+        "source": str(source or "controller_auto"),
+    })
+    return True
+
+
+def get_feed_delivery_history_for_shed(shed_name, crop_id=None, max_rows=50):
+    rows = read_all_json_lines("feed_deliveries.ndjson")
+    out = []
+    i = 0
+    while i < len(rows):
+        rec = rows[i]
+        if str(rec.get("shed")) != str(shed_name):
+            i += 1
+            continue
+        if crop_id not in [None, ""]:
+            try:
+                if int(rec.get("crop_id")) != int(crop_id):
+                    i += 1
+                    continue
+            except Exception:
+                i += 1
+                continue
+        out.append(rec)
+        i += 1
+    out.sort(key=lambda r: int(r.get("ts", 0)), reverse=True)
+    if max_rows and len(out) > max_rows:
+        out = out[:max_rows]
+    j = 0
+    while j < len(out):
+        try:
+            out[j]["ts_label"] = datetime.fromtimestamp(int(out[j].get("ts"))).strftime("%d %b %Y %H:%M")
+        except Exception:
+            out[j]["ts_label"] = "--"
+        out[j]["delivery_kg_label"] = fmt_value(out[j].get("delivery_kg"), "f1")
+        j += 1
+    return out
 
 
 def normalize_pens(pens):
@@ -3591,13 +3945,6 @@ def build_detail_entry_rows(current_shed_no, entries):
                 placement_str = "--"
 
         can_move = (dest_shed != current_shed_no) and crop_active == 1 and bird_count > 0
-        pens = normalize_pens(rec.get("pens", []))
-        pens_parts = []
-        p = 0
-        while p < len(pens):
-            pens_parts.append("%s: %s" % (pens[p]["name"], fmt_value(pens[p]["bird_count"], "i")))
-            p += 1
-
         rows.append({
             "dest_shed": dest_shed,
             "bird_count": bird_count,
@@ -3606,7 +3953,6 @@ def build_detail_entry_rows(current_shed_no, entries):
             "placement_str": placement_str,
             "crop_id": rec.get("crop_id"),
             "crop_code": fmt_crop_code(rec.get("crop_id"), placement_epoch),
-            "pens_text": ", ".join(pens_parts),
             "can_move": can_move,
         })
         i += 1
@@ -3788,6 +4134,7 @@ def build_rows():
     live_map = latest_live_by_shed()
     alarms_map = active_alarms_by_shed()
     controller_meta_map = load_controller_meta()
+    office_env_limits_map = office_environment_limits_map()
     state = load_shed_entries_state()
     farm_crop = load_farm_crop()
     current_farm_crop_id = farm_crop.get("current_crop_id")
@@ -3878,7 +4225,6 @@ def build_rows():
 
         l_per_bird_yday = None
         kg_per_bird_yday = None
-        avg_feed_per_bird = None
 
         if birds > 0 and yesterday_water is not None:
             try:
@@ -3892,17 +4238,27 @@ def build_rows():
             except Exception:
                 kg_per_bird_yday = None
 
-        if birds > 0 and avg_feed_day_kg is not None:
-            try:
-                avg_feed_per_bird = float(avg_feed_day_kg) / float(birds)
-            except Exception:
-                avg_feed_per_bird = None
-
         temp_c = live.get("temp_c")
         rh_pct = live.get("rh_pct")
         feed_kg = live.get("feed_kg")
         updated_ts = live.get("ts")
         water_lpm = live.get("water_lpm")
+
+        env_limits = environment_limits_for_shed(shed_no, office_env_limits_map, controller_meta)
+        temp_glow = range_glow_class(
+            temp_c,
+            env_limits["temp_low_c"],
+            env_limits["temp_high_c"],
+            env_limits["temp_amber_margin_c"],
+            prefix="env",
+        )
+        rh_glow = range_glow_class(
+            rh_pct,
+            env_limits["rh_low_pct"],
+            env_limits["rh_high_pct"],
+            env_limits["rh_amber_margin_pct"],
+            prefix="env",
+        )
 
         alarm_active = len(alarms) > 0
         alarm_key = alarms[0].get("alarm_key", "") if alarm_active else ""
@@ -3913,17 +4269,24 @@ def build_rows():
         except Exception:
             water_lpm_f = None
 
-        water_glow = "flow-red" if (water_lpm_f is None or water_lpm_f < 0.1) else "flow-green"
+        water_glow = low_threshold_glow_class(
+            water_lpm_f,
+            env_limits["water_low_lpm"],
+            env_limits["water_amber_buffer_lpm"],
+            "flow",
+        )
 
         try:
             feed_val = float(feed_kg) if feed_kg is not None else None
         except Exception:
             feed_val = None
 
-        if feed_val is None or feed_val < 2000:
-            feed_glow = "feed-red"
-        else:
-            feed_glow = "feed-green"
+        feed_glow = low_threshold_glow_class(
+            feed_val,
+            env_limits["feed_low_kg"],
+            env_limits["feed_amber_buffer_kg"],
+            "feed",
+        )
 
         if bool(live) or has_active_entry:
             tile_state = "online"
@@ -3943,7 +4306,10 @@ def build_rows():
         else:
             updated_str = "--"
 
-        runout_est = estimate_runout_from_average(feed_kg, avg_feed_day_kg)
+        avg_feed_for_runout = controller_meta.get("feed_daily_burn_kg")
+        if avg_feed_for_runout in [None, ""]:
+            avg_feed_for_runout = avg_feed_day_kg
+        runout_est = estimate_runout_from_average(feed_kg, avg_feed_for_runout)
         received_ts = controller_meta.get("received_ts")
         try:
             sync_age = int(time.time()) - int(received_ts) if received_ts not in [None, ""] else None
@@ -3967,7 +4333,9 @@ def build_rows():
             "tile_state": tile_state,
             "card_state": card_state,
             "temp_c": fmt_value(temp_c, "f1"),
+            "temp_glow": temp_glow,
             "rh_pct": fmt_value(rh_pct, "f0"),
+            "rh_glow": rh_glow,
             "feed_kg": fmt_value(feed_kg, "f0"),
             "feed_glow": feed_glow,
             "water_lpm": fmt_value(water_lpm, "f2"),
@@ -3982,7 +4350,6 @@ def build_rows():
             "feed_7to7": fmt_value(yesterday_feed, "f1"),
             "l_per_bird": fmt_value(l_per_bird_yday, "f3"),
             "kg_per_bird": fmt_value(kg_per_bird_yday, "f3"),
-            "avg_feed_per_bird": fmt_value(avg_feed_per_bird, "f3"),
             "runout_est": runout_est,
             "updated": updated_str,
             "alarm_active": alarm_active,
@@ -4108,6 +4475,8 @@ HTML = """
             align-items: center;
             gap: 8px;
             min-width: 0;
+            max-width: 100%;
+            box-sizing: border-box;
             overflow-wrap: anywhere;
             word-break: break-word;
             white-space: normal;
@@ -4402,6 +4771,28 @@ HTML = """
             grid-template-columns: 1fr 1fr 1fr;
             gap: 6px 8px;
         }
+        .metric-columns {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+        .metric-stack {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 6px 8px;
+            min-width: 0;
+        }
+        .metric-water { order: 0; }
+        .metric-feed { order: 0; }
+        .metric-neutral { order: 0; }
+        .metric-runout { order: 0; }
+        .metric-mortality { order: 0; }
+        .metric-water-daily { order: 0; }
+        .metric-feed-daily { order: 0; }
+        .metric-water-bird { order: 0; }
+        .metric-feed-bird { order: 0; }
+        .metric-water-total { order: 0; }
+        .metric-feed-total { order: 0; }
         .metric-grid-2 {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -4441,6 +4832,13 @@ HTML = """
                 0 0 20px rgba(53,208,127,0.65),
                 0 0 34px rgba(53,208,127,0.35);
         }
+        .flow-warn {
+            border: 2px solid #ffd06a;
+            box-shadow:
+                0 0 10px rgba(255,208,106,0.95),
+                0 0 20px rgba(255,208,106,0.55),
+                0 0 34px rgba(255,208,106,0.25);
+        }
         .flow-red {
             border: 2px solid #ff5b5b;
             box-shadow:
@@ -4455,7 +4853,35 @@ HTML = """
                 0 0 20px rgba(53,208,127,0.65),
                 0 0 34px rgba(53,208,127,0.35);
         }
+        .feed-warn {
+            border: 2px solid #ffd06a;
+            box-shadow:
+                0 0 10px rgba(255,208,106,0.95),
+                0 0 20px rgba(255,208,106,0.55),
+                0 0 34px rgba(255,208,106,0.25);
+        }
         .feed-red {
+            border: 2px solid #ff5b5b;
+            box-shadow:
+                0 0 10px rgba(255,91,91,0.95),
+                0 0 20px rgba(255,91,91,0.65),
+                0 0 34px rgba(255,91,91,0.35);
+        }
+        .env-green {
+            border: 2px solid #35d07f;
+            box-shadow:
+                0 0 10px rgba(53,208,127,0.95),
+                0 0 20px rgba(53,208,127,0.65),
+                0 0 34px rgba(53,208,127,0.35);
+        }
+        .env-warn {
+            border: 2px solid #ffd06a;
+            box-shadow:
+                0 0 10px rgba(255,208,106,0.95),
+                0 0 20px rgba(255,208,106,0.65),
+                0 0 34px rgba(255,208,106,0.35);
+        }
+        .env-red {
             border: 2px solid #ff5b5b;
             box-shadow:
                 0 0 10px rgba(255,91,91,0.95),
@@ -4482,6 +4908,28 @@ HTML = """
             overflow-wrap: anywhere;
             word-break: break-word;
             text-align: right;
+        }
+        .meta-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+        .meta-grid .row {
+            margin: 0;
+            justify-content: flex-start;
+            align-items: center;
+            gap: 6px;
+        }
+        .meta-grid .label,
+        .meta-grid .row span:last-child {
+            white-space: nowrap;
+        }
+        .meta-grid .label {
+            min-width: 0;
+            flex: 0 0 auto;
+        }
+        .meta-grid .row span:last-child {
+            text-align: left;
         }
         .alarmbox {
             margin-top: 8px;
@@ -4597,7 +5045,11 @@ HTML = """
             .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
             .topbar { grid-template-columns: 1fr; }
             .topbar-left, .topbar-center, .topbar-right { justify-self: center; width: 100%; }
-            .topbar-left { order: 1; }
+            .topbar-left {
+                order: 1;
+                justify-content: center;
+                text-align: center;
+            }
             .topbar-right {
                 order: 2;
                 display: flex;
@@ -4607,18 +5059,39 @@ HTML = """
                 gap: 6px;
             }
             .topbar-center { order: 3; }
-            .topbar-actions { justify-content: center; gap: 8px; }
+            h1 { text-align: center; width: 100%; }
+            .topbar-actions {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                width: 100%;
+                gap: 8px;
+            }
             .access-ip { text-align: center; margin-top: 0; }
-            .settings-link { width: 100%; justify-content: center; }
+            .settings-link {
+                width: 100%;
+                justify-content: center;
+                text-align: center;
+                font-size: 12px;
+                padding: 7px 8px;
+            }
             .card { min-height: 0; padding: 8px; }
-            .head { flex-direction: column; align-items: stretch; }
-            .badge-wrap { align-items: flex-start; flex-direction: row; flex-wrap: wrap; }
+            .head { flex-direction: row; align-items: flex-start; }
+            .head-left { min-width: 0; flex: 1 1 auto; }
+            .badge-wrap {
+                align-items: flex-end;
+                flex-direction: column;
+                flex-wrap: nowrap;
+                justify-content: flex-start;
+                align-self: flex-start;
+                margin-left: auto;
+            }
             .shed { font-size: 20px; }
             .birds-top, .alloc-top { font-size: 12px; }
             .topline { gap: 8px; }
             .mini-val { font-size: 18px; }
             .big-pair { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; }
             .metric-grid { grid-template-columns: 1fr 1fr; }
+            .metric-columns { grid-template-columns: 1fr 1fr; gap: 6px; }
             .metric-grid-2 { grid-template-columns: 1fr; }
             .metric-big .metric-label { font-size: 11px; }
             .metric-big .metric-val { font-size: 26px; }
@@ -4626,6 +5099,19 @@ HTML = """
             .row { flex-direction: column; gap: 2px; }
             .label { min-width: 0; }
             .row span:last-child { text-align: left; }
+            .meta-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
+            .meta-grid .row {
+                flex-direction: row;
+                align-items: center;
+                justify-content: flex-start;
+                gap: 6px;
+                font-size: 12px;
+            }
+            .meta-grid .row span:last-child {
+                text-align: left;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
             .summary-title { font-size: 20px; }
             .summary-box { padding: 8px 10px; }
             .summary-label { font-size: 10px; }
@@ -4642,9 +5128,7 @@ HTML = """
             </div>
             <div class="topbar-center">
                 <div class="topbar-actions">
-                    <button id="notifyToggle" class="settings-link" type="button">🔔 Notifications</button>
                     <a class="settings-link" href="{{ url_for('office_farm_health_view') }}">⚕ Farm Health</a>
-                    <a class="settings-link" href="{{ url_for('office_crop_reports_view') }}">🧾 Crop Reports</a>
                     <a class="settings-link" href="{{ url_for('office_settings_view') }}">⚙ Settings</a>
                 </div>
             </div>
@@ -4653,7 +5137,6 @@ HTML = """
                 <div class="access-ip">This device: {{ host_ips }}</div>
             </div>
         </div>
-        <div id="notifyStatus" class="notify-status"></div>
 
         <div class="grid">
             {% for s in sheds %}
@@ -4688,14 +5171,14 @@ HTML = """
                         </div>
                     </div>
 
-                    <div class="topline">
-                        <div class="mini">
-                            <div class="mini-label">Temp</div>
-                            <div id="shed-temp-{{ s.shed_no }}" class="mini-val">{{ s.temp_c }}</div>
+                    <div class="big-pair">
+                        <div id="shed-temp-tile-{{ s.shed_no }}" class="metric metric-big {% if s.temp_glow %}{{ s.temp_glow }}{% endif %}">
+                            <div class="metric-label">Temp C</div>
+                            <div id="shed-temp-{{ s.shed_no }}" class="metric-val">{{ s.temp_c }}</div>
                         </div>
-                        <div class="mini">
-                            <div class="mini-label">RH</div>
-                            <div id="shed-rh-{{ s.shed_no }}" class="mini-val">{{ s.rh_pct }}</div>
+                        <div id="shed-rh-tile-{{ s.shed_no }}" class="metric metric-big {% if s.rh_glow %}{{ s.rh_glow }}{% endif %}">
+                            <div class="metric-label">RH %</div>
+                            <div id="shed-rh-{{ s.shed_no }}" class="metric-val">{{ s.rh_pct }}</div>
                         </div>
                     </div>
 
@@ -4711,49 +5194,51 @@ HTML = """
                     </div>
 
                     <div class="section">
-                        <div class="metric-grid">
-                            <div class="metric">
-                                <div class="metric-label">Water L 7am-7am</div>
-                                <div id="shed-water7-{{ s.shed_no }}" class="metric-val">{{ s.water_7to7 }}</div>
+                        <div class="metric-columns">
+                            <div class="metric-stack">
+                                <div class="metric metric-water metric-water-daily">
+                                    <div class="metric-label">Water L 7am-7am</div>
+                                    <div id="shed-water7-{{ s.shed_no }}" class="metric-val">{{ s.water_7to7 }}</div>
+                                </div>
+                                <div class="metric metric-water metric-water-bird">
+                                    <div class="metric-label">L/bird yesterday</div>
+                                    <div class="metric-val">{{ s.l_per_bird }}</div>
+                                </div>
+                                <div class="metric metric-water metric-water-total">
+                                    <div class="metric-label">Water Total L</div>
+                                    <div class="metric-val">{{ s.total_water_to_date }}</div>
+                                </div>
+                                <div class="metric metric-neutral metric-mortality">
+                                    <div class="metric-label">Mortality</div>
+                                    <div id="shed-mortality-{{ s.shed_no }}" class="metric-val">{{ s.mortality_display }}</div>
+                                </div>
                             </div>
-                            <div class="metric">
-                                <div class="metric-label">Feed KG 7am-7am</div>
-                                <div id="shed-feed7-{{ s.shed_no }}" class="metric-val">{{ s.feed_7to7 }}</div>
-                            </div>
-                            <div class="metric">
-                                <div class="metric-label">Estimated Run Out</div>
-                                <div class="metric-val">{{ s.runout_est }}</div>
-                            </div>
-                            <div class="metric">
-                                <div class="metric-label">L/bird yesterday</div>
-                                <div class="metric-val">{{ s.l_per_bird }}</div>
-                            </div>
-                            <div class="metric">
-                                <div class="metric-label">KG/bird yesterday</div>
-                                <div class="metric-val">{{ s.kg_per_bird }}</div>
-                            </div>
-                            <div class="metric">
-                                <div class="metric-label">Avg KG Feed/Bird/Day</div>
-                                <div class="metric-val">{{ s.avg_feed_per_bird }}</div>
-                            </div>
-                            <div class="metric">
-                                <div class="metric-label">Water Total L</div>
-                                <div class="metric-val">{{ s.total_water_to_date }}</div>
-                            </div>
-                            <div class="metric">
-                                <div class="metric-label">Feed Total KG</div>
-                                <div class="metric-val">{{ s.total_feed_to_date }}</div>
-                            </div>
-                            <div class="metric">
-                                <div class="metric-label">Mortality</div>
-                                <div id="shed-mortality-{{ s.shed_no }}" class="metric-val">{{ s.mortality_display }}</div>
+                            <div class="metric-stack">
+                                <div class="metric metric-feed metric-feed-daily">
+                                    <div class="metric-label">Feed KG 7am-7am</div>
+                                    <div id="shed-feed7-{{ s.shed_no }}" class="metric-val">{{ s.feed_7to7 }}</div>
+                                </div>
+                                <div class="metric metric-feed metric-feed-bird">
+                                    <div class="metric-label">KG/bird yesterday</div>
+                                    <div class="metric-val">{{ s.kg_per_bird }}</div>
+                                </div>
+                                <div class="metric metric-feed metric-feed-total">
+                                    <div class="metric-label">Feed Total KG</div>
+                                    <div class="metric-val">{{ s.total_feed_to_date }}</div>
+                                </div>
+                                <div class="metric metric-neutral metric-runout">
+                                    <div class="metric-label">Estimated Run Out</div>
+                                    <div class="metric-val">{{ s.runout_est }}</div>
+                                </div>
                             </div>
                         </div>
                     </div>
 
                     <div class="section">
-                        <div class="row"><span class="label">Crop</span><span id="shed-crop-{{ s.shed_no }}">{{ s.crop_id }}</span></div>
-                        <div class="row"><span class="label">Updated</span><span id="shed-updated-{{ s.shed_no }}">{{ s.updated }}</span></div>
+                        <div class="meta-grid">
+                            <div class="row"><span class="label">Crop:</span><span id="shed-crop-{{ s.shed_no }}">{{ s.crop_id }}</span></div>
+                            <div class="row"><span class="label">Updated:</span><span id="shed-updated-{{ s.shed_no }}">{{ s.updated }}</span></div>
+                        </div>
                     </div>
 
                     <div id="shed-alarm-{{ s.shed_no }}" class="alarmbox" {% if not s.alarm_active %}style="display:none"{% endif %}>
@@ -4885,8 +5370,6 @@ setInterval(updateTopDateTime, 1000);
 const NOTIFY_PREF_KEY = 'cdf-notifications-enabled';
 const NOTIFY_LAST_TS_KEY = 'cdf-notifications-last-ts';
 const NOTIFY_ACTIVE_KEY = 'cdf-notifications-active-alarms';
-let notifyToggleBtn = null;
-let notifyStatusEl = null;
 let swRegistration = null;
 
 function notificationsEnabled() {
@@ -4895,7 +5378,6 @@ function notificationsEnabled() {
 
 function setNotificationsEnabled(enabled) {
     localStorage.setItem(NOTIFY_PREF_KEY, enabled ? '1' : '0');
-    updateNotifyButton();
 }
 
 function getKnownActiveAlarmIds() {
@@ -4920,58 +5402,6 @@ function getNotificationLastTs() {
 
 function setNotificationLastTs(ts) {
     localStorage.setItem(NOTIFY_LAST_TS_KEY, String(ts || 0));
-}
-
-function updateNotifyButton() {
-    if (!notifyToggleBtn) return;
-    if (notifyStatusEl) {
-        notifyStatusEl.classList.remove('state-on', 'state-blocked', 'state-off');
-    }
-    if (!('Notification' in window)) {
-        notifyToggleBtn.textContent = '🔕 Notifications Unsupported';
-        notifyToggleBtn.disabled = true;
-        notifyToggleBtn.classList.remove('notify-on', 'notify-off', 'notify-blocked');
-        if (notifyStatusEl) notifyStatusEl.textContent = 'This browser does not support notifications.';
-        return;
-    }
-    const permission = Notification.permission;
-    if (!notificationsEnabled()) {
-        notifyToggleBtn.textContent = permission === 'granted' ? '🔔 Notifications Off' : '🔔 Enable Notifications';
-        notifyToggleBtn.classList.remove('notify-on', 'notify-blocked');
-        notifyToggleBtn.classList.add('notify-off');
-        if (notifyStatusEl) {
-            notifyStatusEl.textContent = permission === 'granted'
-                ? 'Notifications are currently turned off for this dashboard.'
-                : 'Notifications are not enabled yet.';
-            notifyStatusEl.classList.add('state-off');
-        }
-        return;
-    }
-    if (permission === 'granted') {
-        notifyToggleBtn.textContent = '🔔 Notifications On';
-        notifyToggleBtn.classList.remove('notify-off', 'notify-blocked');
-        notifyToggleBtn.classList.add('notify-on');
-        if (notifyStatusEl) {
-            notifyStatusEl.textContent = 'Notifications are enabled for this dashboard.';
-            notifyStatusEl.classList.add('state-on');
-        }
-    } else if (permission === 'denied') {
-        notifyToggleBtn.textContent = '🔕 Notifications Blocked';
-        notifyToggleBtn.classList.remove('notify-off', 'notify-on');
-        notifyToggleBtn.classList.add('notify-blocked');
-        if (notifyStatusEl) {
-            notifyStatusEl.textContent = 'Notifications are blocked in this browser for the dashboard.';
-            notifyStatusEl.classList.add('state-blocked');
-        }
-    } else {
-        notifyToggleBtn.textContent = '🔔 Enable Notifications';
-        notifyToggleBtn.classList.remove('notify-on', 'notify-blocked');
-        notifyToggleBtn.classList.add('notify-off');
-        if (notifyStatusEl) {
-            notifyStatusEl.textContent = 'Click Notifications to enable alarm alerts.';
-            notifyStatusEl.classList.add('state-off');
-        }
-    }
 }
 
 async function registerDashboardServiceWorker() {
@@ -5029,31 +5459,23 @@ async function enableNotificationsFromUserAction() {
     await registerDashboardServiceWorker();
     if (Notification.permission === 'denied') {
         setNotificationsEnabled(false);
-        updateNotifyButton();
         return;
     }
     if (Notification.permission !== 'granted') {
         const permission = await Notification.requestPermission();
         if (permission !== 'granted') {
             setNotificationsEnabled(false);
-            updateNotifyButton();
             return;
         }
     }
     setNotificationsEnabled(true);
     await baselineNotifications();
     await showDashboardNotification('Cherry Dene Dashboard', 'Notifications enabled for this dashboard.', '/', 'cdf-notify-enabled');
-    if (notifyStatusEl) {
-        notifyStatusEl.textContent = 'Notifications enabled successfully.';
-        notifyStatusEl.classList.remove('state-blocked', 'state-off');
-        notifyStatusEl.classList.add('state-on');
-    }
 }
 
 async function pollNotifications() {
     if (!notificationsEnabled()) return;
     if (!('Notification' in window) || Notification.permission !== 'granted') {
-        updateNotifyButton();
         return;
     }
     try {
@@ -5119,8 +5541,10 @@ function renderShed(s) {
     setDashText(`shed-mortality-${s.shed_no}`, s.mortality_display || s.mortality_total);
     setDashText(`shed-updated-${s.shed_no}`, s.updated);
     setDashClass(`shed-card-${s.shed_no}`, [s.alarm_active ? 'alarm' : s.card_state, s.has_data ? '' : 'nodata'], ['alarm', 'online', 'offline', 'nodata']);
-    setDashClass(`shed-water-tile-${s.shed_no}`, [s.water_glow], ['flow-green', 'flow-red']);
-    setDashClass(`shed-feed-tile-${s.shed_no}`, [s.feed_glow], ['feed-green', 'feed-red']);
+    setDashClass(`shed-temp-tile-${s.shed_no}`, [s.temp_glow], ['env-green', 'env-warn', 'env-red']);
+    setDashClass(`shed-rh-tile-${s.shed_no}`, [s.rh_glow], ['env-green', 'env-warn', 'env-red']);
+    setDashClass(`shed-water-tile-${s.shed_no}`, [s.water_glow], ['flow-green', 'flow-warn', 'flow-red']);
+    setDashClass(`shed-feed-tile-${s.shed_no}`, [s.feed_glow], ['feed-green', 'feed-warn', 'feed-red']);
     setDashText(`shed-sync-badge-${s.shed_no}`, s.sync_pill_text);
     setDashClass(`shed-sync-badge-${s.shed_no}`, ['badge', s.sync_pill_class], ['sync-ok', 'sync-stale', 'sync-missing']);
 
@@ -5175,6 +5599,7 @@ function renderOverall(o) {
 }
 
 async function pollDashboard() {
+    if (document.visibilityState === 'hidden') return;
     try {
         const resp = await fetch('/api/overview', { cache: 'no-store' });
         if (!resp.ok) return;
@@ -5187,6 +5612,11 @@ async function pollDashboard() {
 }
 
 setInterval(pollDashboard, 2000);
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+        pollDashboard();
+    }
+});
 
 if (window.EventSource) {
     const waterSource = new EventSource('/api/water-stream');
@@ -5195,7 +5625,7 @@ if (window.EventSource) {
             const payload = JSON.parse(event.data);
             (payload.sheds || []).forEach((s) => {
                 setDashText(`shed-water-${s.shed_no}`, s.water_lpm);
-                setDashClass(`shed-water-tile-${s.shed_no}`, [s.water_glow], ['flow-green', 'flow-red']);
+                setDashClass(`shed-water-tile-${s.shed_no}`, [s.water_glow], ['flow-green', 'flow-warn', 'flow-red']);
             });
             if (payload.borehole) {
                 setDashText('borehole-water', payload.borehole.water_lpm);
@@ -5206,28 +5636,7 @@ if (window.EventSource) {
     };
 }
 
-notifyToggleBtn = document.getElementById('notifyToggle');
-notifyStatusEl = document.getElementById('notifyStatus');
-if (notifyToggleBtn) {
-    notifyToggleBtn.addEventListener('click', async () => {
-        if (!('Notification' in window)) return;
-        if (notificationsEnabled() && Notification.permission === 'granted') {
-            setNotificationsEnabled(false);
-            if (notifyStatusEl) {
-                notifyStatusEl.textContent = 'Notifications turned off for this dashboard.';
-                notifyStatusEl.classList.remove('state-on', 'state-blocked');
-                notifyStatusEl.classList.add('state-off');
-            }
-            updateNotifyButton();
-            return;
-        }
-        await enableNotificationsFromUserAction();
-        updateNotifyButton();
-    });
-}
-
 registerDashboardServiceWorker().then(() => {
-    updateNotifyButton();
     if (('Notification' in window) && notificationsEnabled() && Notification.permission === 'granted') {
         pollNotifications();
     }
@@ -5263,6 +5672,39 @@ EVENTS_HTML = """
         table { width:100%; border-collapse:collapse; font-size:14px; table-layout:fixed; }
         th, td { padding:10px 8px; border-bottom:1px solid #818181; text-align:left; vertical-align:top; overflow-wrap:anywhere; word-break:break-word; }
         th { color:#f0f0f0; }
+        .compact-input {
+            width:100%;
+            min-width:64px;
+            padding:8px 10px;
+            border-radius:8px;
+            border:1px solid #8a8a8a;
+            background:#686868;
+            color:#ececec;
+        }
+        .shed-threshold-grid {
+            display:grid;
+            grid-template-columns:repeat(3, minmax(0, 1fr));
+            gap:12px;
+        }
+        .shed-threshold-card {
+            background:#686868;
+            border:1px solid #8a8a8a;
+            border-radius:12px;
+            padding:12px;
+            min-width:0;
+        }
+        .shed-threshold-card h3 {
+            margin:0 0 10px 0;
+            font-size:18px;
+        }
+        .shed-threshold-fields {
+            display:grid;
+            grid-template-columns:1fr 1fr;
+            gap:10px;
+        }
+        .shed-threshold-fields .field {
+            gap:4px;
+        }
         .mono { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; }
         @media (max-width: 700px) {
             .wrap { padding:12px; }
@@ -5492,6 +5934,83 @@ OFFICE_SETTINGS_HTML = """
         .health-value { margin-top:6px; font-size:24px; font-weight:700; }
         .health-note { margin-top:6px; color:#dcdcdc; font-size:12px; line-height:1.35; }
         .action-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+        .form-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+        .field { display:flex; flex-direction:column; gap:6px; min-width:0; }
+        .field label { color:#f0f0f0; font-size:13px; }
+        .field input {
+            width:100%;
+            padding:10px 12px;
+            border-radius:8px;
+            border:1px solid #8a8a8a;
+            background:#686868;
+            color:#ececec;
+        }
+        .field textarea {
+            width:100%;
+            min-height:84px;
+            padding:10px 12px;
+            border-radius:8px;
+            border:1px solid #8a8a8a;
+            background:#686868;
+            color:#ececec;
+            resize:vertical;
+            font-family:inherit;
+        }
+        .field-full { grid-column:1 / -1; }
+        .checkbox-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:8px 0 14px 0; }
+        .check { display:flex; align-items:center; gap:8px; padding:10px 12px; border:1px solid #8a8a8a; border-radius:10px; background:#686868; }
+        .check input { width:auto; margin:0; }
+        .recipient-list { display:grid; gap:10px; margin-top:14px; }
+        .recipient-row {
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:10px;
+            padding:10px 12px;
+            border:1px solid #8a8a8a;
+            border-radius:10px;
+            background:#686868;
+        }
+        .recipient-email { overflow-wrap:anywhere; word-break:break-word; }
+        .inline-form { display:flex; gap:10px; align-items:flex-end; }
+        .inline-form .field { flex:1 1 auto; }
+        .inline-form button { width:auto; min-width:130px; }
+        .notify-btn.notify-on {
+            border-color:#35d07f;
+            color:#d9ffe8;
+            box-shadow:
+                0 0 8px rgba(53,208,127,0.65),
+                0 0 16px rgba(53,208,127,0.30);
+        }
+        .notify-btn.notify-blocked {
+            border-color:#ff7a7a;
+            color:#ffd8d8;
+            box-shadow:
+                0 0 8px rgba(255,122,122,0.65),
+                0 0 16px rgba(255,122,122,0.30);
+        }
+        .notify-btn.notify-off {
+            border-color:#ffd06a;
+            color:#fff0c7;
+        }
+        .notify-status {
+            margin-top:12px;
+            font-size:13px;
+            color:#d7d7d7;
+            min-height:18px;
+        }
+        .notify-status.state-on {
+            color:#d9ffe8;
+            text-shadow: 0 0 8px rgba(53,208,127,0.45);
+        }
+        .notify-status.state-blocked {
+            color:#ffd8d8;
+            text-shadow: 0 0 8px rgba(255,122,122,0.45);
+        }
+        .notify-status.state-off {
+            color:#fff0c7;
+        }
+        .note { color:#d2d2d2; font-size:12px; line-height:1.4; margin-top:10px; }
         .action-link, button {
             display:inline-flex;
             align-items:center;
@@ -5525,13 +6044,16 @@ OFFICE_SETTINGS_HTML = """
         table { width:100%; border-collapse:collapse; font-size:14px; table-layout:fixed; }
         th, td { padding:10px 8px; border-bottom:1px solid #818181; text-align:left; vertical-align:top; overflow-wrap:anywhere; word-break:break-word; }
         th { color:#f0f0f0; }
-        @media (max-width: 900px) { .grid, .action-grid, .health-grid { grid-template-columns:1fr; } }
+        @media (max-width: 900px) { .grid, .action-grid, .health-grid, .form-grid, .checkbox-grid, .shed-threshold-grid, .shed-threshold-fields { grid-template-columns:1fr; } }
         @media (max-width: 700px) {
             .wrap { padding:12px; }
             h1 { font-size:24px; }
             .panel { padding:12px; }
             .detail { flex-direction:column; align-items:flex-start; }
             .action-link, button { min-height:42px; padding:10px 12px; }
+            .inline-form { flex-direction:column; align-items:stretch; }
+            .inline-form button { width:100%; min-width:0; }
+            .recipient-row { flex-direction:column; align-items:stretch; }
             table { font-size:13px; }
         }
     </style>
@@ -5540,44 +6062,16 @@ OFFICE_SETTINGS_HTML = """
     <div class="wrap">
         <div class="topbar"><a href="{{ url_for('dashboard') }}">← Back to dashboard</a></div>
         <h1>Office Settings</h1>
-        <div class="sub">Backups, restore, event log, and software update for the office dashboard.</div>
+        <div class="sub">Core office tools, notifications, email, backups, and update control.</div>
         {% if status_msg %}
         <div class="status auto-dismiss {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
         {% endif %}
-        <div class="panel" style="margin-bottom:16px;">
-            <h2>Farm Health</h2>
-            <div class="sub">Current controller freshness, backup status, and Pico link summary across the farm.</div>
-            <div class="health-grid">
-                <div class="health-card">
-                    <div class="health-label">Stale Controllers</div>
-                    <div class="health-value">{{ farm_health.stale_count }}</div>
-                    <div class="health-note">{{ farm_health.stale_labels }}</div>
-                </div>
-                <div class="health-card">
-                    <div class="health-label">Pico Offline</div>
-                    <div class="health-value">{{ farm_health.pico_offline_count }}</div>
-                    <div class="health-note">{{ farm_health.pico_offline_labels }}</div>
-                </div>
-                <div class="health-card">
-                    <div class="health-label">Backup Issues</div>
-                    <div class="health-value">{{ farm_health.backup_issue_count }}</div>
-                    <div class="health-note">{{ farm_health.backup_issue_labels }}</div>
-                </div>
-                <div class="health-card">
-                    <div class="health-label">Last Backup Collect</div>
-                    <div class="health-value">{{ farm_health.last_collect_age }}</div>
-                    <div class="health-note">{{ farm_health.last_collect_note }}</div>
-                </div>
-            </div>
-        </div>
         <div class="grid">
             <div class="panel">
-                <h2>Actions</h2>
-                <div class="sub">Open office tools and backup actions.</div>
-                <div class="detail"><span class="label">Backup Path</span><span class="mono">{{ backup_dir }}</span></div>
+                <h2>Office Tools</h2>
+                <div class="sub">Daily operational tools and backup actions.</div>
                 <div class="detail"><span class="label">Auto Backup</span><span>Hourly, keep newest {{ backup_keep_count }}</span></div>
                 <div class="detail"><span class="label">Latest Backup</span><span>{{ latest_backup_name }}</span></div>
-                <div class="detail"><span class="label">Email CSV</span><span class="mono">{{ email_settings_csv_path }}</span></div>
                 <div class="action-grid">
                     <a class="action-link" href="{{ url_for('office_events_view') }}">Event Log</a>
                     <a class="action-link" href="{{ url_for('office_versions_view') }}">Versions</a>
@@ -5585,17 +6079,15 @@ OFFICE_SETTINGS_HTML = """
                     <a class="action-link" href="{{ url_for('create_office_backup_view') }}">Create Backup</a>
                     <a class="action-link" href="{{ url_for('download_latest_office_backup_view') }}">Download Backup</a>
                     <a class="action-link" href="{{ url_for('collect_controller_backups_now_view') }}">Collect Controller Backups</a>
-                    <form method="post" action="{{ url_for('office_import_email_settings_view') }}">
-                        <button type="submit">Import Email CSV</button>
-                    </form>
                 </div>
+                <details class="collapse">
+                    <summary>Show Backup Location</summary>
+                    <div class="detail"><span class="label">Backup Path</span><span class="mono">{{ backup_dir }}</span></div>
+                </details>
             </div>
             <div class="panel">
                 <h2>Software Update</h2>
-                <div class="sub">Check GitHub for a newer office dashboard version, then apply it when ready.</div>
-                <div class="detail"><span class="label">Branch</span><span class="mono">{{ update_status.branch }}</span></div>
-                <div class="detail"><span class="label">Current Commit</span><span class="mono">{{ update_status.local_commit }}</span></div>
-                <div class="detail"><span class="label">Latest Commit</span><span class="mono">{{ update_status.remote_commit }}</span></div>
+                <div class="sub">Check for a newer office version and apply it when you are ready.</div>
                 <div class="detail"><span class="label">Last Checked</span><span>{{ update_checked_at }}</span></div>
                 <div class="detail"><span class="label">Status</span><span>{{ update_status.status }}</span></div>
                 <div class="update-actions">
@@ -5608,13 +6100,90 @@ OFFICE_SETTINGS_HTML = """
                     </form>
                     {% endif %}
                 </div>
+                <details class="collapse">
+                    <summary>Show Version Details</summary>
+                    <div class="detail"><span class="label">Branch</span><span class="mono">{{ update_status.branch }}</span></div>
+                    <div class="detail"><span class="label">Current Commit</span><span class="mono">{{ update_status.local_commit }}</span></div>
+                    <div class="detail"><span class="label">Latest Commit</span><span class="mono">{{ update_status.remote_commit }}</span></div>
+                </details>
             </div>
         </div>
         <div class="panel" style="margin-top:16px;">
+            <h2>Notifications</h2>
+            <div class="sub">Turn alarm notifications on or off for this device.</div>
+            <button id="settingsNotifyToggle" class="notify-btn" type="button">🔔 Enable Notifications</button>
+            <div id="settingsNotifyStatus" class="notify-status"></div>
+        </div>
+        <div class="panel" style="margin-top:16px;">
+            <h2>Email Settings</h2>
+            <div class="sub">Shared SMTP settings and the saved recipient list for report emails.</div>
+            <form method="post" action="{{ url_for('office_save_email_settings_view') }}">
+                <div class="checkbox-grid">
+                    <label class="check"><input type="checkbox" name="report_email_enabled" value="1" {% if email_settings.report_email_enabled %}checked{% endif %}> Enable shared app email sending</label>
+                    <label class="check"><input type="checkbox" name="report_smtp_use_tls" value="1" {% if email_settings.report_smtp_use_tls %}checked{% endif %}> Use TLS</label>
+                    <label class="check"><input type="checkbox" name="report_smtp_use_ssl" value="1" {% if email_settings.report_smtp_use_ssl %}checked{% endif %}> Use SSL</label>
+                </div>
+
+                <div class="form-grid">
+                    <div class="field">
+                        <label for="report_email_from">From Address</label>
+                        <input id="report_email_from" type="text" name="report_email_from" value="{{ email_settings.report_email_from }}">
+                    </div>
+                    <div class="field">
+                        <label for="report_smtp_host">SMTP Host</label>
+                        <input id="report_smtp_host" type="text" name="report_smtp_host" value="{{ email_settings.report_smtp_host }}">
+                    </div>
+                    <div class="field">
+                        <label for="report_smtp_port">SMTP Port</label>
+                        <input id="report_smtp_port" type="text" name="report_smtp_port" value="{{ email_settings.report_smtp_port }}">
+                    </div>
+                    <div class="field">
+                        <label for="report_smtp_username">SMTP Username</label>
+                        <input id="report_smtp_username" type="text" name="report_smtp_username" value="{{ email_settings.report_smtp_username }}">
+                    </div>
+                    <div class="field field-full">
+                        <label for="report_smtp_password">SMTP Password</label>
+                        <input id="report_smtp_password" type="password" name="report_smtp_password" value="{{ email_settings.report_smtp_password }}">
+                    </div>
+                </div>
+                <div class="note">These shared settings are also used for crop report emails.</div>
+                <div class="update-actions">
+                    <button class="wide" type="submit">Save Email Settings</button>
+                </div>
+            </form>
+
+            <details class="collapse" style="margin-top:14px;" open>
+                <summary>Recipients</summary>
+                <form class="inline-form" method="post" action="{{ url_for('office_add_email_recipient_view') }}">
+                    <div class="field">
+                        <label for="new_recipient_email">Add Recipient Email</label>
+                        <input id="new_recipient_email" type="email" name="recipient_email" value="">
+                    </div>
+                    <button type="submit">Add Recipient</button>
+                </form>
+
+                {% if email_settings.report_recipients %}
+                <div class="recipient-list">
+                    {% for recipient in email_settings.report_recipients %}
+                    <div class="recipient-row">
+                        <div class="recipient-email">{{ recipient }}</div>
+                        <form method="post" action="{{ url_for('office_remove_email_recipient_view') }}">
+                            <input type="hidden" name="recipient_email" value="{{ recipient }}">
+                            <button type="submit">Remove</button>
+                        </form>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <div class="note">No recipients saved yet.</div>
+                {% endif %}
+            </details>
+        </div>
+        <div class="panel" style="margin-top:16px;">
             <h2>Shed Controller Backups</h2>
-            <div class="sub">Latest controller-reported backup status plus the office-side collected ZIP copy.</div>
-            <details class="collapse" open>
-                <summary>Open shed controller backup table</summary>
+            <div class="sub">Controller backup health and the latest office-collected ZIP copy.</div>
+            <details class="collapse">
+                <summary>Open Shed Controller Backup Table</summary>
                 <div class="table-wrap">
                     <table>
                         <thead><tr><th>Controller</th><th>Controller Backup</th><th>Controller Status</th><th>Office Copy</th><th>Office Copy Status</th></tr></thead>
@@ -5640,6 +6209,229 @@ setTimeout(() => {
         el.style.display = 'none';
     });
 }, 10000);
+
+const NOTIFY_PREF_KEY = 'cdf-notifications-enabled';
+const NOTIFY_LAST_TS_KEY = 'cdf-notifications-last-ts';
+const NOTIFY_ACTIVE_KEY = 'cdf-notifications-active-alarms';
+let settingsNotifyToggleBtn = null;
+let settingsNotifyStatusEl = null;
+let settingsSwRegistration = null;
+
+function settingsNotificationsEnabled() {
+    return localStorage.getItem(NOTIFY_PREF_KEY) === '1';
+}
+
+function setSettingsNotificationsEnabled(enabled) {
+    localStorage.setItem(NOTIFY_PREF_KEY, enabled ? '1' : '0');
+    updateSettingsNotifyButton();
+}
+
+function getSettingsKnownActiveAlarmIds() {
+    try {
+        const raw = localStorage.getItem(NOTIFY_ACTIVE_KEY);
+        const parsed = JSON.parse(raw || '[]');
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (err) {
+        return [];
+    }
+}
+
+function setSettingsKnownActiveAlarmIds(ids) {
+    localStorage.setItem(NOTIFY_ACTIVE_KEY, JSON.stringify(Array.isArray(ids) ? ids : []));
+}
+
+function getSettingsNotificationLastTs() {
+    const raw = localStorage.getItem(NOTIFY_LAST_TS_KEY);
+    const parsed = parseInt(raw || '0', 10);
+    return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function setSettingsNotificationLastTs(ts) {
+    localStorage.setItem(NOTIFY_LAST_TS_KEY, String(ts || 0));
+}
+
+function updateSettingsNotifyButton() {
+    if (!settingsNotifyToggleBtn) return;
+    if (settingsNotifyStatusEl) {
+        settingsNotifyStatusEl.classList.remove('state-on', 'state-blocked', 'state-off');
+    }
+    if (!('Notification' in window)) {
+        settingsNotifyToggleBtn.textContent = '🔕 Notifications Unsupported';
+        settingsNotifyToggleBtn.disabled = true;
+        settingsNotifyToggleBtn.classList.remove('notify-on', 'notify-off', 'notify-blocked');
+        if (settingsNotifyStatusEl) settingsNotifyStatusEl.textContent = 'This browser does not support notifications.';
+        return;
+    }
+    const permission = Notification.permission;
+    if (!settingsNotificationsEnabled()) {
+        settingsNotifyToggleBtn.textContent = permission === 'granted' ? '🔔 Notifications Off' : '🔔 Enable Notifications';
+        settingsNotifyToggleBtn.classList.remove('notify-on', 'notify-blocked');
+        settingsNotifyToggleBtn.classList.add('notify-off');
+        if (settingsNotifyStatusEl) {
+            settingsNotifyStatusEl.textContent = permission === 'granted'
+                ? 'Notifications are currently turned off for this dashboard.'
+                : 'Notifications are not enabled yet.';
+            settingsNotifyStatusEl.classList.add('state-off');
+        }
+        return;
+    }
+    if (permission === 'granted') {
+        settingsNotifyToggleBtn.textContent = '🔔 Notifications On';
+        settingsNotifyToggleBtn.classList.remove('notify-off', 'notify-blocked');
+        settingsNotifyToggleBtn.classList.add('notify-on');
+        if (settingsNotifyStatusEl) {
+            settingsNotifyStatusEl.textContent = 'Notifications are enabled for this dashboard.';
+            settingsNotifyStatusEl.classList.add('state-on');
+        }
+    } else if (permission === 'denied') {
+        settingsNotifyToggleBtn.textContent = '🔕 Notifications Blocked';
+        settingsNotifyToggleBtn.classList.remove('notify-off', 'notify-on');
+        settingsNotifyToggleBtn.classList.add('notify-blocked');
+        if (settingsNotifyStatusEl) {
+            settingsNotifyStatusEl.textContent = 'Notifications are blocked in this browser for the dashboard.';
+            settingsNotifyStatusEl.classList.add('state-blocked');
+        }
+    } else {
+        settingsNotifyToggleBtn.textContent = '🔔 Enable Notifications';
+        settingsNotifyToggleBtn.classList.remove('notify-on', 'notify-blocked');
+        settingsNotifyToggleBtn.classList.add('notify-off');
+        if (settingsNotifyStatusEl) {
+            settingsNotifyStatusEl.textContent = 'Click Enable Notifications to allow alarm alerts.';
+            settingsNotifyStatusEl.classList.add('state-off');
+        }
+    }
+}
+
+async function registerSettingsDashboardServiceWorker() {
+    if (!('serviceWorker' in navigator)) return null;
+    try {
+        settingsSwRegistration = await navigator.serviceWorker.register('/service-worker.js');
+        return settingsSwRegistration;
+    } catch (err) {
+        return null;
+    }
+}
+
+async function showSettingsDashboardNotification(title, body, url, tag) {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    const options = {
+        body: body || '',
+        icon: '/apple-touch-icon.png',
+        badge: '/apple-touch-icon.png',
+        data: { url: url || '/' },
+        tag: tag || undefined,
+    };
+    try {
+        const reg = settingsSwRegistration || await registerSettingsDashboardServiceWorker();
+        if (reg && reg.showNotification) {
+            await reg.showNotification(title || 'Cherry Dene Dashboard', options);
+            return;
+        }
+    } catch (err) {
+    }
+    try {
+        const n = new Notification(title || 'Cherry Dene Dashboard', options);
+        n.onclick = () => {
+            window.focus();
+            window.location.href = url || '/';
+        };
+    } catch (err) {
+    }
+}
+
+async function baselineSettingsNotifications() {
+    try {
+        const resp = await fetch('/api/notifications?since=0', { cache: 'no-store' });
+        if (!resp.ok) return;
+        const payload = await resp.json();
+        const activeIds = (payload.active_alarms || []).map((row) => row.id);
+        setSettingsKnownActiveAlarmIds(activeIds);
+        setSettingsNotificationLastTs(payload.latest_ts || Math.floor(Date.now() / 1000));
+    } catch (err) {
+        setSettingsNotificationLastTs(Math.floor(Date.now() / 1000));
+    }
+}
+
+async function enableSettingsNotificationsFromUserAction() {
+    if (!('Notification' in window)) return;
+    await registerSettingsDashboardServiceWorker();
+    if (Notification.permission === 'denied') {
+        setSettingsNotificationsEnabled(false);
+        updateSettingsNotifyButton();
+        return;
+    }
+    if (Notification.permission !== 'granted') {
+        const permission = await Notification.requestPermission();
+        if (permission !== 'granted') {
+            setSettingsNotificationsEnabled(false);
+            updateSettingsNotifyButton();
+            return;
+        }
+    }
+    setSettingsNotificationsEnabled(true);
+    await baselineSettingsNotifications();
+    await showSettingsDashboardNotification('Cherry Dene Dashboard', 'Notifications enabled for this dashboard.', '/', 'cdf-notify-enabled');
+    if (settingsNotifyStatusEl) {
+        settingsNotifyStatusEl.textContent = 'Notifications enabled successfully.';
+        settingsNotifyStatusEl.classList.remove('state-blocked', 'state-off');
+        settingsNotifyStatusEl.classList.add('state-on');
+    }
+}
+
+async function pollSettingsNotifications() {
+    if (!settingsNotificationsEnabled()) return;
+    if (!('Notification' in window) || Notification.permission !== 'granted') {
+        updateSettingsNotifyButton();
+        return;
+    }
+    try {
+        const lastTs = getSettingsNotificationLastTs();
+        const resp = await fetch(`/api/notifications?since=${lastTs}`, { cache: 'no-store' });
+        if (!resp.ok) return;
+        const payload = await resp.json();
+
+        const knownActive = new Set(getSettingsKnownActiveAlarmIds());
+        const nextActive = [];
+
+        (payload.active_alarms || []).forEach((alarm) => {
+            nextActive.push(alarm.id);
+            if (!knownActive.has(alarm.id)) {
+                showSettingsDashboardNotification(alarm.title, alarm.body, alarm.url, alarm.id);
+            }
+        });
+        setSettingsKnownActiveAlarmIds(nextActive);
+
+        (payload.events || []).forEach((event) => {
+            showSettingsDashboardNotification(event.title, event.body, event.url, event.id);
+        });
+
+        setSettingsNotificationLastTs(payload.latest_ts || lastTs);
+    } catch (err) {
+    }
+}
+
+settingsNotifyToggleBtn = document.getElementById('settingsNotifyToggle');
+settingsNotifyStatusEl = document.getElementById('settingsNotifyStatus');
+if (settingsNotifyToggleBtn) {
+    settingsNotifyToggleBtn.addEventListener('click', async () => {
+        if (settingsNotificationsEnabled() && ('Notification' in window) && Notification.permission === 'granted') {
+            setSettingsNotificationsEnabled(false);
+            if (settingsNotifyStatusEl) {
+                settingsNotifyStatusEl.textContent = 'Notifications turned off for this dashboard.';
+                settingsNotifyStatusEl.classList.remove('state-on', 'state-blocked');
+                settingsNotifyStatusEl.classList.add('state-off');
+            }
+            return;
+        }
+        await enableSettingsNotificationsFromUserAction();
+    });
+}
+updateSettingsNotifyButton();
+registerSettingsDashboardServiceWorker();
+if (settingsNotificationsEnabled() && ('Notification' in window) && Notification.permission === 'granted') {
+    pollSettingsNotifications();
+}
+setInterval(pollSettingsNotifications, 8000);
 </script>
 </body>
 </html>
@@ -5740,6 +6532,19 @@ FARM_HEALTH_HTML = """
         .sub { color:#d2d2d2; margin-bottom:14px; }
         .summary-grid { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:12px; margin-bottom:16px; }
         .panel { background:#737373; border:1px solid #8a8a8a; border-radius:14px; padding:16px; min-width:0; }
+        .action-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:16px; }
+        .action-link {
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            min-height:46px;
+            padding:10px 14px;
+            border-radius:10px;
+            border:1px solid #8a8a8a;
+            background:#686868;
+            color:#ececec;
+            text-decoration:none;
+        }
         .health-card { background:#686868; border:1px solid #8a8a8a; border-radius:12px; padding:12px; min-width:0; overflow-wrap:anywhere; word-break:break-word; }
         .health-label { color:#d2d2d2; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; }
         .health-value { margin-top:6px; font-size:24px; font-weight:700; }
@@ -5758,6 +6563,7 @@ FARM_HEALTH_HTML = """
             .wrap { padding:12px; }
             h1 { font-size:24px; }
             .summary-grid { grid-template-columns:1fr; }
+            .action-grid { grid-template-columns:1fr; }
             .panel { padding:12px; }
             table { font-size:13px; }
         }
@@ -5768,6 +6574,10 @@ FARM_HEALTH_HTML = """
         <div class="topbar"><a href="{{ url_for('dashboard') }}">← Back to dashboard</a></div>
         <h1>Farm Health</h1>
         <div class="sub">Live controller heartbeat, Pico link, and backup health across sheds and the bore hole.</div>
+        <div class="action-grid">
+            <a class="action-link" href="{{ url_for('office_crop_reports_view') }}">🧾 Crop Reports</a>
+            <a class="action-link" href="{{ url_for('office_settings_view') }}">⚙ Settings</a>
+        </div>
         <div class="summary-grid">
             <div class="health-card">
                 <div class="health-label">Stale Controllers</div>
@@ -6122,6 +6932,16 @@ DETAIL_HTML = """
                 <div class="navtitle">Mortality</div>
                 <div class="navsub">Enter losses and deduct them from live bird numbers.</div>
             </a>
+
+            <a class="navcard" href="{{ url_for('shed_feed_deliveries_view', shed_no=shed_no) }}">
+                <div class="navtitle">Feed deliveries</div>
+                <div class="navsub">Automatic feed delivery history for this shed.</div>
+            </a>
+
+            <a class="navcard" href="{{ url_for('shed_thresholds_view', shed_no=shed_no) }}">
+                <div class="navtitle">Tile thresholds</div>
+                <div class="navsub">Set temp, humidity, live water, and feed glow thresholds for this shed.</div>
+            </a>
         </div>
 
         <div class="table-card">
@@ -6134,7 +6954,6 @@ DETAIL_HTML = """
                             <tr>
                                 <th>Entry Shed</th>
                                 <th>Birds</th>
-                                <th>Pens</th>
                                 <th>Started</th>
                                 <th>Active</th>
                                 <th>Update</th>
@@ -6150,7 +6969,6 @@ DETAIL_HTML = """
                                         <input type="number" name="bird_count" min="0" step="1" value="{{ '' if r.bird_count == 0 else r.bird_count }}">
                                     </form>
                                 </td>
-                                <td>{{ r.pens_text if r.pens_text else "--" }}</td>
                                 <td>{{ r.placement_str }}</td>
                                 <td>
                                     {% if r.crop_active == 1 %}
@@ -6181,6 +6999,7 @@ DETAIL_HTML = """
                 </div>
             </details>
         </div>
+
     </div>
 <script>
 setTimeout(() => {
@@ -6305,6 +7124,277 @@ MORTALITY_HTML = """
                 {% endif %}
                 </details>
             </div>
+        </div>
+    </div>
+<script>
+setTimeout(() => {
+    document.querySelectorAll('.auto-dismiss').forEach((el) => {
+        el.style.display = 'none';
+    });
+}, 10000);
+</script>
+</body>
+</html>
+"""
+
+
+FEED_DELIVERIES_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>{{ shed_name }} Feed Deliveries</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; font-family: Arial, sans-serif; background: #5b5b5b; color: #ececec; overflow-x:hidden; }
+        .wrap { max-width: 1200px; margin: 0 auto; padding: 16px; }
+        a { color: #f0f0f0; text-decoration: none; }
+        h1 { margin: 0 0 6px 0; font-size: 30px; }
+        .sub { color: #d2d2d2; margin-bottom: 16px; font-size: 14px; }
+        .topbar { margin-bottom: 14px; }
+        .card { background: #737373; border: 2px solid #8a8a8a; border-radius: 12px; padding: 14px; min-width:0; }
+        .collapse { margin-top: 14px; }
+        .collapse summary { cursor: pointer; list-style: none; padding: 12px 14px; border: 1px solid #8a8a8a; border-radius: 10px; background: #686868; font-weight: 700; }
+        .collapse summary::-webkit-details-marker { display:none; }
+        .collapse[open] summary { margin-bottom: 12px; }
+        .table-wrap { overflow:auto; -webkit-overflow-scrolling:touch; border:1px solid #818181; border-radius:10px; background:#686868; }
+        table { width: 100%; border-collapse: collapse; font-size: 14px; table-layout:fixed; }
+        th, td { border-bottom: 1px solid #818181; padding: 10px 8px; text-align: left; vertical-align: middle; overflow-wrap:anywhere; word-break:break-word; }
+        th { color: #f0f0f0; }
+        .empty { color: #d2d2d2; }
+        @media (max-width: 700px) {
+            .wrap { padding: 12px; }
+            h1 { font-size: 24px; }
+            .card { padding: 12px; }
+            table { font-size: 13px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="topbar"><a href="{{ url_for('shed_detail', shed_no=shed_no) }}">← {{ shed_name }}</a></div>
+        <h1>{{ shed_name }} Feed Deliveries</h1>
+        <div class="sub">Current crop {{ active_crop_code }}. Deliveries are auto-detected from sustained feed-bin increases.</div>
+        <div class="card">
+            <details class="collapse" open>
+                <summary>Open feed delivery table</summary>
+                {% if feed_delivery_rows %}
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>KG Delivered</th>
+                                <th>Source</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for r in feed_delivery_rows %}
+                            <tr>
+                                <td>{{ r.ts_label }}</td>
+                                <td>{{ r.delivery_kg_label }}</td>
+                                <td>{{ r.source if r.source else "--" }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="empty">No feed deliveries recorded for this shed yet.</div>
+                {% endif %}
+            </details>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+
+SHED_THRESHOLDS_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>{{ shed_name }} Tile Thresholds</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; font-family: Arial, sans-serif; background: #5b5b5b; color: #ececec; overflow-x:hidden; }
+        .wrap { max-width: 980px; margin: 0 auto; padding: 16px; }
+        a { color: #f0f0f0; text-decoration: none; }
+        h1 { margin: 0 0 6px 0; font-size: 30px; }
+        .sub { color: #d2d2d2; margin-bottom: 16px; font-size: 14px; }
+        .topbar { margin-bottom: 14px; }
+        .status { margin-bottom: 14px; padding: 10px 12px; border-radius: 10px; background: #737373; border: 1px solid #8a8a8a; }
+        .status.ok { border-color: #35d07f; color: #dff9ea; }
+        .status.err { border-color: #ff5b5b; color: #ffd6d6; }
+        .card { background: #737373; border: 2px solid #8a8a8a; border-radius: 12px; padding: 14px; min-width:0; }
+        .field-rows { display:grid; grid-template-columns:1fr; gap:12px; }
+        .field-row { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:12px; }
+        .field { display:flex; flex-direction:column; gap:6px; }
+        .field label { color:#f0f0f0; font-size:14px; }
+        .field input {
+            width:100%;
+            padding:10px 12px;
+            border-radius:8px;
+            border:1px solid #8a8a8a;
+            background:#686868;
+            color:#ececec;
+        }
+        .note { color:#d2d2d2; font-size:13px; line-height:1.45; margin-top:12px; }
+        .preview {
+            margin-top: 14px;
+            padding: 12px;
+            border-radius: 10px;
+            background: #686868;
+            border: 1px solid #8a8a8a;
+        }
+        .preview-title {
+            font-size: 13px;
+            font-weight: 700;
+            color: #f0f0f0;
+            margin-bottom: 10px;
+        }
+        .preview-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
+        }
+        .preview-item {
+            min-width: 0;
+        }
+        .preview-pill {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 700;
+            margin-bottom: 6px;
+            border: 1px solid #8a8a8a;
+        }
+        .preview-pill.red {
+            color: #ffd6d6;
+            border-color: #ff5b5b;
+            box-shadow: 0 0 8px rgba(255,91,91,0.45);
+        }
+        .preview-pill.amber {
+            color: #ffe7b0;
+            border-color: #ffd06a;
+            box-shadow: 0 0 8px rgba(255,208,106,0.35);
+        }
+        .preview-pill.green {
+            color: #dff9ea;
+            border-color: #35d07f;
+            box-shadow: 0 0 8px rgba(53,208,127,0.35);
+        }
+        .preview-text {
+            color: #d2d2d2;
+            font-size: 12px;
+            line-height: 1.35;
+        }
+        button {
+            margin-top:14px;
+            background:#727272;
+            color:#ececec;
+            border:1px solid #8a8a8a;
+            border-radius:8px;
+            padding:10px 14px;
+            cursor:pointer;
+            min-width:180px;
+        }
+        @media (max-width: 700px) {
+            .wrap { padding: 12px; }
+            h1 { font-size: 24px; }
+            .card { padding: 12px; }
+            .field-row { grid-template-columns:repeat(3, minmax(0, 1fr)); gap:8px; }
+            .field label { font-size:12px; }
+            .field input { padding:8px 10px; font-size:14px; }
+            .preview-grid { grid-template-columns: 1fr; }
+            button { width:100%; }
+        }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="topbar"><a href="{{ url_for('shed_detail', shed_no=shed_no) }}">← {{ shed_name }}</a></div>
+        <h1>{{ shed_name }} Tile Thresholds</h1>
+        <div class="sub">Control the glow thresholds used on this shed’s dashboard tile.</div>
+        {% if status_msg %}
+        <div class="status auto-dismiss {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
+        {% endif %}
+        <div class="card">
+            <form method="post" action="{{ url_for('shed_thresholds_save_view', shed_no=shed_no) }}">
+                <div class="field-rows">
+                    <div class="field-row">
+                        <div class="field">
+                            <label for="temp_low_c">Temp Red Low C</label>
+                            <input id="temp_low_c" type="number" step="0.1" name="temp_low_c" value="{{ row.temp_low_c }}">
+                        </div>
+                        <div class="field">
+                            <label for="temp_high_c">Temp Red High C</label>
+                            <input id="temp_high_c" type="number" step="0.1" name="temp_high_c" value="{{ row.temp_high_c }}">
+                        </div>
+                        <div class="field">
+                            <label for="temp_amber_margin_c">Temp Amber Margin C</label>
+                            <input id="temp_amber_margin_c" type="number" step="0.1" name="temp_amber_margin_c" value="{{ row.temp_amber_margin_c }}">
+                        </div>
+                    </div>
+                    <div class="field-row">
+                        <div class="field">
+                            <label for="rh_low_pct">RH Red Low %</label>
+                            <input id="rh_low_pct" type="number" step="1" name="rh_low_pct" value="{{ row.rh_low_pct }}">
+                        </div>
+                        <div class="field">
+                            <label for="rh_high_pct">RH Red High %</label>
+                            <input id="rh_high_pct" type="number" step="1" name="rh_high_pct" value="{{ row.rh_high_pct }}">
+                        </div>
+                        <div class="field">
+                            <label for="rh_amber_margin_pct">RH Amber %</label>
+                            <input id="rh_amber_margin_pct" type="number" step="1" name="rh_amber_margin_pct" value="{{ row.rh_amber_margin_pct }}">
+                        </div>
+                    </div>
+                    <div class="field-row">
+                        <div class="field">
+                            <label for="water_low_lpm">Water Red Low L/min</label>
+                            <input id="water_low_lpm" type="number" step="0.01" name="water_low_lpm" value="{{ row.water_low_lpm }}">
+                        </div>
+                        <div class="field">
+                            <label for="water_amber_buffer_lpm">Water Amber Buffer L/min</label>
+                            <input id="water_amber_buffer_lpm" type="number" step="0.01" name="water_amber_buffer_lpm" value="{{ row.water_amber_buffer_lpm }}">
+                        </div>
+                    </div>
+                    <div class="field-row">
+                        <div class="field">
+                            <label for="feed_low_kg">Feed Red Low KG</label>
+                            <input id="feed_low_kg" type="number" step="1" name="feed_low_kg" value="{{ row.feed_low_kg }}">
+                        </div>
+                        <div class="field">
+                            <label for="feed_amber_buffer_kg">Feed Amber Buffer KG</label>
+                            <input id="feed_amber_buffer_kg" type="number" step="1" name="feed_amber_buffer_kg" value="{{ row.feed_amber_buffer_kg }}">
+                        </div>
+                    </div>
+                </div>
+                <div class="note">Temp and RH go red outside the red-below and red-above limits. The amber margin creates an amber zone just inside those limits. Water and feed go red below the red-below value, then amber for the size of the amber buffer above it.</div>
+                <div class="preview">
+                    <div class="preview-title">How The Colours Work</div>
+                    <div class="preview-grid">
+                        <div class="preview-item">
+                            <div class="preview-pill red">RED</div>
+                            <div class="preview-text">Outside the safe range, or below the low red threshold for water and feed.</div>
+                        </div>
+                        <div class="preview-item">
+                            <div class="preview-pill amber">AMBER</div>
+                            <div class="preview-text">Close to the red limit. Temp and RH use the amber margin. Water and feed use the amber buffer above red.</div>
+                        </div>
+                        <div class="preview-item">
+                            <div class="preview-pill green">GREEN</div>
+                            <div class="preview-text">Comfortably in range, with enough distance from the red and amber trigger points.</div>
+                        </div>
+                    </div>
+                </div>
+                <button type="submit">Save Tile Thresholds</button>
+            </form>
         </div>
     </div>
 <script>
@@ -7770,21 +8860,6 @@ def office_crop_report_resend(crop_id):
     return redirect(url_for("office_crop_reports_view", ok=1 if ok else 0, msg=message))
 
 
-@app.route("/settings/import-email-csv", methods=["POST"])
-def office_import_email_settings_view():
-    try:
-        updates = import_office_email_settings_csv()
-        return redirect(
-            url_for(
-                "office_settings_view",
-                ok=1,
-                msg="Imported email settings from CSV (%d fields updated)" % len(updates),
-            )
-        )
-    except Exception as exc:
-        return redirect(url_for("office_settings_view", ok=0, msg=str(exc)))
-
-
 @app.route("/settings")
 def office_settings_view():
     update_status = load_office_update_status()
@@ -7828,7 +8903,8 @@ def office_settings_view():
         backup_dir=backups_dir(),
         backup_keep_count=OFFICE_BACKUP_KEEP_COUNT,
         latest_backup_name=os.path.basename(latest_backups[0]) if latest_backups else "--",
-        email_settings_csv_path=office_email_settings_csv_path(),
+        email_settings=office_email_settings_form_state(),
+        env_settings_rows=office_environment_settings_rows(controller_meta),
         farm_health=farm_health,
         controller_backup_rows=controller_backup_rows,
         status_msg=request.args.get("msg", ""),
@@ -7909,6 +8985,42 @@ def office_check_update_view():
     return redirect(url_for("office_settings_view"))
 
 
+@app.route("/settings/email/save", methods=["POST"])
+def office_save_email_settings_view():
+    try:
+        save_office_email_settings_from_form(request.form)
+        return redirect(url_for("office_settings_view", ok=1, msg="Email settings saved"))
+    except Exception as exc:
+        return redirect(url_for("office_settings_view", ok=0, msg="Email settings save failed: %s" % exc))
+
+
+@app.route("/settings/environment/save", methods=["POST"])
+def office_save_environment_settings_view():
+    try:
+        save_office_environment_settings_from_form(request.form)
+        return redirect(url_for("office_settings_view", ok=1, msg="Shed environment settings saved"))
+    except Exception as exc:
+        return redirect(url_for("office_settings_view", ok=0, msg="Environment settings save failed: %s" % exc))
+
+
+@app.route("/settings/email/add-recipient", methods=["POST"])
+def office_add_email_recipient_view():
+    try:
+        add_office_email_recipient(request.form.get("recipient_email", ""))
+        return redirect(url_for("office_settings_view", ok=1, msg="Recipient added"))
+    except Exception as exc:
+        return redirect(url_for("office_settings_view", ok=0, msg=str(exc)))
+
+
+@app.route("/settings/email/remove-recipient", methods=["POST"])
+def office_remove_email_recipient_view():
+    try:
+        remove_office_email_recipient(request.form.get("recipient_email", ""))
+        return redirect(url_for("office_settings_view", ok=1, msg="Recipient removed"))
+    except Exception as exc:
+        return redirect(url_for("office_settings_view", ok=0, msg=str(exc)))
+
+
 @app.route("/settings/update/apply", methods=["POST"])
 def office_apply_update_view():
     status = check_office_update()
@@ -7917,10 +9029,12 @@ def office_apply_update_view():
 
     branch = status.get("branch", "main")
     code, stdout, stderr = run_office_git_command(["pull", "--ff-only", "origin", branch], timeout=60)
+    local_git = get_office_git_status()
     save_office_update_status({
         "checked_at": int(time.time()),
         "status": "Update applied. Restarting office dashboard..." if code == 0 else (stderr or stdout or "Update failed"),
-        "local_commit": get_office_git_status().get("local_commit", "--"),
+        "local_commit": local_git.get("local_commit", "--"),
+        "remote_commit": local_git.get("local_commit", "--") if code == 0 else status.get("remote_commit", "--"),
         "update_available": False if code == 0 else True,
     })
     if code == 0:
@@ -8200,6 +9314,50 @@ def shed_detail(shed_no):
         status_msg=status_msg,
         status_ok=status_ok,
     )
+
+
+@app.route("/shed/<int:shed_no>/feed-deliveries")
+def shed_feed_deliveries_view(shed_no):
+    if shed_no not in SHED_NUMBERS:
+        abort(404)
+    shed_name = shed_name_from_number(shed_no)
+    active_crop_id = get_active_crop_id_for_shed(shed_name)
+    feed_delivery_rows = get_feed_delivery_history_for_shed(shed_name, crop_id=active_crop_id, max_rows=100)
+    return render_template_string(
+        FEED_DELIVERIES_HTML,
+        shed_no=shed_no,
+        shed_name=shed_name,
+        active_crop_code=fmt_crop_code(active_crop_id, active_crop_record_for_shed(shed_name).get("placement_epoch")),
+        feed_delivery_rows=feed_delivery_rows,
+    )
+
+
+@app.route("/shed/<int:shed_no>/thresholds")
+def shed_thresholds_view(shed_no):
+    if shed_no not in SHED_NUMBERS:
+        abort(404)
+    shed_name = shed_name_from_number(shed_no)
+    status_msg = request.args.get("msg", "")
+    status_ok = request.args.get("ok", "1") == "1"
+    return render_template_string(
+        SHED_THRESHOLDS_HTML,
+        shed_no=shed_no,
+        shed_name=shed_name,
+        row=office_environment_settings_row_for_shed(shed_no),
+        status_msg=status_msg,
+        status_ok=status_ok,
+    )
+
+
+@app.route("/shed/<int:shed_no>/thresholds/save", methods=["POST"])
+def shed_thresholds_save_view(shed_no):
+    if shed_no not in SHED_NUMBERS:
+        abort(404)
+    try:
+        save_office_environment_settings_for_shed(shed_no, request.form)
+        return redirect(url_for("shed_thresholds_view", shed_no=shed_no, ok=1, msg="Tile thresholds saved"))
+    except Exception as exc:
+        return redirect(url_for("shed_thresholds_view", shed_no=shed_no, ok=0, msg="Threshold save failed: %s" % exc))
 
 
 @app.route("/shed/<int:shed_no>/mortality")
@@ -8567,6 +9725,15 @@ def shed_sync_post(shed_no):
         save_controller_meta_for_shed(shed_no, incoming_controller_meta)
         save_live_snapshot_for_shed(shed_no, incoming_controller_meta)
         update_shed_hourly_water_from_meta(shed_no, incoming_controller_meta)
+        shed_name = shed_name_from_number(shed_no)
+        log_feed_delivery_event(
+            shed_name,
+            shed_no,
+            incoming_controller_meta.get("last_feed_delivery_ts"),
+            incoming_controller_meta.get("last_feed_delivery_kg"),
+            crop_id=get_active_crop_id_for_shed(shed_name),
+            source="controller_auto",
+        )
         log_event("controller", "controller_meta", "Controller telemetry updated", shed_no=shed_no)
 
     return jsonify({

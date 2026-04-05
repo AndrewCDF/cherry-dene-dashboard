@@ -1,2 +1,0 @@
-report_email_enabled,report_email_to,report_email_from,report_smtp_host,report_smtp_port,report_smtp_username,report_smtp_password,report_smtp_use_tls,report_smtp_use_ssl,crop_report_email_to
-1,"",,"",587,"","",1,0,""

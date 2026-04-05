@@ -277,6 +277,14 @@ def apple_touch_icon_view():
 def inject_favicon(response):
     try:
         content_type = str(response.headers.get("Content-Type", "")).lower()
+        if (
+            "text/html" in content_type
+            or "application/json" in content_type
+            or "javascript" in content_type
+        ):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
         if "text/html" in content_type and response.direct_passthrough is False:
             body = response.get_data(as_text=True)
             if "<head>" in body and 'cdf-touch-optimize' not in body:
@@ -310,6 +318,10 @@ DEFAULT_CONFIG = {
     "touch_refresh_seconds": 1,
     "temp_low_c": 18.0,
     "temp_high_c": 24.0,
+    "temp_amber_margin_c": 1.0,
+    "rh_low_pct": 40.0,
+    "rh_high_pct": 80.0,
+    "rh_amber_margin_pct": 5.0,
     "water_low_lpm": 0.1,
     "water_pulses_per_litre": 450.0,
     "feed_low_kg": 2000.0,
@@ -806,6 +818,22 @@ def load_config():
     except Exception:
         cfg["temp_high_c"] = 24.0
     try:
+        cfg["temp_amber_margin_c"] = float(cfg.get("temp_amber_margin_c", 1.0))
+    except Exception:
+        cfg["temp_amber_margin_c"] = 1.0
+    try:
+        cfg["rh_low_pct"] = float(cfg.get("rh_low_pct", 40.0))
+    except Exception:
+        cfg["rh_low_pct"] = 40.0
+    try:
+        cfg["rh_high_pct"] = float(cfg.get("rh_high_pct", 80.0))
+    except Exception:
+        cfg["rh_high_pct"] = 80.0
+    try:
+        cfg["rh_amber_margin_pct"] = float(cfg.get("rh_amber_margin_pct", 5.0))
+    except Exception:
+        cfg["rh_amber_margin_pct"] = 5.0
+    try:
         cfg["water_low_lpm"] = float(cfg.get("water_low_lpm", 0.1))
     except Exception:
         cfg["water_low_lpm"] = 0.1
@@ -1068,6 +1096,161 @@ def default_sensor_state():
         "flow_rate_samples": [],
         "feed_raw_units": None,
     }
+
+
+def default_feed_tracking_state():
+    return {
+        "last_feed_kg": None,
+        "last_feed_ts": None,
+        "pending_delivery_kg": 0.0,
+        "current_day_key": None,
+        "current_day_burn_kg": 0.0,
+        "recent_daily_burn_kg": [],
+        "avg_daily_burn_kg": None,
+        "last_delivery_ts": None,
+        "last_delivery_kg": None,
+    }
+
+
+def clean_feed_tracking_state(data):
+    if not isinstance(data, dict):
+        data = {}
+
+    out = default_feed_tracking_state()
+    out.update(data)
+
+    try:
+        out["last_feed_kg"] = float(out.get("last_feed_kg")) if out.get("last_feed_kg") not in [None, ""] else None
+    except Exception:
+        out["last_feed_kg"] = None
+    try:
+        out["last_feed_ts"] = int(out.get("last_feed_ts")) if out.get("last_feed_ts") not in [None, ""] else None
+    except Exception:
+        out["last_feed_ts"] = None
+    try:
+        out["pending_delivery_kg"] = float(out.get("pending_delivery_kg") or 0.0)
+    except Exception:
+        out["pending_delivery_kg"] = 0.0
+    out["current_day_key"] = str(out.get("current_day_key") or "") or None
+    try:
+        out["current_day_burn_kg"] = float(out.get("current_day_burn_kg") or 0.0)
+    except Exception:
+        out["current_day_burn_kg"] = 0.0
+    try:
+        out["avg_daily_burn_kg"] = float(out.get("avg_daily_burn_kg")) if out.get("avg_daily_burn_kg") not in [None, ""] else None
+    except Exception:
+        out["avg_daily_burn_kg"] = None
+    try:
+        out["last_delivery_ts"] = int(out.get("last_delivery_ts")) if out.get("last_delivery_ts") not in [None, ""] else None
+    except Exception:
+        out["last_delivery_ts"] = None
+    try:
+        out["last_delivery_kg"] = float(out.get("last_delivery_kg")) if out.get("last_delivery_kg") not in [None, ""] else None
+    except Exception:
+        out["last_delivery_kg"] = None
+
+    cleaned_days = []
+    rows = out.get("recent_daily_burn_kg", [])
+    if isinstance(rows, list):
+        i = 0
+        while i < len(rows):
+            rec = rows[i]
+            if isinstance(rec, dict):
+                key = str(rec.get("day_key") or "").strip()
+                try:
+                    burn = float(rec.get("burn_kg") or 0.0)
+                except Exception:
+                    burn = 0.0
+                if key:
+                    cleaned_days.append({
+                        "day_key": key,
+                        "burn_kg": round(max(0.0, burn), 3),
+                    })
+            i += 1
+    out["recent_daily_burn_kg"] = cleaned_days[-7:]
+    return out
+
+
+def feed_tracking_day_key(ts):
+    dt_obj = datetime.fromtimestamp(int(ts)) - timedelta(hours=7)
+    return dt_obj.strftime("%Y-%m-%d")
+
+
+def update_feed_tracking(state, feed_kg, now_ts):
+    try:
+        feed_kg = float(feed_kg)
+    except Exception:
+        return None
+
+    tracker = clean_feed_tracking_state(state.get("feed_tracking", {}))
+    active_crop = total_birds_from_entries(state.get("entries", {})) > 0
+    day_key = feed_tracking_day_key(now_ts)
+    detected_delivery_kg = None
+
+    if tracker["current_day_key"] is None:
+        tracker["current_day_key"] = day_key
+    elif tracker["current_day_key"] != day_key:
+        tracker["recent_daily_burn_kg"].append({
+            "day_key": tracker["current_day_key"],
+            "burn_kg": round(max(0.0, tracker.get("current_day_burn_kg") or 0.0), 3),
+        })
+        tracker["recent_daily_burn_kg"] = tracker["recent_daily_burn_kg"][-7:]
+        tracker["current_day_key"] = day_key
+        tracker["current_day_burn_kg"] = 0.0
+
+    last_feed_kg = tracker.get("last_feed_kg")
+    if last_feed_kg is not None:
+        delta = feed_kg - float(last_feed_kg)
+        noise_threshold_kg = 5.0
+        delivery_threshold_kg = 150.0
+
+        if delta <= -noise_threshold_kg:
+            if active_crop:
+                tracker["current_day_burn_kg"] = round(
+                    max(0.0, float(tracker.get("current_day_burn_kg") or 0.0) + (-delta)),
+                    3,
+                )
+            if tracker.get("pending_delivery_kg", 0.0) >= delivery_threshold_kg:
+                detected_delivery_kg = round(float(tracker.get("pending_delivery_kg") or 0.0), 1)
+                tracker["last_delivery_ts"] = int(now_ts)
+                tracker["last_delivery_kg"] = detected_delivery_kg
+            tracker["pending_delivery_kg"] = 0.0
+        elif delta >= noise_threshold_kg:
+            if active_crop:
+                tracker["pending_delivery_kg"] = round(float(tracker.get("pending_delivery_kg") or 0.0) + delta, 3)
+            else:
+                tracker["pending_delivery_kg"] = 0.0
+        else:
+            if active_crop and tracker.get("pending_delivery_kg", 0.0) >= delivery_threshold_kg:
+                detected_delivery_kg = round(float(tracker.get("pending_delivery_kg") or 0.0), 1)
+                tracker["last_delivery_ts"] = int(now_ts)
+                tracker["last_delivery_kg"] = detected_delivery_kg
+            tracker["pending_delivery_kg"] = 0.0
+
+    tracker["last_feed_kg"] = round(feed_kg, 3)
+    tracker["last_feed_ts"] = int(now_ts)
+
+    burn_values = []
+    recent_days = tracker.get("recent_daily_burn_kg", [])
+    i = 0
+    while i < len(recent_days):
+        try:
+            burn = float(recent_days[i].get("burn_kg") or 0.0)
+            if burn > 0:
+                burn_values.append(burn)
+        except Exception:
+            pass
+        i += 1
+    try:
+        current_day_burn = float(tracker.get("current_day_burn_kg") or 0.0)
+        if current_day_burn > 0:
+            burn_values.append(current_day_burn)
+    except Exception:
+        pass
+    tracker["avg_daily_burn_kg"] = average_last_n(burn_values, 3)
+
+    state["feed_tracking"] = tracker
+    return detected_delivery_kg
 
 
 def normalize_bool(value):
@@ -1344,6 +1527,7 @@ def load_state():
         "shed_no": load_config()["shed_no"],
         "entries": {},
         "sensors": default_sensor_state(),
+        "feed_tracking": default_feed_tracking_state(),
         "dashboard_summary": {
             "water_7to7": None,
             "feed_7to7": None,
@@ -1381,6 +1565,7 @@ def load_state():
         state["entries"] = {}
     if not isinstance(state.get("sensors"), dict):
         state["sensors"] = default_sensor_state()
+    state["feed_tracking"] = clean_feed_tracking_state(state.get("feed_tracking", {}))
     if not isinstance(state.get("dashboard_summary"), dict):
         state["dashboard_summary"] = {
             "water_7to7": None,
@@ -1727,9 +1912,20 @@ def sync_payload(state):
     payload["controller_meta"] = {
         "temp_c": sensors.get("temp_c"),
         "rh_pct": sensors.get("rh_pct"),
+        "temp_low_c": cfg.get("temp_low_c"),
+        "temp_high_c": cfg.get("temp_high_c"),
+        "temp_amber_margin_c": cfg.get("temp_amber_margin_c"),
+        "rh_low_pct": cfg.get("rh_low_pct"),
+        "rh_high_pct": cfg.get("rh_high_pct"),
+        "rh_amber_margin_pct": cfg.get("rh_amber_margin_pct"),
         "water_lpm": sensors.get("water_lpm"),
+        "water_low_lpm": cfg.get("water_low_lpm"),
         "water_total_litres": water_total_litres,
         "feed_kg": sensors.get("feed_kg"),
+        "feed_low_kg": cfg.get("feed_low_kg"),
+        "feed_daily_burn_kg": state.get("feed_tracking", {}).get("avg_daily_burn_kg"),
+        "last_feed_delivery_ts": state.get("feed_tracking", {}).get("last_delivery_ts"),
+        "last_feed_delivery_kg": state.get("feed_tracking", {}).get("last_delivery_kg"),
         "last_sensor_ts": sensors.get("last_sensor_ts"),
         "device_status": sensors.get("device_status"),
         "pico_connected": sensors.get("pico_connected"),
@@ -2186,6 +2382,10 @@ def build_home_context():
         temp_c_f = float(sensors.get("temp_c")) if sensors.get("temp_c") is not None else None
     except Exception:
         temp_c_f = None
+    try:
+        rh_pct_f = float(sensors.get("rh_pct")) if sensors.get("rh_pct") is not None else None
+    except Exception:
+        rh_pct_f = None
 
     try:
         feed_kg_f = float(sensors.get("feed_kg")) if sensors.get("feed_kg") is not None else None
@@ -2194,11 +2394,29 @@ def build_home_context():
 
     temp_low_c = float(cfg.get("temp_low_c", 18.0))
     temp_high_c = float(cfg.get("temp_high_c", 24.0))
+    temp_amber_margin_c = max(0.0, float(cfg.get("temp_amber_margin_c", 1.0)))
+    rh_low_pct = float(cfg.get("rh_low_pct", 40.0))
+    rh_high_pct = float(cfg.get("rh_high_pct", 80.0))
+    rh_amber_margin_pct = max(0.0, float(cfg.get("rh_amber_margin_pct", 5.0)))
     if temp_c_f is None:
         temp_glow = "temp-red"
     elif temp_c_f < temp_low_c or temp_c_f > temp_high_c:
         temp_glow = "temp-red"
-    elif abs(temp_c_f - temp_low_c) <= 1.0 or abs(temp_c_f - temp_high_c) <= 1.0:
+    elif abs(temp_c_f - temp_low_c) <= temp_amber_margin_c or abs(temp_c_f - temp_high_c) <= temp_amber_margin_c:
+        temp_glow = "temp-warn"
+    else:
+        temp_glow = "temp-green"
+    if rh_pct_f is None:
+        rh_glow = "temp-red"
+    elif rh_pct_f < rh_low_pct or rh_pct_f > rh_high_pct:
+        rh_glow = "temp-red"
+    elif abs(rh_pct_f - rh_low_pct) <= rh_amber_margin_pct or abs(rh_pct_f - rh_high_pct) <= rh_amber_margin_pct:
+        rh_glow = "temp-warn"
+    else:
+        rh_glow = "temp-green"
+    if "temp-red" in [temp_glow, rh_glow]:
+        temp_glow = "temp-red"
+    elif "temp-warn" in [temp_glow, rh_glow]:
         temp_glow = "temp-warn"
     else:
         temp_glow = "temp-green"
@@ -2210,7 +2428,6 @@ def build_home_context():
     feed_glow = "feed-red" if (feed_kg_f is None or feed_kg_f < feed_low_kg) else "feed-green"
 
     auger_tiles = []
-    auger_slots = []
     active_auger_keys = enabled_auger_keys(cfg)
     i = 0
     while i < len(AUGER_DEFS):
@@ -2228,9 +2445,6 @@ def build_home_context():
                 "glow": "state-warn" if waiting_override else auger_glow_class(auger),
             }
             auger_tiles.append(tile)
-            auger_slots.append(tile)
-        else:
-            auger_slots.append(None)
         i += 1
 
     alarm_rows = build_alarm_rows(state)
@@ -2303,7 +2517,7 @@ def build_home_context():
         "sensors": sensors,
         "entry": entry,
         "auger_tiles": auger_tiles,
-        "auger_slots": auger_slots,
+        "auger_count": len(auger_tiles),
         "controller_alerts": controller_alerts,
         "alarm_count": len(alarm_rows),
         "alarm_class": alarm_class,
@@ -2649,8 +2863,16 @@ def apply_sensor_packet(state, packet):
         state["last_log_status"] = "Log failed: %s" % exc
     update_water_from_pulses(sensors, now_ts)
     update_feed_from_raw(sensors)
+    detected_delivery_kg = update_feed_tracking(state, sensors.get("feed_kg"), now_ts)
     evaluate_augers(sensors, now_ts=now_ts)
     state["sensors"] = sensors
+    if detected_delivery_kg is not None:
+        record_controller_event(
+            "feed_delivery_auto",
+            "Feed delivery auto-detected",
+            "Detected %.1f KG feed increase" % detected_delivery_kg,
+            push_to_office=True,
+        )
 
     calib = state.get("water_calibration", {})
     if isinstance(calib, dict) and calib.get("active"):
@@ -3118,10 +3340,23 @@ HTML = """
             color: inherit;
             height: 100%;
         }
-        .metric-spacer {
-            visibility: hidden;
-            pointer-events: none;
-            box-shadow: none;
+        .auger-grid-shell {
+            grid-column: 1 / span 3;
+            display: grid;
+            gap: 14px;
+            height: 100%;
+        }
+        .auger-grid-shell.count-1 {
+            grid-template-columns: 1fr;
+        }
+        .auger-grid-shell.count-2 {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .auger-grid-shell.count-3 {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+        .auger-grid-shell .metric {
+            min-width: 0;
         }
         .metric.flow-green {
             border-color: #35d07f;
@@ -3481,6 +3716,13 @@ HTML = """
             .hero, .top-grid, .main-grid, .action-grid, .allocation-form, .pill-grid {
                 grid-template-columns: 1fr;
             }
+            .auger-grid-shell,
+            .auger-grid-shell.count-1,
+            .auger-grid-shell.count-2,
+            .auger-grid-shell.count-3 {
+                grid-column: auto;
+                grid-template-columns: 1fr;
+            }
             .title-row {
                 flex-wrap: wrap;
             }
@@ -3587,18 +3829,18 @@ HTML = """
                     <div class="metric-sub">Litres</div>
                 </div>
             </a>
-            {% for auger in auger_slots %}
-            {% if auger %}
-            <div id="auger-{{ auger.key }}" class="metric {{ auger.glow }}">
-                <div class="metric-label">{{ auger.label }}</div>
-                <div class="metric-val" style="font-size:30px;" data-auger-status>{{ auger.status }}</div>
-                <div class="metric-sub" data-auger-runtime>{{ auger.runtime }}</div>
-                <div class="metric-sub" data-auger-last-run>{{ auger.last_run }}</div>
+            {% if auger_tiles %}
+            <div class="auger-grid-shell count-{{ auger_count }}">
+                {% for auger in auger_tiles %}
+                <div id="auger-{{ auger.key }}" class="metric {{ auger.glow }}">
+                    <div class="metric-label">{{ auger.label }}</div>
+                    <div class="metric-val" style="font-size:30px;" data-auger-status>{{ auger.status }}</div>
+                    <div class="metric-sub" data-auger-runtime>{{ auger.runtime }}</div>
+                    <div class="metric-sub" data-auger-last-run>{{ auger.last_run }}</div>
+                </div>
+                {% endfor %}
             </div>
-            {% else %}
-            <div class="metric metric-spacer" aria-hidden="true"></div>
             {% endif %}
-            {% endfor %}
             <a class="metric-link" href="{{ url_for('feed_history_view') }}">
                 <div class="metric">
                     <div class="metric-label">Feed Yesterday 7am-7am</div>
@@ -3906,6 +4148,24 @@ SETTINGS_HTML = """
             margin: 0 0 10px 0;
             font-size: 24px;
         }
+        .collapse {
+            margin-top: 14px;
+        }
+        .collapse summary {
+            cursor: pointer;
+            list-style: none;
+            padding: 12px 14px;
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            background: rgba(86, 86, 86, 0.96);
+            font-weight: 700;
+        }
+        .collapse summary::-webkit-details-marker {
+            display: none;
+        }
+        .collapse[open] summary {
+            margin-bottom: 12px;
+        }
         .button-row form {
             width: 100%;
             margin: 0;
@@ -3941,8 +4201,7 @@ SETTINGS_HTML = """
         <div class="grid">
             <div class="panel">
                 <h1>Shed {{ shed_no }} Settings</h1>
-                <div class="sub">Controller actions, alarms, logs, config, and commissioning tools.</div>
-                <div class="detail"><span class="label">Current Mode</span><span>{{ current_mode }}</span></div>
+                <div class="sub">Controller tools, alarms, logs, config, and commissioning.</div>
                 <div class="action-grid">
                     <a class="button-link" href="{{ url_for('allocation_view') }}">Shed Allocation</a>
                     <a class="button-link" href="{{ url_for('controller_alarms_view') }}">Alarms{% if alarm_count %} ({{ alarm_count }}){% endif %}</a>
@@ -3960,7 +4219,7 @@ SETTINGS_HTML = """
             </div>
             <div class="panel">
                 <h1>Current State</h1>
-                <div class="sub">Live controller summary moved off the home screen.</div>
+                <div class="sub">Current shed state and latest controller heartbeat.</div>
                 <div class="detail-list">
                     <div class="detail"><span class="label">Crop Active</span><span>{{ "Yes" if entry.crop_active == 1 else "No" }}</span></div>
                     <div class="detail"><span class="label">Started</span><span>{{ started_at }}</span></div>
@@ -3973,14 +4232,11 @@ SETTINGS_HTML = """
         </div>
         <div class="panel full-panel">
             <h1 style="font-size:28px;">Software Update</h1>
-            <div class="sub">Check the controller version against GitHub and apply a newer version when one is available.</div>
+            <div class="sub">Check for a newer controller or Pico version and apply it when needed.</div>
             <div class="update-split">
                 <div class="update-box">
                     <h2>Controller Update</h2>
                     <div class="detail-list">
-                        <div class="detail"><span class="label">Branch</span><span id="controllerUpdateBranch">{{ update_status.branch }}</span></div>
-                        <div class="detail"><span class="label">Current Version</span><span id="controllerUpdateCurrent">{{ update_status.local_commit }}</span></div>
-                        <div class="detail"><span class="label">Latest Version</span><span id="controllerUpdateLatest">{{ update_status.remote_commit }}</span></div>
                         <div class="detail"><span class="label">Last Check</span><span id="controllerUpdateChecked">{{ update_checked_at }}</span></div>
                     </div>
                     <div id="controllerUpdateStatus" class="status-note">{{ update_status.status }}</div>
@@ -3995,14 +4251,17 @@ SETTINGS_HTML = """
                     {% if update_status.restart_required %}
                     <div class="status-note">Latest code has been pulled. A controller restart is required to run the new version.</div>
                     {% endif %}
+                    <details class="collapse">
+                        <summary>Show Version Details</summary>
+                        <div class="detail-list">
+                            <div class="detail"><span class="label">Branch</span><span id="controllerUpdateBranch">{{ update_status.branch }}</span></div>
+                            <div class="detail"><span class="label">Current Version</span><span id="controllerUpdateCurrent">{{ update_status.local_commit }}</span></div>
+                            <div class="detail"><span class="label">Latest Version</span><span id="controllerUpdateLatest">{{ update_status.remote_commit }}</span></div>
+                        </div>
+                    </details>
                 </div>
                 <div class="update-box">
                     <h2>Pico Update</h2>
-                    <div class="detail-list">
-                        <div class="detail"><span class="label">Local Firmware</span><span>{{ pico_update_status.local_hash }}</span></div>
-                        <div class="detail"><span class="label">Last Deployed</span><span>{{ pico_update_status.last_deployed_hash }}</span></div>
-                        <div class="detail"><span class="label">Deployed At</span><span>{{ pico_deployed_at }}</span></div>
-                    </div>
                     <div class="status-note">{{ pico_update_status.status }}</div>
                     <div class="button-row">
                         <form method="post" action="{{ url_for('apply_pico_update_view') }}">
@@ -4012,6 +4271,14 @@ SETTINGS_HTML = """
                             <button type="submit" class="secondary">Soft Reset Pico</button>
                         </form>
                     </div>
+                    <details class="collapse">
+                        <summary>Show Firmware Details</summary>
+                        <div class="detail-list">
+                            <div class="detail"><span class="label">Local Firmware</span><span>{{ pico_update_status.local_hash }}</span></div>
+                            <div class="detail"><span class="label">Last Deployed</span><span>{{ pico_update_status.last_deployed_hash }}</span></div>
+                            <div class="detail"><span class="label">Deployed At</span><span>{{ pico_deployed_at }}</span></div>
+                        </div>
+                    </details>
                 </div>
             </div>
             <div class="update-split" style="margin-top:16px;">
@@ -4185,7 +4452,7 @@ HEALTH_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('index') }}">← Back</a></div>
+        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
         <div class="panel">
             <h1>Shed {{ shed_no }} Controller Health</h1>
             <div class="sub">Dashboard connection, sync status, serial state, and controller diagnostics.</div>
@@ -4256,12 +4523,16 @@ CONFIG_HTML = """
         .detail { display:flex; justify-content:space-between; gap:12px; padding:12px 0; border-bottom:1px solid #818181; font-size:16px; }
         .detail:last-child { border-bottom:0; }
         .hint { color:var(--muted); font-size:15px; margin-top:12px; }
-        @media (max-width: 900px) { .grid { grid-template-columns:1fr; } }
+        .auger-grid { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:12px; margin-top:10px; }
+        .auger-card { border:1px solid #818181; border-radius:16px; padding:14px; background:#636363; }
+        .auger-card h3 { margin:0 0 12px 0; font-size:18px; color:var(--text); }
+        .auger-card .check { padding:10px 0 0 0; border-bottom:0; }
+        @media (max-width: 900px) { .grid { grid-template-columns:1fr; } .auger-grid { grid-template-columns:1fr; } }
     </style>
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('index') }}">← Back</a></div>
+        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
         <div class="grid">
             <div class="panel">
                 <h1>Shed {{ shed_no }} Controller Config</h1>
@@ -4278,6 +4549,25 @@ CONFIG_HTML = """
                     <div class="field"><label for="touch_refresh_seconds">Home Poll Seconds</label><input id="touch_refresh_seconds" type="number" name="touch_refresh_seconds" step="1" inputmode="numeric" value="{{ cfg.touch_refresh_seconds }}"></div>
                     <div class="check"><span>Serial Enabled</span><input type="checkbox" name="serial_enabled" {% if cfg.serial_enabled %}checked{% endif %}></div>
                     <div class="check"><span>Auto Sync On Change</span><input type="checkbox" name="sync_on_sensor_update" {% if cfg.sync_on_sensor_update %}checked{% endif %}></div>
+                    <div class="group-title">Augers</div>
+                    <div class="sub" style="margin-bottom:10px;">Rename each auger tile and decide whether it should appear and be monitored on this shed.</div>
+                    <div class="auger-grid">
+                        <div class="auger-card">
+                            <h3>Cross Auger</h3>
+                            <div class="field"><label for="cross_auger_label">Label</label><input id="cross_auger_label" type="text" name="cross_auger_label" value="{{ cfg.cross_auger_label }}"></div>
+                            <div class="check"><span>Enabled</span><input type="checkbox" name="cross_auger_enabled" {% if cfg.cross_auger_enabled %}checked{% endif %}></div>
+                        </div>
+                        <div class="auger-card">
+                            <h3>Left Auger</h3>
+                            <div class="field"><label for="auger_left_label">Label</label><input id="auger_left_label" type="text" name="auger_left_label" value="{{ cfg.auger_left_label }}"></div>
+                            <div class="check"><span>Enabled</span><input type="checkbox" name="auger_left_enabled" {% if cfg.auger_left_enabled %}checked{% endif %}></div>
+                        </div>
+                        <div class="auger-card">
+                            <h3>Right Auger</h3>
+                            <div class="field"><label for="auger_right_label">Label</label><input id="auger_right_label" type="text" name="auger_right_label" value="{{ cfg.auger_right_label }}"></div>
+                            <div class="check"><span>Enabled</span><input type="checkbox" name="auger_right_enabled" {% if cfg.auger_right_enabled %}checked{% endif %}></div>
+                        </div>
+                    </div>
                     <button type="submit">Save Controller Config</button>
                 </form>
                 <div class="hint">If you change shed number or network settings, the controller app should be restarted after saving.</div>
@@ -4327,7 +4617,7 @@ ALARMS_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('index') }}">← Back</a></div>
+        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
         <div class="panel">
             <h1>Shed {{ shed_no }} Alarms</h1>
             <div class="sub">Stale sensor checks, office link checks, push failures, and controller alarms.</div>
@@ -4376,7 +4666,7 @@ CONTROLLER_EVENTS_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('index') }}">← Back</a></div>
+        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
         <div class="panel">
             <h1>Shed {{ shed_no }} Event Log</h1>
             <div class="sub">Recent local controller events and sync actions.</div>
@@ -4421,7 +4711,7 @@ COMMISSIONING_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('index') }}">← Back</a></div>
+        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
         <div class="panel" style="margin-bottom:16px;">
             <h1>Shed {{ shed_no }} Commissioning</h1>
             <div class="sub">Raw sensor values, sync versions, and wiring diagnostics.</div>
@@ -4538,7 +4828,7 @@ HISTORY_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('index') }}">← Back</a></div>
+        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
         <div class="panel">
             <h1>Shed {{ shed_no }} {{ metric_title }}</h1>
             <div class="sub">Current crop {{ crop_code }} hourly {{ metric_title|lower }} history.</div>
@@ -4665,9 +4955,14 @@ TEMP_SETTINGS_HTML = """
             font-size: 34px;
             font-weight: 700;
         }
-        .form-grid {
+        .form-rows {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: 1fr;
+            gap: 12px;
+        }
+        .form-row {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
             gap: 12px;
         }
         label {
@@ -4705,8 +5000,69 @@ TEMP_SETTINGS_HTML = """
             font-size: 16px;
             margin-top: 12px;
         }
+        .preview {
+            margin-top: 14px;
+            padding: 14px;
+            border-radius: 16px;
+            background: #686868;
+            border: 1px solid var(--line);
+        }
+        .preview-title {
+            font-size: 16px;
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+        .preview-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
+        }
+        .preview-item {
+            min-width: 0;
+        }
+        .preview-pill {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-size: 13px;
+            font-weight: 700;
+            margin-bottom: 6px;
+            border: 1px solid var(--line);
+        }
+        .preview-pill.red {
+            color: #ffd6d6;
+            border-color: #ff5b5b;
+            box-shadow: 0 0 8px rgba(255,91,91,0.4);
+        }
+        .preview-pill.amber {
+            color: #ffe7b0;
+            border-color: #ffd06a;
+            box-shadow: 0 0 8px rgba(255,208,106,0.35);
+        }
+        .preview-pill.green {
+            color: #dff9ea;
+            border-color: #35d07f;
+            box-shadow: 0 0 8px rgba(53,208,127,0.35);
+        }
+        .preview-text {
+            color: var(--muted);
+            font-size: 14px;
+            line-height: 1.35;
+        }
         @media (max-width: 900px) {
-            .form-grid {
+            .form-row {
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+                gap: 10px;
+            }
+            label {
+                font-size: 14px;
+            }
+            input[type="number"] {
+                min-height: 64px;
+                font-size: 24px;
+                padding: 10px 12px;
+            }
+            .preview-grid {
                 grid-template-columns: 1fr;
             }
         }
@@ -4714,27 +5070,64 @@ TEMP_SETTINGS_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('index') }}">← Back</a></div>
+        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
         <div class="panel">
             <h1>Shed {{ shed_no }} Temperature</h1>
-            <div class="sub">Adjust the low and high temperature thresholds for the top tile warning glow.</div>
+            <div class="sub">Adjust the temperature and humidity thresholds for the top tile warning glow.</div>
             <div class="current">Current: {{ temp_c }} C / {{ rh_pct }} %RH</div>
         </div>
         <div class="panel">
             <form method="post" action="{{ url_for('save_temp_settings') }}">
-                <div class="form-grid">
-                    <div>
-                        <label for="temp_low_c">Low threshold C</label>
-                        <input id="temp_low_c" type="number" name="temp_low_c" step="0.1" inputmode="decimal" enterkeyhint="done" value="{{ temp_low_c }}">
+                <div class="form-rows">
+                    <div class="form-row">
+                        <div>
+                            <label for="temp_low_c">Temp Red Low C</label>
+                            <input id="temp_low_c" type="number" name="temp_low_c" step="0.1" inputmode="decimal" enterkeyhint="done" value="{{ temp_low_c }}">
+                        </div>
+                        <div>
+                            <label for="temp_high_c">Temp Red High C</label>
+                            <input id="temp_high_c" type="number" name="temp_high_c" step="0.1" inputmode="decimal" enterkeyhint="done" value="{{ temp_high_c }}">
+                        </div>
+                        <div>
+                            <label for="temp_amber_margin_c">Temp Amber Margin C</label>
+                            <input id="temp_amber_margin_c" type="number" name="temp_amber_margin_c" step="0.1" inputmode="decimal" enterkeyhint="done" value="{{ temp_amber_margin_c }}">
+                        </div>
                     </div>
-                    <div>
-                        <label for="temp_high_c">High threshold C</label>
-                        <input id="temp_high_c" type="number" name="temp_high_c" step="0.1" inputmode="decimal" enterkeyhint="done" value="{{ temp_high_c }}">
+                    <div class="form-row">
+                        <div>
+                            <label for="rh_low_pct">RH Red Low %</label>
+                            <input id="rh_low_pct" type="number" name="rh_low_pct" step="1" inputmode="numeric" enterkeyhint="done" value="{{ rh_low_pct }}">
+                        </div>
+                        <div>
+                            <label for="rh_high_pct">RH Red High %</label>
+                            <input id="rh_high_pct" type="number" name="rh_high_pct" step="1" inputmode="numeric" enterkeyhint="done" value="{{ rh_high_pct }}">
+                        </div>
+                        <div>
+                            <label for="rh_amber_margin_pct">RH Amber Margin %</label>
+                            <input id="rh_amber_margin_pct" type="number" name="rh_amber_margin_pct" step="1" inputmode="numeric" enterkeyhint="done" value="{{ rh_amber_margin_pct }}">
+                        </div>
                     </div>
                 </div>
-                <button type="submit">Save Temperature Limits</button>
+                <button type="submit">Save Temperature & Humidity Limits</button>
             </form>
-            <div class="hint">Green is comfortably within range. Amber is within 1.0C of either threshold. Red is outside the range.</div>
+            <div class="hint">The red-below and red-above values are the hard limits. The amber margin creates an amber warning zone just inside those limits.</div>
+            <div class="preview">
+                <div class="preview-title">How The Colours Work</div>
+                <div class="preview-grid">
+                    <div class="preview-item">
+                        <div class="preview-pill red">RED</div>
+                        <div class="preview-text">Outside the safe range.</div>
+                    </div>
+                    <div class="preview-item">
+                        <div class="preview-pill amber">AMBER</div>
+                        <div class="preview-text">Still in range, but within the amber margin near either red limit.</div>
+                    </div>
+                    <div class="preview-item">
+                        <div class="preview-pill green">GREEN</div>
+                        <div class="preview-text">Comfortably inside the normal operating range.</div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 </body>
@@ -4834,7 +5227,7 @@ SINGLE_THRESHOLD_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('index') }}">← Back</a></div>
+        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
         <div class="panel">
             <h1>Shed {{ shed_no }} {{ title }}</h1>
             <div class="sub">{{ subtitle }}</div>
@@ -4883,7 +5276,7 @@ WATER_SETTINGS_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('index') }}">← Back</a></div>
+        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
         <div class="panel">
             <h1>Shed {{ shed_no }} Water Settings</h1>
             <div class="sub">Adjust the low-flow threshold and calibrate pulses per litre against the shed water meter.</div>
@@ -5002,7 +5395,7 @@ FEED_SETTINGS_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('index') }}">← Back</a></div>
+        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
         <div class="panel">
             <h1>Shed {{ shed_no }} Feed Settings</h1>
             <div class="sub">Low-feed warning plus feed bin calibration using tare, bin capacity, and a known weight.</div>
@@ -5829,6 +6222,12 @@ def save_controller_config_view():
         pass
     cfg["serial_enabled"] = request.form.get("serial_enabled") == "on"
     cfg["sync_on_sensor_update"] = request.form.get("sync_on_sensor_update") == "on"
+    cfg["cross_auger_enabled"] = request.form.get("cross_auger_enabled") == "on"
+    cfg["auger_left_enabled"] = request.form.get("auger_left_enabled") == "on"
+    cfg["auger_right_enabled"] = request.form.get("auger_right_enabled") == "on"
+    cfg["cross_auger_label"] = str(request.form.get("cross_auger_label", cfg["cross_auger_label"]) or "").strip() or "Cross Auger"
+    cfg["auger_left_label"] = str(request.form.get("auger_left_label", cfg["auger_left_label"]) or "").strip() or "Auger Left"
+    cfg["auger_right_label"] = str(request.form.get("auger_right_label", cfg["auger_right_label"]) or "").strip() or "Auger Right"
     save_config(cfg)
     return redirect(url_for("controller_config_view"))
 
@@ -5906,6 +6305,10 @@ def temp_settings_view():
         rh_pct=fmt_value(sensors.get("rh_pct"), "f0"),
         temp_low_c=cfg.get("temp_low_c", 18.0),
         temp_high_c=cfg.get("temp_high_c", 24.0),
+        temp_amber_margin_c=cfg.get("temp_amber_margin_c", 1.0),
+        rh_low_pct=cfg.get("rh_low_pct", 40.0),
+        rh_high_pct=cfg.get("rh_high_pct", 80.0),
+        rh_amber_margin_pct=cfg.get("rh_amber_margin_pct", 5.0),
     )
 
 
@@ -5915,14 +6318,24 @@ def save_temp_settings():
     try:
         temp_low_c = float(request.form.get("temp_low_c", "").strip())
         temp_high_c = float(request.form.get("temp_high_c", "").strip())
+        temp_amber_margin_c = float(request.form.get("temp_amber_margin_c", "").strip())
+        rh_low_pct = float(request.form.get("rh_low_pct", "").strip())
+        rh_high_pct = float(request.form.get("rh_high_pct", "").strip())
+        rh_amber_margin_pct = float(request.form.get("rh_amber_margin_pct", "").strip())
     except Exception:
         return redirect(url_for("temp_settings_view"))
 
-    if temp_low_c >= temp_high_c:
+    if temp_low_c >= temp_high_c or rh_low_pct >= rh_high_pct:
+        return redirect(url_for("temp_settings_view"))
+    if temp_amber_margin_c < 0 or rh_amber_margin_pct < 0:
         return redirect(url_for("temp_settings_view"))
 
     cfg["temp_low_c"] = temp_low_c
     cfg["temp_high_c"] = temp_high_c
+    cfg["temp_amber_margin_c"] = temp_amber_margin_c
+    cfg["rh_low_pct"] = rh_low_pct
+    cfg["rh_high_pct"] = rh_high_pct
+    cfg["rh_amber_margin_pct"] = rh_amber_margin_pct
     save_config(cfg)
     return redirect(url_for("temp_settings_view"))
 
