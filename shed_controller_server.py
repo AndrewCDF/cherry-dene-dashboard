@@ -335,6 +335,8 @@ DEFAULT_CONFIG = {
     "auger_left_label": "Auger Left",
     "auger_right_label": "Auger Right",
 }
+WATER_LPM_DISPLAY_AVERAGE_SECONDS = 30
+WATER_LPM_DISPLAY_MAX_SAMPLES = 45
 
 SERIAL_THREAD = None
 MONITOR_THREAD = None
@@ -2716,7 +2718,7 @@ def update_water_from_pulses(sensors, now_ts):
     if not isinstance(samples, list):
         samples = []
     samples.append({"ts": int(now_ts), "total": total_pulses})
-    cutoff_ts = int(now_ts) - 8
+    cutoff_ts = int(now_ts) - int(WATER_LPM_DISPLAY_AVERAGE_SECONDS)
     clean_samples = []
     i = 0
     while i < len(samples):
@@ -2730,8 +2732,8 @@ def update_water_from_pulses(sensors, now_ts):
         if item_ts >= cutoff_ts:
             clean_samples.append({"ts": item_ts, "total": item_total})
         i += 1
-    if len(clean_samples) > 12:
-        clean_samples = clean_samples[-12:]
+    if len(clean_samples) > WATER_LPM_DISPLAY_MAX_SAMPLES:
+        clean_samples = clean_samples[-WATER_LPM_DISPLAY_MAX_SAMPLES:]
     sensors["flow_rate_samples"] = clean_samples
 
     if prev_total is not None and prev_ts is not None:
