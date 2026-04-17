@@ -5283,9 +5283,16 @@ WATER_SETTINGS_HTML = """
             <h1>Shed {{ shed_no }} Water Settings</h1>
             <div class="sub">Adjust the low-flow threshold and calibrate pulses per litre against the shed water meter.</div>
             <div class="current">Current: <span id="waterCurrentValue">{{ current_value }}</span> L/PM</div>
+            <div class="detail"><span>Raw pulse L/PM</span><span id="waterCurrentRawValue">{{ current_value_raw }}</span></div>
             <div class="detail"><span>Low flow threshold</span><span>{{ water_low_lpm }} L/PM</span></div>
             <div class="detail"><span>Pulses per litre</span><span id="waterPulsesPerLitre">{{ water_pulses_per_litre }}</span></div>
             <div class="detail"><span>Total flow pulses</span><span id="waterTotalPulses">{{ total_flow_pulses }}</span></div>
+        </div>
+        <div class="panel">
+            <div class="sub">Live pulse activity</div>
+            <div class="detail"><span>Latest pulse delta</span><span><span id="livePulseLastDelta">{{ live_pulse_last_delta }}</span> in <span id="livePulseLastSeconds">{{ live_pulse_last_seconds }}</span></span></div>
+            <div class="detail"><span>Pulse delta in live window</span><span><span id="livePulseWindowDelta">{{ live_pulse_window_delta }}</span> in <span id="livePulseWindowSeconds">{{ live_pulse_window_seconds }}</span></span></div>
+            <div class="hint">Use this to see whether pulses are reaching the controller even when the displayed L/PM is very low.</div>
         </div>
         <div class="panel">
             <form method="post" action="{{ url_for('save_water_settings') }}">
@@ -5320,8 +5327,13 @@ WATER_SETTINGS_HTML = """
 <script>
 (function () {
     const currentEl = document.getElementById('waterCurrentValue');
+    const currentRawEl = document.getElementById('waterCurrentRawValue');
     const pplEl = document.getElementById('waterPulsesPerLitre');
     const totalEl = document.getElementById('waterTotalPulses');
+    const liveLastDeltaEl = document.getElementById('livePulseLastDelta');
+    const liveLastSecondsEl = document.getElementById('livePulseLastSeconds');
+    const liveWindowDeltaEl = document.getElementById('livePulseWindowDelta');
+    const liveWindowSecondsEl = document.getElementById('livePulseWindowSeconds');
     const statusEl = document.getElementById('calibrationStatus');
     const pulseEl = document.getElementById('calibrationPulseDelta');
     const remainingEl = document.getElementById('calibrationRemaining');
@@ -5343,8 +5355,13 @@ WATER_SETTINGS_HTML = """
             if (!resp.ok) return;
             const data = await resp.json();
             currentEl.textContent = data.current_value || '--';
+            if (currentRawEl) currentRawEl.textContent = data.current_value_raw || '--';
             pplEl.textContent = data.water_pulses_per_litre || '--';
             totalEl.textContent = data.total_flow_pulses || '--';
+            if (liveLastDeltaEl) liveLastDeltaEl.textContent = data.live_pulse_last_delta || '--';
+            if (liveLastSecondsEl) liveLastSecondsEl.textContent = data.live_pulse_last_seconds || '--';
+            if (liveWindowDeltaEl) liveWindowDeltaEl.textContent = data.live_pulse_window_delta || '--';
+            if (liveWindowSecondsEl) liveWindowSecondsEl.textContent = data.live_pulse_window_seconds || '--';
             statusEl.textContent = data.calibration_status || 'Ready';
             pulseEl.textContent = data.calibration_pulse_delta || '--';
             remainingEl.textContent = data.calibration_remaining || '--';
@@ -6346,6 +6363,9 @@ def build_water_settings_context(cfg, state):
     sensors = state.get("sensors", default_sensor_state())
     calib = state.get("water_calibration", {})
     now_ts = int(time.time())
+    flow_samples = sensors.get("flow_rate_samples")
+    if not isinstance(flow_samples, list):
+        flow_samples = []
 
     if isinstance(calib, dict) and calib.get("active"):
         try:
@@ -6401,12 +6421,39 @@ def build_water_settings_context(cfg, state):
             calibration_remaining = "0m 00s"
             calibration_pulse_delta = fmt_value(calib.get("pulse_delta"), "i")
 
+    live_pulse_last_delta = "--"
+    live_pulse_last_seconds = "--"
+    live_pulse_window_delta = "--"
+    live_pulse_window_seconds = "--"
+    if len(flow_samples) >= 2:
+        latest = flow_samples[-1]
+        previous = flow_samples[-2]
+        oldest = flow_samples[0]
+        try:
+            latest_ts = int(latest.get("ts"))
+            latest_total = int(latest.get("total"))
+            previous_ts = int(previous.get("ts"))
+            previous_total = int(previous.get("total"))
+            oldest_ts = int(oldest.get("ts"))
+            oldest_total = int(oldest.get("total"))
+            live_pulse_last_delta = fmt_value(max(0, latest_total - previous_total), "i")
+            live_pulse_last_seconds = "%ss" % max(1, latest_ts - previous_ts)
+            live_pulse_window_delta = fmt_value(max(0, latest_total - oldest_total), "i")
+            live_pulse_window_seconds = "%ss" % max(1, latest_ts - oldest_ts)
+        except Exception:
+            pass
+
     return {
         "shed_no": cfg["shed_no"],
         "current_value": fmt_value(sensors.get("water_lpm"), "f2"),
+        "current_value_raw": fmt_value(sensors.get("water_lpm_raw"), "f2"),
         "water_low_lpm": fmt_value(cfg.get("water_low_lpm", 0.1), "f2"),
         "water_pulses_per_litre": fmt_value(cfg.get("water_pulses_per_litre", 450.0), "f1"),
         "total_flow_pulses": fmt_value(sensors.get("flow_total_pulses"), "i"),
+        "live_pulse_last_delta": live_pulse_last_delta,
+        "live_pulse_last_seconds": live_pulse_last_seconds,
+        "live_pulse_window_delta": live_pulse_window_delta,
+        "live_pulse_window_seconds": live_pulse_window_seconds,
         "calibration_status": calibration_status,
         "calibration_remaining": calibration_remaining,
         "calibration_pulse_delta": calibration_pulse_delta,
