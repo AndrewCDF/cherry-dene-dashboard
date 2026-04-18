@@ -1079,6 +1079,8 @@ def default_sensor_state():
         "rh_pct": None,
         "water_lpm": None,
         "water_lpm_raw": None,
+        "water_last_pulse_delta": None,
+        "water_last_elapsed_s": None,
         "feed_kg": None,
         "light_lux": None,
         "pressure_pa": None,
@@ -2712,28 +2714,6 @@ def update_water_from_pulses(sensors, now_ts):
     prev_total = sensors.get("flow_prev_total_pulses")
     prev_ts = sensors.get("flow_prev_ts")
     sensors["flow_total_pulses"] = total_pulses
-    samples = sensors.get("flow_rate_samples")
-    if not isinstance(samples, list):
-        samples = []
-    samples.append({"ts": int(now_ts), "total": total_pulses})
-    cutoff_ts = int(now_ts) - 30
-    clean_samples = []
-    i = 0
-    while i < len(samples):
-        item = samples[i]
-        try:
-            item_ts = int(item.get("ts"))
-            item_total = int(item.get("total"))
-        except Exception:
-            i += 1
-            continue
-        if item_ts >= cutoff_ts:
-            clean_samples.append({"ts": item_ts, "total": item_total})
-        i += 1
-    if len(clean_samples) > 45:
-        clean_samples = clean_samples[-45:]
-    sensors["flow_rate_samples"] = clean_samples
-
     if prev_total is not None and prev_ts is not None:
         try:
             pulse_delta = int(total_pulses) - int(prev_total)
@@ -2743,6 +2723,8 @@ def update_water_from_pulses(sensors, now_ts):
             elapsed_s = None
 
         if pulse_delta is not None and pulse_delta >= 0 and elapsed_s is not None:
+            sensors["water_last_pulse_delta"] = pulse_delta
+            sensors["water_last_elapsed_s"] = elapsed_s
             litres_per_second = (float(pulse_delta) / pulses_per_litre) / float(elapsed_s)
             raw_lpm = round(litres_per_second * 60.0, 2)
             sensors["water_lpm_raw"] = raw_lpm
@@ -5272,8 +5254,8 @@ WATER_SETTINGS_HTML = """
         <div class="panel">
             <div class="sub">Live pulse activity</div>
             <div class="detail"><span>Latest pulse delta</span><span><span id="livePulseLastDelta">{{ live_pulse_last_delta }}</span> in <span id="livePulseLastSeconds">{{ live_pulse_last_seconds }}</span></span></div>
-            <div class="detail"><span>Pulse delta in live window</span><span><span id="livePulseWindowDelta">{{ live_pulse_window_delta }}</span> in <span id="livePulseWindowSeconds">{{ live_pulse_window_seconds }}</span></span></div>
-            <div class="hint">Use this to see whether pulses are reaching the controller even when the displayed L/PM is very low.</div>
+            <div class="detail"><span>Total pulses seen</span><span id="livePulseWindowDelta">{{ live_pulse_window_delta }}</span></div>
+            <div class="hint">Use this to see whether pulses are reaching the controller even with all water-flow conditioning removed.</div>
         </div>
         <div class="panel">
             <form method="post" action="{{ url_for('save_water_settings') }}">
@@ -6344,9 +6326,6 @@ def build_water_settings_context(cfg, state):
     sensors = state.get("sensors", default_sensor_state())
     calib = state.get("water_calibration", {})
     now_ts = int(time.time())
-    flow_samples = sensors.get("flow_rate_samples")
-    if not isinstance(flow_samples, list):
-        flow_samples = []
 
     if isinstance(calib, dict) and calib.get("active"):
         try:
@@ -6406,23 +6385,14 @@ def build_water_settings_context(cfg, state):
     live_pulse_last_seconds = "--"
     live_pulse_window_delta = "--"
     live_pulse_window_seconds = "--"
-    if len(flow_samples) >= 2:
-        latest = flow_samples[-1]
-        previous = flow_samples[-2]
-        oldest = flow_samples[0]
-        try:
-            latest_ts = int(latest.get("ts"))
-            latest_total = int(latest.get("total"))
-            previous_ts = int(previous.get("ts"))
-            previous_total = int(previous.get("total"))
-            oldest_ts = int(oldest.get("ts"))
-            oldest_total = int(oldest.get("total"))
-            live_pulse_last_delta = fmt_value(max(0, latest_total - previous_total), "i")
-            live_pulse_last_seconds = "%ss" % max(1, latest_ts - previous_ts)
-            live_pulse_window_delta = fmt_value(max(0, latest_total - oldest_total), "i")
-            live_pulse_window_seconds = "%ss" % max(1, latest_ts - oldest_ts)
-        except Exception:
-            pass
+    try:
+        last_delta = int(sensors.get("water_last_pulse_delta"))
+        last_elapsed_s = int(sensors.get("water_last_elapsed_s"))
+        live_pulse_last_delta = fmt_value(max(0, last_delta), "i")
+        live_pulse_last_seconds = "%ss" % max(1, last_elapsed_s)
+    except Exception:
+        pass
+    live_pulse_window_delta = fmt_value(sensors.get("flow_total_pulses"), "i")
 
     return {
         "shed_no": cfg["shed_no"],

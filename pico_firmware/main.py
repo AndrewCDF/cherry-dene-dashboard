@@ -21,7 +21,6 @@ STATUS_LED_PIN = "LED"
 HX711_DOUT_PIN = 14
 HX711_SCK_PIN = 15
 HX711_READINGS = 8
-FLOW_DEBOUNCE_US = 1200
 AUGER_INPUT_ACTIVE_LOW = True
 
 # SHT4x high precision measurement command.
@@ -45,7 +44,6 @@ flow_pulse_count = 0
 total_flow_pulses = 0
 boot_ms = time.ticks_ms()
 last_flow_calc_ms = time.ticks_ms()
-last_flow_pulse_us = time.ticks_us()
 last_temp_rh_ms = time.ticks_ms() - int(TEMP_RH_MEASURE_SECONDS * 1000)
 last_temp_c = None
 last_rh_pct = None
@@ -56,11 +54,7 @@ def setup_inputs():
 
 
 def flow_pulse_handler(pin):
-    global flow_pulse_count, total_flow_pulses, last_flow_pulse_us
-    now_us = time.ticks_us()
-    if time.ticks_diff(now_us, last_flow_pulse_us) < FLOW_DEBOUNCE_US:
-        return
-    last_flow_pulse_us = now_us
+    global flow_pulse_count, total_flow_pulses
     flow_pulse_count += 1
     total_flow_pulses += 1
 
