@@ -5266,6 +5266,14 @@ WATER_SETTINGS_HTML = """
             <div class="hint">Green is at or above the threshold. Red is below it or missing.</div>
         </div>
         <div class="panel">
+            <form method="post" action="{{ url_for('save_water_pulses_per_litre') }}">
+                <label for="manual_pulses_per_litre">Manual pulses per litre</label>
+                <input id="manual_pulses_per_litre" type="number" name="pulses_per_litre" step="0.01" inputmode="decimal" enterkeyhint="done" value="{{ water_pulses_per_litre }}">
+                <button type="submit">Save Pulses Per Litre</button>
+            </form>
+            <div class="hint">Use this to set a known starting point before running the 5 minute calibration.</div>
+        </div>
+        <div class="panel">
             <div class="sub">5 minute calibration</div>
             <div class="detail"><span>Status</span><span id="calibrationStatus" class="status">{{ calibration_status }}</span></div>
             <div class="detail"><span>Pulse count in run</span><span id="calibrationPulseDelta">{{ calibration_pulse_delta }}</span></div>
@@ -6436,6 +6444,20 @@ def save_water_settings():
     except Exception:
         return redirect(url_for("water_settings_view"))
     cfg["water_low_lpm"] = threshold_value
+    save_config(cfg)
+    return redirect(url_for("water_settings_view"))
+
+
+@app.route("/settings/water/pulses-per-litre", methods=["POST"])
+def save_water_pulses_per_litre():
+    cfg = load_config()
+    try:
+        pulses_per_litre = float(request.form.get("pulses_per_litre", "").strip())
+        if pulses_per_litre <= 0:
+            raise ValueError()
+    except Exception:
+        return redirect(url_for("water_settings_view"))
+    cfg["water_pulses_per_litre"] = pulses_per_litre
     save_config(cfg)
     return redirect(url_for("water_settings_view"))
 
