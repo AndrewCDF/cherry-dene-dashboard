@@ -335,8 +335,6 @@ DEFAULT_CONFIG = {
     "auger_left_label": "Auger Left",
     "auger_right_label": "Auger Right",
 }
-WATER_LPM_DISPLAY_AVERAGE_SECONDS = 30
-WATER_LPM_DISPLAY_MAX_SAMPLES = 45
 
 SERIAL_THREAD = None
 MONITOR_THREAD = None
@@ -2718,7 +2716,7 @@ def update_water_from_pulses(sensors, now_ts):
     if not isinstance(samples, list):
         samples = []
     samples.append({"ts": int(now_ts), "total": total_pulses})
-    cutoff_ts = int(now_ts) - int(WATER_LPM_DISPLAY_AVERAGE_SECONDS)
+    cutoff_ts = int(now_ts) - 30
     clean_samples = []
     i = 0
     while i < len(samples):
@@ -2732,8 +2730,8 @@ def update_water_from_pulses(sensors, now_ts):
         if item_ts >= cutoff_ts:
             clean_samples.append({"ts": item_ts, "total": item_total})
         i += 1
-    if len(clean_samples) > WATER_LPM_DISPLAY_MAX_SAMPLES:
-        clean_samples = clean_samples[-WATER_LPM_DISPLAY_MAX_SAMPLES:]
+    if len(clean_samples) > 45:
+        clean_samples = clean_samples[-45:]
     sensors["flow_rate_samples"] = clean_samples
 
     if prev_total is not None and prev_ts is not None:
@@ -2748,24 +2746,7 @@ def update_water_from_pulses(sensors, now_ts):
             litres_per_second = (float(pulse_delta) / pulses_per_litre) / float(elapsed_s)
             raw_lpm = round(litres_per_second * 60.0, 2)
             sensors["water_lpm_raw"] = raw_lpm
-            display_lpm = raw_lpm
-            if len(clean_samples) >= 2:
-                oldest = clean_samples[0]
-                newest = clean_samples[-1]
-                try:
-                    window_elapsed_s = max(1, int(newest["ts"]) - int(oldest["ts"]))
-                    window_pulse_delta = int(newest["total"]) - int(oldest["total"])
-                except Exception:
-                    window_elapsed_s = None
-                    window_pulse_delta = None
-                if (
-                    window_elapsed_s is not None
-                    and window_pulse_delta is not None
-                    and window_pulse_delta >= 0
-                ):
-                    window_litres_per_second = (float(window_pulse_delta) / pulses_per_litre) / float(window_elapsed_s)
-                    display_lpm = round(window_litres_per_second * 60.0, 2)
-            sensors["water_lpm"] = display_lpm
+            sensors["water_lpm"] = raw_lpm
 
     sensors["flow_prev_total_pulses"] = total_pulses
     sensors["flow_prev_ts"] = now_ts
