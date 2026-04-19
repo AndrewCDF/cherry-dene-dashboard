@@ -4269,26 +4269,6 @@ SETTINGS_HTML = """
                         </div>
                     </details>
                 </div>
-                <div class="update-box">
-                    <h2>Pico Update</h2>
-                    <div class="status-note">{{ pico_update_status.status }}</div>
-                    <div class="button-row">
-                        <form method="post" action="{{ url_for('apply_pico_update_view') }}">
-                            <button type="submit">Deploy Pico Firmware</button>
-                        </form>
-                        <form method="post" action="{{ url_for('soft_reset_pico_view') }}">
-                            <button type="submit" class="secondary">Soft Reset Pico</button>
-                        </form>
-                    </div>
-                    <details class="collapse">
-                        <summary>Show Firmware Details</summary>
-                        <div class="detail-list">
-                            <div class="detail"><span class="label">Local Firmware</span><span>{{ pico_update_status.local_hash }}</span></div>
-                            <div class="detail"><span class="label">Last Deployed</span><span>{{ pico_update_status.last_deployed_hash }}</span></div>
-                            <div class="detail"><span class="label">Deployed At</span><span>{{ pico_deployed_at }}</span></div>
-                        </div>
-                    </details>
-                </div>
             </div>
             <div class="update-split" style="margin-top:16px;">
                 <div class="update-box">
@@ -5884,12 +5864,9 @@ def controller_settings_view():
         update_status["restart_required"] = False
         if live_git.get("ok"):
             update_status["status"] = "Already on latest version"
-    pico_update_status = load_pico_update_status()
     checked_at = update_status.get("checked_at")
     ctx["update_status"] = update_status
     ctx["update_checked_at"] = fmt_ts(checked_at) if checked_at else "--"
-    ctx["pico_update_status"] = pico_update_status
-    ctx["pico_deployed_at"] = fmt_ts(pico_update_status.get("last_deployed_at"))
     ctx["msg"] = request.args.get("msg", "")
     ctx["current_mode"] = current_mode_label(cfg)
     ctx["current_mode_key"] = cfg.get("deployment_mode", "commissioning")
