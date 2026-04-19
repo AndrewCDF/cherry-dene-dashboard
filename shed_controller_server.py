@@ -537,6 +537,13 @@ def pico_firmware_hash():
     return h.hexdigest()[:10]
 
 
+def pico_firmware_needs_deploy():
+    local_hash = pico_firmware_hash()
+    status = load_pico_update_status()
+    last_deployed_hash = str(status.get("last_deployed_hash") or "--").strip() or "--"
+    return local_hash != "--" and local_hash != last_deployed_hash
+
+
 def mpremote_command():
     direct = shutil.which("mpremote")
     if direct:
@@ -4234,7 +4241,7 @@ SETTINGS_HTML = """
         </div>
         <div class="panel full-panel">
             <h1 style="font-size:28px;">Software Update</h1>
-            <div class="sub">Check for a newer controller or Pico version and apply it when needed.</div>
+            <div class="sub">Check for a newer controller version. When the pulled update includes Pico firmware changes, they are deployed automatically too.</div>
             <div class="update-split">
                 <div class="update-box">
                     <h2>Controller Update</h2>
@@ -4247,7 +4254,7 @@ SETTINGS_HTML = """
                             <button id="controllerUpdateCheckButton" class="secondary" type="submit">Check for Update</button>
                         </form>
                         <form id="controllerUpdateApplyForm" method="post" action="{{ url_for('apply_update_view') }}" {% if not update_status.update_available %}style="display:none;"{% endif %}>
-                            <button type="submit">Update Now</button>
+                            <button type="submit">Update Controller</button>
                         </form>
                     </div>
                     {% if update_status.restart_required %}
@@ -5926,6 +5933,32 @@ def apply_update_view():
     if code != 0:
         return redirect(url_for("controller_settings_view"))
 
+    pico_message = "Pico firmware already current."
+    pico_status_ok = True
+    if pico_firmware_needs_deploy():
+        pico_status = deploy_pico_firmware()
+        pico_status_ok = bool(pico_status.get("ok"))
+        pico_message = str(pico_status.get("status") or "Pico firmware deploy failed")
+    else:
+        local_hash = pico_firmware_hash()
+        save_pico_update_status({
+            "checked_at": int(time.time()),
+            "local_hash": local_hash,
+            "ok": True,
+            "status": "Pico firmware already current",
+        })
+
+    save_update_status({
+        "checked_at": int(time.time()),
+        "branch": branch,
+        "ok": pico_status_ok,
+        "status": "Update applied. Restarting controller... %s" % pico_message,
+        "restart_required": True,
+        "update_available": False,
+        "local_commit": remote_commit,
+        "remote_commit": remote_commit,
+    })
+
     restart_service_or_self(2.5)
     return render_template_string(
         """
@@ -5948,12 +5981,13 @@ def apply_update_view():
     <div class="wrap">
         <div class="panel">
             <h1>Updating Controller</h1>
-            <div class="sub">The latest code has been pulled. This controller is restarting now and will return to settings automatically.</div>
+            <div class="sub">The latest code has been pulled. {{ pico_message }} This controller is restarting now and will return to settings automatically.</div>
         </div>
     </div>
 </body>
 </html>
-        """
+        """,
+        pico_message=pico_message,
     )
 
 
