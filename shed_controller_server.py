@@ -356,6 +356,7 @@ BACKUP_INTERVAL_SECONDS = 3600
 STALE_SENSOR_SECONDS = 30
 STALE_OFFICE_SECONDS = 60
 STALE_LOG_SECONDS = 30
+WATER_LPM_AVERAGE_SECONDS = 12
 BACKUP_KEEP_COUNT = 6
 LOCAL_DASHBOARD_PULL_SECONDS = 1
 LOCAL_DASHBOARD_HEARTBEAT_SECONDS = 10
@@ -2713,6 +2714,9 @@ def update_water_from_pulses(sensors, now_ts):
 
     prev_total = sensors.get("flow_prev_total_pulses")
     prev_ts = sensors.get("flow_prev_ts")
+    samples = sensors.get("flow_rate_samples")
+    if not isinstance(samples, list):
+        samples = []
     sensors["flow_total_pulses"] = total_pulses
     if prev_total is not None and prev_ts is not None:
         try:
@@ -2728,7 +2732,40 @@ def update_water_from_pulses(sensors, now_ts):
             litres_per_second = (float(pulse_delta) / pulses_per_litre) / float(elapsed_s)
             raw_lpm = round(litres_per_second * 60.0, 2)
             sensors["water_lpm_raw"] = raw_lpm
-            sensors["water_lpm"] = raw_lpm
+            samples.append({
+                "ts": int(now_ts),
+                "pulse_delta": pulse_delta,
+                "elapsed_s": elapsed_s,
+            })
+            cutoff_ts = int(now_ts) - WATER_LPM_AVERAGE_SECONDS
+            kept_samples = []
+            window_pulses = 0
+            window_elapsed_s = 0
+            i = 0
+            while i < len(samples):
+                sample = samples[i]
+                i += 1
+                try:
+                    sample_ts = int(sample.get("ts"))
+                    sample_pulse_delta = max(0, int(sample.get("pulse_delta", 0)))
+                    sample_elapsed_s = max(1, int(sample.get("elapsed_s", 1)))
+                except Exception:
+                    continue
+                if sample_ts < cutoff_ts:
+                    continue
+                kept_samples.append({
+                    "ts": sample_ts,
+                    "pulse_delta": sample_pulse_delta,
+                    "elapsed_s": sample_elapsed_s,
+                })
+                window_pulses += sample_pulse_delta
+                window_elapsed_s += sample_elapsed_s
+            sensors["flow_rate_samples"] = kept_samples
+            if window_elapsed_s > 0:
+                window_litres_per_second = (float(window_pulses) / pulses_per_litre) / float(window_elapsed_s)
+                sensors["water_lpm"] = round(window_litres_per_second * 60.0, 2)
+            else:
+                sensors["water_lpm"] = raw_lpm
 
     sensors["flow_prev_total_pulses"] = total_pulses
     sensors["flow_prev_ts"] = now_ts
@@ -5254,8 +5291,9 @@ WATER_SETTINGS_HTML = """
         <div class="panel">
             <div class="sub">Live pulse activity</div>
             <div class="detail"><span>Latest pulse delta</span><span><span id="livePulseLastDelta">{{ live_pulse_last_delta }}</span> in <span id="livePulseLastSeconds">{{ live_pulse_last_seconds }}</span></span></div>
-            <div class="detail"><span>Total pulses seen</span><span id="livePulseWindowDelta">{{ live_pulse_window_delta }}</span></div>
-            <div class="hint">Use this to see whether pulses are reaching the controller even with all water-flow conditioning removed.</div>
+            <div class="detail"><span>Pulse delta in smoothing window</span><span><span id="livePulseWindowDelta">{{ live_pulse_window_delta }}</span> in <span id="livePulseWindowSeconds">{{ live_pulse_window_seconds }}</span></span></div>
+            <div class="detail"><span>Total pulses seen</span><span id="waterTotalPulsesMirror">{{ total_flow_pulses }}</span></div>
+            <div class="hint">The main L/PM number uses a short smoothing window. This section still shows the latest raw pulse movement coming back from the Pico.</div>
         </div>
         <div class="panel">
             <form method="post" action="{{ url_for('save_water_settings') }}">
@@ -5301,6 +5339,7 @@ WATER_SETTINGS_HTML = """
     const currentRawEl = document.getElementById('waterCurrentRawValue');
     const pplEl = document.getElementById('waterPulsesPerLitre');
     const totalEl = document.getElementById('waterTotalPulses');
+    const totalMirrorEl = document.getElementById('waterTotalPulsesMirror');
     const liveLastDeltaEl = document.getElementById('livePulseLastDelta');
     const liveLastSecondsEl = document.getElementById('livePulseLastSeconds');
     const liveWindowDeltaEl = document.getElementById('livePulseWindowDelta');
@@ -5329,6 +5368,7 @@ WATER_SETTINGS_HTML = """
             if (currentRawEl) currentRawEl.textContent = data.current_value_raw || '--';
             pplEl.textContent = data.water_pulses_per_litre || '--';
             totalEl.textContent = data.total_flow_pulses || '--';
+            if (totalMirrorEl) totalMirrorEl.textContent = data.total_flow_pulses || '--';
             if (liveLastDeltaEl) liveLastDeltaEl.textContent = data.live_pulse_last_delta || '--';
             if (liveLastSecondsEl) liveLastSecondsEl.textContent = data.live_pulse_last_seconds || '--';
             if (liveWindowDeltaEl) liveWindowDeltaEl.textContent = data.live_pulse_window_delta || '--';
@@ -6400,7 +6440,20 @@ def build_water_settings_context(cfg, state):
         live_pulse_last_seconds = "%ss" % max(1, last_elapsed_s)
     except Exception:
         pass
-    live_pulse_window_delta = fmt_value(sensors.get("flow_total_pulses"), "i")
+    try:
+        window_delta = 0
+        window_seconds = 0
+        i = 0
+        samples = sensors.get("flow_rate_samples", [])
+        while i < len(samples):
+            sample = samples[i]
+            i += 1
+            window_delta += max(0, int(sample.get("pulse_delta", 0)))
+            window_seconds += max(1, int(sample.get("elapsed_s", 1)))
+        live_pulse_window_delta = fmt_value(window_delta, "i")
+        live_pulse_window_seconds = "%ss" % max(1, window_seconds)
+    except Exception:
+        pass
 
     return {
         "shed_no": cfg["shed_no"],

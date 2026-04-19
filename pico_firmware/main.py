@@ -30,6 +30,7 @@ SHT45_MEASURE_HIGH_PRECISION = b"\xFD"
 # Example for common YF-S201-style meters:
 #   L/min = pulses_per_second / 7.5
 FLOW_HZ_PER_LPM = 7.5
+FLOW_DEBOUNCE_US = 1200
 
 status_led = Pin(STATUS_LED_PIN, Pin.OUT)
 sht_i2c = I2C(SHT_I2C_ID, sda=Pin(SHT_I2C_SDA_PIN), scl=Pin(SHT_I2C_SCL_PIN), freq=100000)
@@ -42,6 +43,7 @@ hx711_sck = Pin(HX711_SCK_PIN, Pin.OUT)
 
 flow_pulse_count = 0
 total_flow_pulses = 0
+last_flow_pulse_us = None
 boot_ms = time.ticks_ms()
 last_flow_calc_ms = time.ticks_ms()
 last_temp_rh_ms = time.ticks_ms() - int(TEMP_RH_MEASURE_SECONDS * 1000)
@@ -54,7 +56,12 @@ def setup_inputs():
 
 
 def flow_pulse_handler(pin):
-    global flow_pulse_count, total_flow_pulses
+    global flow_pulse_count, total_flow_pulses, last_flow_pulse_us
+    now_us = time.ticks_us()
+    if last_flow_pulse_us is not None:
+        if time.ticks_diff(now_us, last_flow_pulse_us) < FLOW_DEBOUNCE_US:
+            return
+    last_flow_pulse_us = now_us
     flow_pulse_count += 1
     total_flow_pulses += 1
 
