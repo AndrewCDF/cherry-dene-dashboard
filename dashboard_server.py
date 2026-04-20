@@ -14,6 +14,7 @@ import urllib.request
 import zipfile
 from datetime import datetime, timedelta
 from email.message import EmailMessage
+from markupsafe import Markup, escape
 from xml.sax.saxutils import escape as xml_escape
 
 app = Flask(__name__)
@@ -49,6 +50,33 @@ FAVICON_HEAD_HTML = (
     '<meta name="apple-mobile-web-app-title" content="CDF">'
     '<meta name="theme-color" content="#5b5b5b">'
 )
+
+
+def render_page_nav():
+    previous_href = request.referrer or url_for("dashboard")
+    dashboard_href = url_for("dashboard")
+    return Markup(
+        (
+            '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">'
+            '<a href="{previous_href}" onclick="if (window.history.length > 1) {{ window.history.back(); return false; }}" '
+            'style="display:inline-flex;align-items:center;justify-content:center;min-height:42px;padding:10px 16px;'
+            'border-radius:999px;border:1px solid #8a8a8a;background:#686868;color:#ececec;text-decoration:none;'
+            'font-weight:700;line-height:1;box-shadow:inset 0 1px 0 rgba(255,255,255,0.06);">'
+            '← Previous Page</a>'
+            '<a href="{dashboard_href}" '
+            'style="display:inline-flex;align-items:center;justify-content:center;min-height:42px;padding:10px 16px;'
+            'border-radius:999px;border:1px solid #8a8a8a;background:#686868;color:#ececec;text-decoration:none;'
+            'font-weight:700;line-height:1;box-shadow:inset 0 1px 0 rgba(255,255,255,0.06);">'
+            'Return To Dashboard</a>'
+            "</div>"
+        ).format(
+            previous_href=escape(previous_href),
+            dashboard_href=escape(dashboard_href),
+        )
+    )
+
+
+app.jinja_env.globals["render_page_nav"] = render_page_nav
 
 
 @app.route("/favicon.ico")
@@ -164,10 +192,14 @@ SHED_NUMBERS = [1, 2, 3, 4, 6, 7, 8, 9, 10]
 OFFICE_BACKUP_KEEP_COUNT = 6
 OFFICE_AUTO_BACKUP_INTERVAL_SECONDS = 3600
 OFFICE_AUTO_BACKUP_CHECK_SECONDS = 60
-AUTO_FEED_BIN_REMOVAL_MIN_KG = 150.0
-AUTO_FEED_BIN_REMOVAL_MIN_CHUNK_KG = 25.0
-AUTO_FEED_BIN_REMOVAL_MAX_SECONDS = 7200
-AUTO_FEED_BIN_REMOVAL_MIN_RATE_KG_PER_HOUR = 500.0
+AUTO_FEED_BIN_REMOVAL_MIN_KG = 80.0
+AUTO_FEED_BIN_REMOVAL_MIN_CHUNK_KG = 10.0
+AUTO_FEED_BIN_REMOVAL_TRACKING_MIN_STEP_KG = 2.0
+AUTO_FEED_BIN_REMOVAL_MAX_SECONDS = 10800
+AUTO_FEED_BIN_REMOVAL_CONTINUE_GAP_SECONDS = 7200
+AUTO_FEED_BIN_REMOVAL_RESET_RISE_KG = 8.0
+AUTO_FEED_BIN_REMOVAL_BURN_ALLOWANCE_FACTOR = 1.5
+AUTO_FEED_BIN_REMOVAL_BURN_MARGIN_KG = 5.0
 _office_backup_lock = threading.Lock()
 
 
@@ -318,6 +350,26 @@ def crop_age_days(placement_epoch):
     except Exception:
         return None
     return max(0, (today - started_date).days)
+
+
+def fmt_datetime_local_value(epoch_ts):
+    if epoch_ts in [None, ""]:
+        return datetime.now().strftime("%Y-%m-%dT%H:%M")
+    try:
+        return datetime.fromtimestamp(int(epoch_ts)).strftime("%Y-%m-%dT%H:%M")
+    except Exception:
+        return datetime.now().strftime("%Y-%m-%dT%H:%M")
+
+
+def parse_datetime_local_value(raw_value):
+    text = str(raw_value or "").strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.strptime(text, "%Y-%m-%dT%H:%M")
+    except Exception:
+        return None
+    return int(time.mktime(dt.timetuple()))
 
 
 def load_office_config():
@@ -1352,6 +1404,7 @@ def clean_controller_meta(meta):
         "last_feed_observed_ts": meta.get("last_feed_observed_ts"),
         "last_auto_bin_removal_ts": meta.get("last_auto_bin_removal_ts"),
         "last_auto_bin_removal_kg": meta.get("last_auto_bin_removal_kg"),
+        "auto_bin_removal_window_start_kg": meta.get("auto_bin_removal_window_start_kg"),
         "auto_bin_removal_pending_kg": meta.get("auto_bin_removal_pending_kg"),
         "auto_bin_removal_pending_start_ts": meta.get("auto_bin_removal_pending_start_ts"),
         "auto_bin_removal_pending_last_ts": meta.get("auto_bin_removal_pending_last_ts"),
@@ -2000,11 +2053,11 @@ def get_feed_delivery_history_for_shed(shed_name, crop_id=None, max_rows=50):
 
 
 FEED_STOCK_KIND_LABELS = {
-    "crop_carryover_credit": "Crop End Carryover",
+    "crop_carryover_credit": "Crop End Carryover (Legacy)",
     "manual_add": "Manual Add",
     "manual_remove": "Manual Remove",
-    "shed_allocation": "Allocate To Shed",
-    "shed_return": "Bin Removal Override",
+    "shed_allocation": "Allocate From Stock",
+    "shed_return": "Withdraw To Stock",
 }
 
 
@@ -2065,26 +2118,6 @@ def feed_stock_balance_kg(rows=None):
     return round(balance, 3)
 
 
-def feed_stock_transaction_exists(kind, source_crop_id=None):
-    rows = feed_stock_transactions()
-    i = 0
-    while i < len(rows):
-        rec = rows[i]
-        if str(rec.get("kind")) != str(kind):
-            i += 1
-            continue
-        if source_crop_id not in [None, ""]:
-            try:
-                if int(rec.get("source_crop_id")) != int(source_crop_id):
-                    i += 1
-                    continue
-            except Exception:
-                i += 1
-                continue
-        return True
-    return False
-
-
 def append_feed_stock_transaction(kind, delta_kg, note="", shed_no=None, crop_id=None, source_crop_id=None, ts=None):
     try:
         delta_kg = round(float(delta_kg), 3)
@@ -2108,6 +2141,131 @@ def append_feed_stock_transaction(kind, delta_kg, note="", shed_no=None, crop_id
     return True
 
 
+def feed_stock_pending_withdrawals_path():
+    return os.path.join(DATA_DIR, "feed_stock_pending_withdrawals.json")
+
+
+def load_feed_stock_pending_withdrawals():
+    data = read_json_file(feed_stock_pending_withdrawals_path(), [])
+    return data if isinstance(data, list) else []
+
+
+def save_feed_stock_pending_withdrawals(rows):
+    write_json_file_atomic(feed_stock_pending_withdrawals_path(), rows if isinstance(rows, list) else [])
+
+
+def append_feed_stock_pending_withdrawal(shed_no, crop_id, kg, note="", ts=None):
+    try:
+        shed_no = int(shed_no)
+        crop_id = int(crop_id)
+        kg = round(float(kg), 3)
+    except Exception:
+        return None
+    if kg <= 0:
+        return None
+    try:
+        detect_ts = int(ts) if ts not in [None, ""] else int(time.time())
+    except Exception:
+        detect_ts = int(time.time())
+    rows = load_feed_stock_pending_withdrawals()
+    row_id = "%s-%s-%s" % (detect_ts, shed_no, int(time.time() * 1000) % 1000000)
+    rows.append({
+        "id": row_id,
+        "status": "pending",
+        "detected_ts": detect_ts,
+        "shed_no": shed_no,
+        "crop_id": crop_id,
+        "kg": kg,
+        "note": str(note or "").strip(),
+        "resolved_ts": None,
+        "resolved_action": None,
+    })
+    save_feed_stock_pending_withdrawals(rows)
+    return row_id
+
+
+def resolve_feed_stock_pending_withdrawal(withdrawal_id, action):
+    action = str(action or "").strip().lower()
+    if action not in ["add", "remove"]:
+        return None
+    rows = load_feed_stock_pending_withdrawals()
+    i = 0
+    target = None
+    while i < len(rows):
+        rec = rows[i]
+        if str(rec.get("id")) != str(withdrawal_id):
+            i += 1
+            continue
+        if str(rec.get("status") or "") != "pending":
+            return None
+        rows[i]["status"] = "approved" if action == "add" else "removed"
+        rows[i]["resolved_action"] = action
+        rows[i]["resolved_ts"] = int(time.time())
+        target = dict(rows[i])
+        break
+    if target is None:
+        return None
+    save_feed_stock_pending_withdrawals(rows)
+    return target
+
+
+def get_feed_stock_pending_withdrawal(withdrawal_id):
+    rows = load_feed_stock_pending_withdrawals()
+    i = 0
+    while i < len(rows):
+        rec = rows[i]
+        if str(rec.get("id")) == str(withdrawal_id) and str(rec.get("status") or "") == "pending":
+            return dict(rec)
+        i += 1
+    return None
+
+
+def feed_stock_pending_withdrawal_rows(include_resolved=False):
+    rows = load_feed_stock_pending_withdrawals()
+    out = []
+    i = 0
+    while i < len(rows):
+        rec = rows[i]
+        if not isinstance(rec, dict):
+            i += 1
+            continue
+        status = str(rec.get("status") or "pending")
+        if (not include_resolved) and status != "pending":
+            i += 1
+            continue
+        try:
+            shed_no = int(rec.get("shed_no"))
+            crop_id = int(rec.get("crop_id"))
+            kg = round(float(rec.get("kg") or 0.0), 3)
+            detected_ts = int(rec.get("detected_ts") or 0)
+        except Exception:
+            i += 1
+            continue
+        if kg <= 0:
+            i += 1
+            continue
+        row = {
+            "id": str(rec.get("id") or ""),
+            "status": status,
+            "shed_no": shed_no,
+            "shed_name": shed_name_from_number(shed_no),
+            "crop_id": crop_id,
+            "crop_code": fmt_crop_code(crop_id),
+            "kg": kg,
+            "kg_label": fmt_value(kg, "f1"),
+            "detected_ts": detected_ts,
+            "note": str(rec.get("note") or "").strip(),
+        }
+        try:
+            row["detected_ts_label"] = datetime.fromtimestamp(detected_ts).strftime("%d %b %Y %H:%M")
+        except Exception:
+            row["detected_ts_label"] = "--"
+        out.append(row)
+        i += 1
+    out.sort(key=lambda row: int(row.get("detected_ts") or 0), reverse=True)
+    return out
+
+
 def maybe_auto_offset_feed_bin_removal(shed_no, meta):
     if not isinstance(meta, dict):
         return meta
@@ -2127,6 +2285,7 @@ def maybe_auto_offset_feed_bin_removal(shed_no, meta):
         "last_feed_observed_ts",
         "last_auto_bin_removal_ts",
         "last_auto_bin_removal_kg",
+        "auto_bin_removal_window_start_kg",
         "auto_bin_removal_pending_kg",
         "auto_bin_removal_pending_start_ts",
         "auto_bin_removal_pending_last_ts",
@@ -2159,102 +2318,95 @@ def maybe_auto_offset_feed_bin_removal(shed_no, meta):
         return meta
 
     elapsed_s = int(sensor_ts) - int(prev_ts)
-    if elapsed_s <= 0 or elapsed_s > AUTO_FEED_BIN_REMOVAL_MAX_SECONDS:
-        meta["auto_bin_removal_pending_kg"] = None
-        meta["auto_bin_removal_pending_start_ts"] = None
-        meta["auto_bin_removal_pending_last_ts"] = None
+    if elapsed_s <= 0:
         return meta
 
-    drop_kg = round(float(prev_feed_kg) - float(current_feed_kg), 3)
-    if drop_kg < AUTO_FEED_BIN_REMOVAL_MIN_CHUNK_KG:
+    def clear_window():
+        meta["auto_bin_removal_window_start_kg"] = None
         meta["auto_bin_removal_pending_kg"] = None
         meta["auto_bin_removal_pending_start_ts"] = None
         meta["auto_bin_removal_pending_last_ts"] = None
+
+    if elapsed_s > AUTO_FEED_BIN_REMOVAL_CONTINUE_GAP_SECONDS:
+        clear_window()
         return meta
 
-    drop_rate_kg_per_hour = (drop_kg / max(1, elapsed_s)) * 3600.0
-    if drop_rate_kg_per_hour < AUTO_FEED_BIN_REMOVAL_MIN_RATE_KG_PER_HOUR:
-        meta["auto_bin_removal_pending_kg"] = None
-        meta["auto_bin_removal_pending_start_ts"] = None
-        meta["auto_bin_removal_pending_last_ts"] = None
-        return meta
+    step_drop_kg = round(float(prev_feed_kg) - float(current_feed_kg), 3)
+    expected_daily_burn_kg = _safe_float(meta.get("feed_daily_burn_kg"))
+    if expected_daily_burn_kg is None:
+        expected_daily_burn_kg = _safe_float(existing_meta.get("feed_daily_burn_kg"), 0.0) or 0.0
 
     shed_name = shed_name_from_number(shed_no)
     crop_id = get_active_crop_id_for_shed(shed_name)
     if crop_id in [None, ""]:
-        meta["auto_bin_removal_pending_kg"] = None
-        meta["auto_bin_removal_pending_start_ts"] = None
-        meta["auto_bin_removal_pending_last_ts"] = None
+        clear_window()
         return meta
 
-    pending_kg = _safe_float(existing_meta.get("auto_bin_removal_pending_kg"), 0.0) or 0.0
+    window_start_kg = _safe_float(existing_meta.get("auto_bin_removal_window_start_kg"))
     pending_start_ts = _safe_int(existing_meta.get("auto_bin_removal_pending_start_ts"))
     pending_last_ts = _safe_int(existing_meta.get("auto_bin_removal_pending_last_ts"))
-    if pending_start_ts in [None, ""] or pending_last_ts in [None, ""]:
-        pending_kg = 0.0
-        pending_start_ts = int(prev_ts)
-    elif int(prev_ts) - int(pending_last_ts) > AUTO_FEED_BIN_REMOVAL_MAX_SECONDS:
-        pending_kg = 0.0
-        pending_start_ts = int(prev_ts)
-    elif int(sensor_ts) - int(pending_start_ts) > AUTO_FEED_BIN_REMOVAL_MAX_SECONDS:
-        pending_kg = 0.0
+
+    window_active = (
+        window_start_kg is not None
+        and pending_start_ts not in [None, ""]
+        and pending_last_ts not in [None, ""]
+        and (int(sensor_ts) - int(pending_last_ts)) <= AUTO_FEED_BIN_REMOVAL_CONTINUE_GAP_SECONDS
+        and (int(sensor_ts) - int(pending_start_ts)) <= AUTO_FEED_BIN_REMOVAL_MAX_SECONDS
+    )
+
+    if step_drop_kg <= (-AUTO_FEED_BIN_REMOVAL_RESET_RISE_KG):
+        window_active = False
+        window_start_kg = None
+
+    if not window_active:
+        if step_drop_kg < AUTO_FEED_BIN_REMOVAL_TRACKING_MIN_STEP_KG:
+            clear_window()
+            return meta
+        window_start_kg = float(prev_feed_kg)
         pending_start_ts = int(prev_ts)
 
-    pending_kg = round(float(pending_kg) + drop_kg, 3)
-    pending_elapsed_s = max(1, int(sensor_ts) - int(pending_start_ts))
+    if window_start_kg is None or pending_start_ts in [None, ""]:
+        clear_window()
+        return meta
+
+    total_elapsed_s = int(sensor_ts) - int(pending_start_ts)
+    if total_elapsed_s <= 0 or total_elapsed_s > AUTO_FEED_BIN_REMOVAL_MAX_SECONDS:
+        clear_window()
+        return meta
+
+    raw_drop_kg = round(max(0.0, float(window_start_kg) - float(current_feed_kg)), 3)
+    burn_allowance_kg = max(0.0, ((float(expected_daily_burn_kg or 0.0) * max(1, total_elapsed_s)) / 86400.0) * AUTO_FEED_BIN_REMOVAL_BURN_ALLOWANCE_FACTOR)
+    burn_allowance_kg += AUTO_FEED_BIN_REMOVAL_BURN_MARGIN_KG
+    pending_kg = round(max(0.0, raw_drop_kg - burn_allowance_kg), 3)
+    pending_elapsed_s = max(1, total_elapsed_s)
 
     if pending_kg < AUTO_FEED_BIN_REMOVAL_MIN_KG:
+        meta["auto_bin_removal_window_start_kg"] = round(float(window_start_kg), 3)
         meta["auto_bin_removal_pending_kg"] = pending_kg
         meta["auto_bin_removal_pending_start_ts"] = int(pending_start_ts)
         meta["auto_bin_removal_pending_last_ts"] = int(sensor_ts)
         return meta
 
-    note = "Auto offset from bin drop: %s KG over %s seconds" % (fmt_value(pending_kg, "f1"), pending_elapsed_s)
-    ok = append_feed_stock_transaction(
-        "shed_return",
-        pending_kg,
-        note=note,
+    note = "Detected bin drop: %s KG over %s seconds" % (fmt_value(pending_kg, "f1"), pending_elapsed_s)
+    pending_id = append_feed_stock_pending_withdrawal(
         shed_no=shed_no,
         crop_id=crop_id,
+        kg=pending_kg,
+        note=note,
         ts=sensor_ts,
     )
-    if ok:
+    if pending_id:
         meta["last_auto_bin_removal_ts"] = int(sensor_ts)
         meta["last_auto_bin_removal_kg"] = round(pending_kg, 3)
-        meta["auto_bin_removal_pending_kg"] = None
-        meta["auto_bin_removal_pending_start_ts"] = None
-        meta["auto_bin_removal_pending_last_ts"] = None
+        clear_window()
         log_event(
             "office",
-            "feed_auto_bin_removal",
-            "Automatic bin removal offset recorded",
+            "feed_auto_bin_removal_detected",
+            "Automatic feed withdrawal detected for review",
             shed_no=shed_no,
-            detail=note,
+            detail="%s (raw drop %s KG, burn allowance %s KG)" % (note, fmt_value(raw_drop_kg, "f1"), fmt_value(burn_allowance_kg, "f1")),
         )
     return meta
-
-
-def ensure_crop_feed_stock_credit(crop_id, farm_summary=None):
-    try:
-        crop_id = int(crop_id)
-    except Exception:
-        return False
-    if feed_stock_transaction_exists("crop_carryover_credit", source_crop_id=crop_id):
-        return False
-    farm_summary = farm_summary if isinstance(farm_summary, dict) else build_farm_crop_summary(crop_id)
-    carryover_kg = _safe_float(farm_summary.get("feed_bin_end_kg"), 0.0) or 0.0
-    if carryover_kg <= 0:
-        return False
-    note = "Carryover from %s" % (farm_summary.get("crop_code") or ("Crop %s" % crop_id))
-    if not append_feed_stock_transaction(
-        "crop_carryover_credit",
-        carryover_kg,
-        note=note,
-        source_crop_id=crop_id,
-    ):
-        return False
-    log_event("office", "feed_stock_credit", "Feed carryover added to farm stock", detail="%s = %s KG" % (note, fmt_value(carryover_kg, "f1")))
-    return True
 
 
 def feed_stock_active_target_rows():
@@ -2359,6 +2511,7 @@ def feed_stock_allocated_kg_for_target(shed_no, crop_id, rows=None):
 
 def build_feed_stock_context(preselected_shed_no=None):
     tx_rows = feed_stock_transactions()
+    pending_rows = feed_stock_pending_withdrawal_rows()
     running_balance = 0.0
     i = 0
     while i < len(tx_rows):
@@ -2398,6 +2551,7 @@ def build_feed_stock_context(preselected_shed_no=None):
         "balance_kg": feed_stock_balance_kg(tx_rows),
         "balance_kg_label": fmt_value(feed_stock_balance_kg(tx_rows), "f1"),
         "transaction_rows": display_rows,
+        "pending_rows": pending_rows,
         "active_targets": feed_stock_active_target_rows(),
         "allocation_rows": feed_stock_allocation_rows(tx_rows),
         "preselected_shed_no": preselected_shed_no,
@@ -3610,7 +3764,7 @@ def farm_identity():
     return farm_name, farm_id
 
 
-def build_farm_crop_summary(crop_id):
+def build_farm_crop_summary(crop_id, farm_stock_snapshot_kg=None):
     farm_name, farm_id = farm_identity()
     shed_rows = []
     start_epochs = []
@@ -3684,6 +3838,13 @@ def build_farm_crop_summary(crop_id):
         avg_daily_feed = float(total_feed) / float(crop_days)
         avg_daily_water = float(total_water) / float(crop_days)
 
+    approved_farm_stock_kg = _safe_float(farm_stock_snapshot_kg)
+    if approved_farm_stock_kg is None:
+        approved_farm_stock_kg = feed_stock_balance_kg()
+    approved_farm_stock_kg = round(max(0.0, float(approved_farm_stock_kg or 0.0)), 3)
+    all_feed_on_farm_kg = approved_farm_stock_kg + float(total_feed_bin_end_kg if has_feed_bin_end else 0.0)
+    all_feed_on_farm_kg = round(all_feed_on_farm_kg, 3)
+
     return {
         "farm_name": farm_name,
         "farm_id": farm_id,
@@ -3702,6 +3863,8 @@ def build_farm_crop_summary(crop_id):
         "manual_feed_adjustment_kg": total_manual_feed_adjustment_kg if shed_rows else None,
         "total_feed": total_feed if shed_rows else None,
         "feed_bin_end_kg": total_feed_bin_end_kg if shed_rows and has_feed_bin_end else None,
+        "farm_stock_kg": approved_farm_stock_kg,
+        "all_feed_on_farm_kg": all_feed_on_farm_kg,
         "total_water": total_water if shed_rows else None,
         "avg_daily_feed": avg_daily_feed,
         "avg_daily_water": avg_daily_water,
@@ -3908,7 +4071,7 @@ def build_simple_xlsx_bytes(sheets):
 
 
 def crop_report_metric_rows(summary):
-    return [
+    rows = [
         ["Crop ID", summary.get("crop_code")],
         ["Status", summary.get("status", "Ended")],
         ["Start", summary.get("start_label")],
@@ -3929,10 +4092,15 @@ def crop_report_metric_rows(summary):
         ["Complete Days", summary.get("complete_days")],
         ["Mortality Events", summary.get("mortality_events")],
     ]
+    if summary.get("farm_stock_kg") is not None:
+        rows.append(["Approved Farm Stock KG", round(summary.get("farm_stock_kg"), 2)])
+    if summary.get("all_feed_on_farm_kg") is not None:
+        rows.append(["All Feed On Farm KG", round(summary.get("all_feed_on_farm_kg"), 2)])
+    return rows
 
 
-def build_crop_report_workbook(crop_id):
-    farm_summary = build_farm_crop_summary(crop_id)
+def build_crop_report_workbook(crop_id, farm_stock_snapshot_kg=None):
+    farm_summary = build_farm_crop_summary(crop_id, farm_stock_snapshot_kg=farm_stock_snapshot_kg)
     generated_ts = int(time.time())
 
     sheets = []
@@ -4093,6 +4261,8 @@ def send_crop_report_email(farm_summary, report_path):
         "Manual feed adjustment (kg): %s" % (round(float(farm_summary.get("manual_feed_adjustment_kg") or 0.0), 2)),
         "Total feed (kg): %s" % (round(float(farm_summary.get("total_feed") or 0.0), 2)),
         "Feed left in bin (kg): %s" % (round(float(farm_summary.get("feed_bin_end_kg") or 0.0), 2)),
+        "Approved farm stock (kg): %s" % (round(float(farm_summary.get("farm_stock_kg") or 0.0), 2)),
+        "All feed on farm (kg): %s" % (round(float(farm_summary.get("all_feed_on_farm_kg") or 0.0), 2)),
         "Total water (L): %s" % (round(float(farm_summary.get("total_water") or 0.0), 2)),
         "",
         "Generated by Cherry Dene Dashboard.",
@@ -4144,8 +4314,7 @@ def run_crop_end_report(crop_id):
     save_crop_report_status(status)
 
     try:
-        farm_summary, workbook_bytes = build_crop_report_workbook(crop_id)
-        ensure_crop_feed_stock_credit(crop_id, farm_summary=farm_summary)
+        farm_summary, workbook_bytes = build_crop_report_workbook(crop_id, farm_stock_snapshot_kg=feed_stock_balance_kg())
         report_path = crop_report_output_path(farm_summary)
         write_bytes_file_atomic(report_path, workbook_bytes)
 
@@ -4167,6 +4336,8 @@ def run_crop_end_report(crop_id):
             "report_path": report_path,
             "crop_code": farm_summary.get("crop_code"),
             "farm_name": farm_summary.get("farm_name"),
+            "farm_stock_snapshot_kg": farm_summary.get("farm_stock_kg"),
+            "all_feed_on_farm_kg": farm_summary.get("all_feed_on_farm_kg"),
             "email_sent": bool(email_ok),
             "email_message": email_message,
         })
@@ -4266,13 +4437,21 @@ def crop_report_record(crop_id):
     return rec if isinstance(rec, dict) else {}
 
 
+def crop_report_farm_stock_snapshot_kg(crop_id):
+    rec = crop_report_record(crop_id)
+    snapshot_kg = _safe_float(rec.get("farm_stock_snapshot_kg"))
+    if snapshot_kg is not None:
+        return snapshot_kg
+    return feed_stock_balance_kg()
+
+
 def ensure_crop_report_file(crop_id, force_rebuild=False):
     rec = crop_report_record(crop_id)
     report_path = str(rec.get("report_path") or "").strip()
     if not force_rebuild and report_path and os.path.isfile(report_path):
         return report_path
 
-    farm_summary, workbook_bytes = build_crop_report_workbook(crop_id)
+    farm_summary, workbook_bytes = build_crop_report_workbook(crop_id, farm_stock_snapshot_kg=crop_report_farm_stock_snapshot_kg(crop_id))
     report_path = crop_report_output_path(farm_summary)
     write_bytes_file_atomic(report_path, workbook_bytes)
 
@@ -4286,6 +4465,8 @@ def ensure_crop_report_file(crop_id, force_rebuild=False):
         "report_path": report_path,
         "crop_code": farm_summary.get("crop_code"),
         "farm_name": farm_summary.get("farm_name"),
+        "farm_stock_snapshot_kg": farm_summary.get("farm_stock_kg"),
+        "all_feed_on_farm_kg": farm_summary.get("all_feed_on_farm_kg"),
     })
     status[str(int(crop_id))] = entry
     save_crop_report_status(status)
@@ -4294,7 +4475,7 @@ def ensure_crop_report_file(crop_id, force_rebuild=False):
 
 def resend_crop_report(crop_id):
     crop_id = int(crop_id)
-    farm_summary = build_farm_crop_summary(crop_id)
+    farm_summary = build_farm_crop_summary(crop_id, farm_stock_snapshot_kg=crop_report_farm_stock_snapshot_kg(crop_id))
     report_path = ensure_crop_report_file(crop_id, force_rebuild=True)
     email_ok, email_message = send_crop_report_email(farm_summary, report_path)
 
@@ -4310,6 +4491,8 @@ def resend_crop_report(crop_id):
         "report_path": report_path,
         "crop_code": farm_summary.get("crop_code"),
         "farm_name": farm_summary.get("farm_name"),
+        "farm_stock_snapshot_kg": farm_summary.get("farm_stock_kg"),
+        "all_feed_on_farm_kg": farm_summary.get("all_feed_on_farm_kg"),
     })
     status[str(crop_id)] = entry
     save_crop_report_status(status)
@@ -4616,12 +4799,14 @@ def build_detail_entry_rows(current_shed_no, entries):
                 placement_str = "--"
 
         can_move = (dest_shed != current_shed_no) and crop_active == 1 and bird_count > 0
+        placement_input_epoch = placement_epoch if (crop_active == 1 and bird_count > 0) else None
         rows.append({
             "dest_shed": dest_shed,
             "bird_count": bird_count,
             "crop_active": crop_active,
             "placement_epoch": placement_epoch,
             "placement_str": placement_str,
+            "placement_input_value": fmt_datetime_local_value(placement_input_epoch),
             "crop_id": rec.get("crop_id"),
             "crop_code": fmt_crop_code(rec.get("crop_id"), placement_epoch),
             "can_move": can_move,
@@ -6413,7 +6598,7 @@ EVENTS_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('dashboard') }}">← Back to dashboard</a></div>
+        <div class="topbar">{{ render_page_nav() }}</div>
         <div class="panel">
             <h1>Office Event Log</h1>
             <div class="sub">Recent office, controller, crop, sync, and mortality events.</div>
@@ -6493,7 +6678,7 @@ RESTORE_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('dashboard') }}">← Back to dashboard</a></div>
+        <div class="topbar">{{ render_page_nav() }}</div>
         <h1>Backup Restore</h1>
         <div class="sub">Restore the full office data set, office backup state, or latest collected controller copies.</div>
         {% if status_msg %}
@@ -6625,7 +6810,7 @@ FEED_STOCK_HTML = """
         .status { margin:0 0 14px 0; padding:10px 12px; border-radius:10px; background:#686868; border:1px solid #8a8a8a; }
         .status.ok { border-color:#35d07f; color:#e4ffed; }
         .status.err { border-color:#c65460; color:#ffdbe1; }
-        .summary-grid { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:12px; margin-bottom:16px; }
+        .summary-grid { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:12px; margin-bottom:16px; }
         .summary-card { background:#737373; border:2px solid #8a8a8a; border-radius:12px; padding:14px; }
         .summary-label { color:#d2d2d2; font-size:12px; text-transform:uppercase; letter-spacing:0.06em; }
         .summary-value { margin-top:8px; font-size:30px; font-weight:700; }
@@ -6680,8 +6865,12 @@ FEED_STOCK_HTML = """
         table { width:100%; border-collapse:collapse; font-size:14px; table-layout:fixed; }
         th, td { padding:10px 8px; border-bottom:1px solid #818181; text-align:left; vertical-align:top; overflow-wrap:anywhere; word-break:break-word; }
         th { color:#f0f0f0; }
+        .row-actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+        .row-actions form { margin:0; }
+        .btn-danger { background:#7b4a4a; border-color:#a26666; }
+        .btn-accept { background:#476a53; border-color:#5e8e70; }
         .empty { color:#d2d2d2; font-size:14px; }
-        @media (max-width: 1100px) { .summary-grid, .action-grid, .task-grid, .correction-grid, .form-row { grid-template-columns:1fr; } }
+        @media (max-width: 1100px) { .summary-grid { grid-template-columns:1fr 1fr; } .action-grid, .task-grid, .correction-grid, .form-row { grid-template-columns:1fr; } }
         @media (max-width: 700px) {
             .wrap { padding:12px; }
             h1 { font-size:24px; }
@@ -6692,9 +6881,9 @@ FEED_STOCK_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('office_settings_view') }}">← Back to settings</a></div>
+        <div class="topbar">{{ render_page_nav() }}</div>
         <h1>Farm Feed Stock</h1>
-        <div class="sub">Farm-wide carryover feed stock across crops, with manual shed feed adjustments and returns.</div>
+        <div class="sub">A large shed bin drop is picked up automatically into farm stock, then you manually allocate that stock into the shed that needs it. The withdrawn weight is also offset from the source shed so it is not counted as eaten feed for the crop.</div>
         {% if status_msg %}
         <div class="status auto-dismiss {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
         {% endif %}
@@ -6706,28 +6895,82 @@ FEED_STOCK_HTML = """
                 <div class="summary-note">Current farm stock left to allocate.</div>
             </div>
             <div class="summary-card">
-                <div class="summary-label">Active Shed Allocations</div>
+                <div class="summary-label">Pending Withdrawals</div>
+                <div class="summary-value">{{ pending_count }}</div>
+                <div class="summary-note">Detected bin drops waiting for you to add to stock or remove.</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-label">Active Shed Stock Lines</div>
                 <div class="summary-value">{{ allocation_count }}</div>
-                <div class="summary-note">Sheds with net manual carryover feed recorded against the active crop.</div>
+                <div class="summary-note">Active sheds with a current net stock position against the crop.</div>
             </div>
             <div class="summary-card">
                 <div class="summary-label">Transactions Logged</div>
                 <div class="summary-value">{{ transaction_count }}</div>
-                <div class="summary-note">Automatic crop carryovers plus manual stock movements.</div>
+                <div class="summary-note">Approved withdrawals, allocations, manual corrections, and any older legacy carryover rows.</div>
             </div>
         </div>
 
         <div class="panel">
-            <h2>Stock Actions</h2>
-            <div class="panel-sub">Choose what happened to the feed. Shed actions affect that shed's crop feed totals and charts. Farm corrections only fix the overall carryover stock balance.</div>
+            <h2>Detected Withdrawals</h2>
+            <div class="panel-sub">When the dashboard spots a large bin weight drop, it puts it here first. Add genuine withdrawals to stock, or remove a false reading before it affects stock or crop feed totals.</div>
+
+            {% if pending_rows %}
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Detected</th>
+                            <th>Shed</th>
+                            <th>Crop</th>
+                            <th>KG</th>
+                            <th>Note</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in pending_rows %}
+                        <tr>
+                            <td>{{ row.detected_ts_label }}</td>
+                            <td>{{ row.shed_name }}</td>
+                            <td>{{ row.crop_code }}</td>
+                            <td>{{ row.kg_label }}</td>
+                            <td>{{ row.note or "--" }}</td>
+                            <td>
+                                <div class="row-actions">
+                                    <form method="post" action="{{ url_for('office_feed_stock_pending_view') }}">
+                                        <input type="hidden" name="withdrawal_id" value="{{ row.id }}">
+                                        <input type="hidden" name="action" value="add">
+                                        <button class="btn-accept" type="submit">Add To Stock</button>
+                                    </form>
+                                    <form method="post" action="{{ url_for('office_feed_stock_pending_view') }}">
+                                        <input type="hidden" name="withdrawal_id" value="{{ row.id }}">
+                                        <input type="hidden" name="action" value="remove">
+                                        <button class="btn-danger" type="submit">Remove</button>
+                                    </form>
+                                </div>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty">No detected withdrawals waiting for review.</div>
+            {% endif %}
+        </div>
+
+        <div class="panel">
+            <h2>Move Feed</h2>
+            <div class="panel-sub">After you add a detected withdrawal into stock, use this to allocate that stock into the destination shed when it is floor-fed and does not pass through the bin load cells.</div>
 
             <div class="task-grid">
                 <div class="task-card primary">
-                    <h3>Apply Feed To A Shed</h3>
-                    <div class="task-card-sub">Use this when carryover feed is floor-fed into an active shed and will not pass through that shed's bin load cells.</div>
+                    <h3>Allocate Stock To A Shed</h3>
+                    <div class="task-card-sub">Use this when stock is floor-fed into an active shed and will not pass through that shed's bin load cells. It reduces farm stock and adds that feed to the destination shed crop.</div>
                     <form class="action-form" method="post" action="{{ url_for('office_feed_stock_allocate_view') }}">
                         <div class="field">
-                            <label for="allocate_shed_no">Active Shed</label>
+                            <label for="allocate_shed_no">Destination Shed</label>
                             <select id="allocate_shed_no" name="shed_no">
                                 <option value="">Select active shed</option>
                                 {% for target in active_targets %}
@@ -6737,50 +6980,24 @@ FEED_STOCK_HTML = """
                         </div>
                         <div class="form-row">
                             <div class="field">
-                                <label for="allocate_kg">KG Applied</label>
+                                <label for="allocate_kg">KG Allocated</label>
                                 <input id="allocate_kg" type="number" step="0.1" min="0" name="kg" value="">
                             </div>
                             <div class="field">
                                 <label for="allocate_note">Note</label>
-                                <input id="allocate_note" type="text" name="note" value="" placeholder="Floor fed / from stock">
+                                <input id="allocate_note" type="text" name="note" value="" placeholder="Floor fed / from farm stock">
                             </div>
                         </div>
-                        <button type="submit">Apply Feed To Shed</button>
-                    </form>
-                </div>
-
-                <div class="task-card warning">
-                    <h3>Offset Feed Removed From A Shed</h3>
-                    <div class="task-card-sub">Use this when feed is taken out of a shed bin or a floor-feed adjustment needs reversing. Large fast bin drops are auto-offset where possible.</div>
-                    <form class="action-form" method="post" action="{{ url_for('office_feed_stock_return_view') }}">
-                        <div class="field">
-                            <label for="return_shed_no">Active Shed</label>
-                            <select id="return_shed_no" name="shed_no">
-                                <option value="">Select active shed</option>
-                                {% for target in active_targets %}
-                                <option value="{{ target.shed_no }}" {% if preselected_shed_no == target.shed_no %}selected{% endif %}>{{ target.shed_name }} · {{ target.crop_code }}</option>
-                                {% endfor %}
-                            </select>
-                        </div>
-                        <div class="form-row">
-                            <div class="field">
-                                <label for="return_kg">KG Removed / Offset</label>
-                                <input id="return_kg" type="number" step="0.1" min="0" name="kg" value="">
-                            </div>
-                            <div class="field">
-                                <label for="return_note">Note</label>
-                                <input id="return_note" type="text" name="note" value="" placeholder="Moved to another shed / returned">
-                            </div>
-                        </div>
-                        <button type="submit">Offset Removed Feed</button>
+                        <button type="submit">Allocate To Shed</button>
                     </form>
                 </div>
             </div>
 
             <div class="section-break">
-                <h2>Farm Stock Corrections</h2>
-                <div class="panel-sub">Use these when the carryover stock figure itself is wrong, for example after a physical stock count.</div>
-                <div class="correction-grid">
+                <details class="collapse">
+                    <summary>Open stock corrections</summary>
+                    <div class="panel-sub" style="margin-top:12px;">Use these only when the farm-wide stock figure itself is wrong, for example after a physical stock count.</div>
+                    <div class="correction-grid">
                     <div class="correction-card">
                         <h3>Add To Farm Stock</h3>
                         <form class="action-form" method="post" action="{{ url_for('office_feed_stock_adjust_view') }}">
@@ -6816,15 +7033,16 @@ FEED_STOCK_HTML = """
                             <button type="submit">Remove Farm Stock</button>
                         </form>
                     </div>
-                </div>
+                    </div>
+                </details>
             </div>
 
             <div class="note">Live shed feed KG and bin run-out still come from the controller load cells. These stock actions only adjust carryover stock and crop feed totals where feed does not naturally pass through the bin measurement.</div>
         </div>
 
         <div class="panel">
-            <h2>Active Shed Feed Adjustments</h2>
-            <div class="panel-sub">Net manual carryover feed currently recorded against active sheds in the current crop.</div>
+            <h2>Current Shed Stock Positions</h2>
+            <div class="panel-sub">Net stock currently sitting against active sheds in the current crop after withdrawals and allocations.</div>
             {% if allocation_rows %}
             <div class="table-wrap">
                 <table>
@@ -6832,7 +7050,7 @@ FEED_STOCK_HTML = """
                         <tr>
                             <th>Shed</th>
                             <th>Crop</th>
-                            <th>Net Manual Feed KG</th>
+                            <th>Net Stock KG</th>
                             <th>Last Update</th>
                         </tr>
                     </thead>
@@ -7052,7 +7270,7 @@ OFFICE_SETTINGS_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('dashboard') }}">← Back to dashboard</a></div>
+        <div class="topbar">{{ render_page_nav() }}</div>
         <h1>Office Settings</h1>
         <div class="sub">Core office tools, notifications, email, backups, and update control.</div>
         {% if status_msg %}
@@ -7468,7 +7686,7 @@ VERSIONS_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('office_settings_view') }}">← Back to settings</a></div>
+        <div class="topbar">{{ render_page_nav() }}</div>
         <h1>Versions</h1>
         <div class="sub">Office, shed controller, bore hole controller, and Pico version visibility.</div>
         <div class="panel">
@@ -7565,7 +7783,7 @@ FARM_HEALTH_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('dashboard') }}">← Back to dashboard</a></div>
+        <div class="topbar">{{ render_page_nav() }}</div>
         <h1>Farm Health</h1>
         <div class="sub">Live controller heartbeat, Pico link, and backup health across sheds and the bore hole.</div>
         <div class="action-grid">
@@ -7807,7 +8025,7 @@ DETAIL_HTML = """
         th {
             color: #f0f0f0;
         }
-        input[type="number"] {
+        input[type="number"], input[type="datetime-local"] {
             width: 110px;
             box-sizing: border-box;
             padding: 8px 10px;
@@ -7815,6 +8033,9 @@ DETAIL_HTML = """
             border: 1px solid #8a8a8a;
             background: #686868;
             color: #ececec;
+        }
+        input[type="datetime-local"] {
+            width: 190px;
         }
         button {
             background: #727272;
@@ -7861,6 +8082,9 @@ DETAIL_HTML = """
             input[type="number"] {
                 width: 90px;
             }
+            input[type="datetime-local"] {
+                width: 170px;
+            }
         }
         @media (max-width: 700px) {
             .wrap {
@@ -7891,9 +8115,7 @@ DETAIL_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar">
-            <a href="{{ url_for('dashboard') }}">← Back to dashboard</a>
-        </div>
+        <div class="topbar">{{ render_page_nav() }}</div>
 
         <h1>{{ shed_name }}</h1>
         <div class="sub">Current crop {{ active_crop_code }}</div>
@@ -7934,7 +8156,7 @@ DETAIL_HTML = """
                             <tr>
                                 <th>Entry Shed</th>
                                 <th>Birds</th>
-                                <th>Started</th>
+                                <th>Placed At</th>
                                 <th>Active</th>
                                 <th>Update</th>
                                 <th>Controls</th>
@@ -7947,6 +8169,7 @@ DETAIL_HTML = """
                                 <td>
                                     <form id="entry-form-{{ r.dest_shed }}" class="form-inline" method="post" action="{{ url_for('shed_entry_save', shed_no=shed_no, dest_shed=r.dest_shed) }}">
                                         <input type="number" name="bird_count" min="0" step="1" value="{{ '' if r.bird_count == 0 else r.bird_count }}">
+                                        <input type="datetime-local" name="placement_at" value="{{ r.placement_input_value }}">
                                     </form>
                                 </td>
                                 <td>{{ r.placement_str }}</td>
@@ -8038,7 +8261,7 @@ MORTALITY_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('shed_detail', shed_no=shed_no) }}">← {{ shed_name }}</a></div>
+        <div class="topbar">{{ render_page_nav() }}</div>
         <h1>{{ shed_name }} Mortality</h1>
         <div class="sub">Current crop {{ active_crop_code }}. Record losses against an active entry shed.</div>
         {% if status_msg %}
@@ -8224,7 +8447,7 @@ SHED_THRESHOLDS_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('shed_detail', shed_no=shed_no) }}">← {{ shed_name }}</a></div>
+        <div class="topbar">{{ render_page_nav() }}</div>
         <h1>{{ shed_name }} Tile Thresholds</h1>
         <div class="sub">Control the glow thresholds used on this shed’s dashboard tile.</div>
         {% if status_msg %}
@@ -8403,9 +8626,7 @@ BOREHOLE_DETAIL_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar">
-            <a href="{{ url_for('dashboard') }}">← Back to dashboard</a>
-        </div>
+        <div class="topbar">{{ render_page_nav() }}</div>
 
         <h1>Bore Hole</h1>
         <div class="sub">Hourly and daily water usage with zoomable charts.</div>
@@ -8532,9 +8753,7 @@ HISTORY_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar">
-            <a href="{{ url_for('shed_detail', shed_no=shed_no) }}">← {{ shed_name }}</a>
-        </div>
+        <div class="topbar">{{ render_page_nav() }}</div>
 
         <h1>{{ shed_name }} Crop history</h1>
         <div class="sub">Last 6 crops found in hourly log data.</div>
@@ -8742,13 +8961,7 @@ CROP_SUMMARY_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar">
-            <a href="{{ url_for('dashboard') }}">← Dashboard</a>
-            &nbsp;|&nbsp;
-            <a href="{{ url_for('shed_detail', shed_no=shed_no) }}">← {{ shed_name }}</a>
-            &nbsp;|&nbsp;
-            <a href="{{ url_for('shed_crop_history', shed_no=shed_no) }}">← Crop history</a>
-        </div>
+        <div class="topbar">{{ render_page_nav() }}</div>
 
         <h1>{{ shed_name }} {{ summary.crop_code }} End of Crop Summary</h1>
         <div class="sub">Historic crop roll-up using crop events, mortality, hourly water, and hourly feed history, displayed in 6-hour feed/water views.</div>
@@ -8768,7 +8981,9 @@ CROP_SUMMARY_HTML = """
             <div class="card"><div class="metric-label">Mortality</div><div class="metric-value">{{ summary.mortality_display }}</div><div class="metric-sub">{{ summary.mortality_events }} entries</div></div>
             <div class="card"><div class="metric-label">Manual Feed Adj KG</div><div class="metric-value">{{ summary.manual_feed_adjustment_kg }}</div><div class="metric-sub">Floor-fed / transferred feed correction</div></div>
             <div class="card"><div class="metric-label">Total Feed KG</div><div class="metric-value">{{ summary.total_feed }}</div></div>
-            <div class="card"><div class="metric-label">Feed Left In Bin KG</div><div class="metric-value">{{ summary.feed_bin_end_kg }}</div><div class="metric-sub">Returned to stock at crop end</div></div>
+            <div class="card"><div class="metric-label">Feed Left In Bin KG</div><div class="metric-value">{{ summary.feed_bin_end_kg }}</div><div class="metric-sub">Informational crop-end bin balance</div></div>
+            <div class="card"><div class="metric-label">Approved Farm Stock KG</div><div class="metric-value">{{ farm_stock_kg }}</div><div class="metric-sub">Approved stock held outside ended shed bins</div></div>
+            <div class="card"><div class="metric-label">All Feed On Farm KG</div><div class="metric-value">{{ all_feed_on_farm_kg }}</div><div class="metric-sub">Approved farm stock plus feed left in ended shed bins</div></div>
             <div class="card"><div class="metric-label">Total Water L</div><div class="metric-value">{{ summary.total_water }}</div></div>
             <div class="card"><div class="metric-label">Avg Daily Feed KG</div><div class="metric-value">{{ summary.avg_daily_feed }}</div></div>
             <div class="card"><div class="metric-label">Avg Daily Water L</div><div class="metric-value">{{ summary.avg_daily_water }}</div></div>
@@ -8978,9 +9193,7 @@ CROP_REPORTS_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar">
-            <a href="{{ url_for('dashboard') }}">← Back to dashboard</a>
-        </div>
+        <div class="topbar">{{ render_page_nav() }}</div>
 
         <h1>End of Crop Reports</h1>
         <div class="sub">Stored locally on the office Pi and available to download or resend by email.</div>
@@ -9213,15 +9426,7 @@ PERIOD_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar">
-            <a href="{{ url_for('dashboard') }}">← Dashboard</a>
-            &nbsp;|&nbsp;
-            <a href="{{ url_for('shed_detail', shed_no=shed_no) }}">← {{ shed_name }}</a>
-            {% if history_mode %}
-            &nbsp;|&nbsp;
-            <a href="{{ url_for('shed_crop_history', shed_no=shed_no) }}">← Crop history</a>
-            {% endif %}
-        </div>
+        <div class="topbar">{{ render_page_nav() }}</div>
 
         <h1>{{ shed_name }} {{ period_title }}</h1>
         <div class="sub">{{ period_sub }}</div>
@@ -9556,11 +9761,7 @@ METRIC_PERIOD_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar">
-            <a href="{{ url_for('dashboard') }}">← Dashboard</a>
-            &nbsp;|&nbsp;
-            <a href="{{ url_for('shed_detail', shed_no=shed_no) }}">← {{ shed_name }}</a>
-        </div>
+        <div class="topbar">{{ render_page_nav() }}</div>
 
         <h1>{{ shed_name }} {{ metric_title }} {{ period_title }}</h1>
         <div class="sub">{{ period_sub }}</div>
@@ -9650,39 +9851,36 @@ METRIC_PERIOD_HTML = """
         </div>
 
         <div class="card" style="margin-bottom:14px;">
-            <h2>Feed Stock Actions</h2>
-            <div class="sub" style="margin-bottom:14px;">Large bin removals are auto-offset when the load cells see a fast drop, even if it spans more than one sync. Use the shed actions when feed is floor-fed, or when a smaller bin removal needs correcting by hand.</div>
+            <h2>Stock Transfer Actions</h2>
+            <div class="sub" style="margin-bottom:14px;">A large feed drop from this shed bin is picked up automatically from the loadcells and added to the withdrawal review list on the Farm Feed Stock page. Once approved into stock, it is also offset from this shed so it does not count as eaten feed for the crop.</div>
             <div class="action-grid">
                 <div class="action-card">
-                    <h3>{{ shed_name }} floor feed / bin removal</h3>
-                    <div class="action-card-sub">Apply feed when it is floor-fed into this shed. Use the offset button only if an automatic bin-removal offset is missed or needs correcting.</div>
+                    <h3>Allocate Stock To {{ shed_name }}</h3>
+                    <div class="action-card-sub">Use this when stock is floor-fed into this shed and will not pass through the bin load cells.</div>
 
                     <form class="action-row" method="post" action="{{ url_for('office_feed_stock_allocate_view') }}">
                         <input type="hidden" name="shed_no" value="{{ shed_no }}">
                         <input type="hidden" name="next" value="{{ feed_page_url }}">
                         <div class="field">
-                            <label for="feed_apply_kg">KG to apply to this shed</label>
+                            <label for="feed_apply_kg">KG to allocate to this shed</label>
                             <input id="feed_apply_kg" type="number" step="0.1" min="0" name="kg" value="" placeholder="0.0">
-                            <input class="inline-note" id="feed_apply_note" type="text" name="note" value="" placeholder="Note, e.g. floor fed from Shed 4">
+                            <input class="inline-note" id="feed_apply_note" type="text" name="note" value="" placeholder="Note, e.g. floor fed from farm stock">
                         </div>
-                        <button class="full" type="submit">Apply To Shed</button>
+                        <button class="full" type="submit">Allocate To Shed</button>
                     </form>
 
-                    <form class="action-row" method="post" action="{{ url_for('office_feed_stock_return_view') }}">
-                        <input type="hidden" name="shed_no" value="{{ shed_no }}">
-                        <input type="hidden" name="next" value="{{ feed_page_url }}">
+                    <div class="action-row">
                         <div class="field">
-                            <label for="feed_return_kg">KG taken out of bin to offset</label>
-                            <input id="feed_return_kg" type="number" step="0.1" min="0" name="kg" value="" placeholder="0.0">
-                            <input class="inline-note" id="feed_return_note" type="text" name="note" value="" placeholder="Note, e.g. moved to Shed 4 / returned to stock">
+                            <label>Automatic withdrawal detection</label>
+                            <input type="text" value="Large bin drops are auto-picked-up from the loadcells over time and placed into farm stock." disabled>
+                            <input class="inline-note" type="text" value="If a move is missed, use the farm stock correction tools rather than logging it as shed feed intake." disabled>
                         </div>
-                        <button class="full" type="submit">Offset Bin Removal</button>
-                    </form>
+                    </div>
                 </div>
 
                 <div class="action-card">
                     <h3>Farm stock correction</h3>
-                    <div class="action-card-sub">Use these only to correct the overall farm carryover stock balance.</div>
+                    <div class="action-card-sub">Use these only when the overall stock figure itself needs correcting, not for normal shed-to-shed feed moves.</div>
 
                     <form class="action-row" method="post" action="{{ url_for('office_feed_stock_adjust_view') }}">
                         <input type="hidden" name="direction" value="add">
@@ -10001,11 +10199,7 @@ BOREHOLE_PERIOD_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar">
-            <a href="{{ url_for('dashboard') }}">← Dashboard</a>
-            &nbsp;|&nbsp;
-            <a href="{{ url_for('borehole_detail') }}">← Bore Hole</a>
-        </div>
+        <div class="topbar">{{ render_page_nav() }}</div>
 
         <h1>Bore Hole {{ period_title }}</h1>
         <div class="sub">{{ period_sub }}</div>
@@ -10266,6 +10460,8 @@ def office_feed_stock_view():
         FEED_STOCK_HTML,
         balance_kg=context["balance_kg"],
         balance_kg_label=context["balance_kg_label"],
+        pending_rows=context["pending_rows"],
+        pending_count=fmt_value(len(context["pending_rows"]), "i"),
         transaction_rows=context["transaction_rows"],
         transaction_count=fmt_value(len(context["transaction_rows"]), "i"),
         active_targets=context["active_targets"],
@@ -10275,6 +10471,47 @@ def office_feed_stock_view():
         status_msg=request.args.get("msg", ""),
         status_ok=request.args.get("ok", "1") == "1",
     )
+
+
+@app.route("/feed-stock/pending", methods=["POST"])
+def office_feed_stock_pending_view():
+    withdrawal_id = str(request.form.get("withdrawal_id", "") or "").strip()
+    action = str(request.form.get("action", "") or "").strip().lower()
+    if action not in ["add", "remove"]:
+        return redirect_with_next("office_feed_stock_view", False, "Unknown withdrawal action")
+    rec = get_feed_stock_pending_withdrawal(withdrawal_id)
+    if not isinstance(rec, dict):
+        return redirect_with_next("office_feed_stock_view", False, "Withdrawal review item not found")
+    shed_no = rec.get("shed_no")
+    if action == "add":
+        ok = append_feed_stock_transaction(
+            "shed_return",
+            rec.get("kg"),
+            note=rec.get("note") or "Approved auto withdraw from bin drop",
+            shed_no=rec.get("shed_no"),
+            crop_id=rec.get("crop_id"),
+            ts=rec.get("detected_ts"),
+        )
+        if ok and resolve_feed_stock_pending_withdrawal(withdrawal_id, "add"):
+            log_event(
+                "office",
+                "feed_stock_withdrawal_approved",
+                "Detected feed withdrawal added to stock",
+                shed_no=shed_no,
+                detail="%s KG" % fmt_value(rec.get("kg"), "f1"),
+            )
+            return redirect_with_next("office_feed_stock_view", True, "Withdrawal added to stock", shed_no=shed_no)
+        return redirect_with_next("office_feed_stock_view", False, "Failed to add withdrawal to stock", shed_no=shed_no)
+    if not resolve_feed_stock_pending_withdrawal(withdrawal_id, "remove"):
+        return redirect_with_next("office_feed_stock_view", False, "Failed to remove withdrawal", shed_no=shed_no)
+    log_event(
+        "office",
+        "feed_stock_withdrawal_removed",
+        "Detected feed withdrawal removed",
+        shed_no=shed_no,
+        detail="%s KG" % fmt_value(rec.get("kg"), "f1"),
+    )
+    return redirect_with_next("office_feed_stock_view", True, "Withdrawal removed", shed_no=shed_no)
 
 
 @app.route("/feed-stock/adjust", methods=["POST"])
@@ -10327,8 +10564,8 @@ def office_feed_stock_allocate_view():
     note = str(request.form.get("note", "") or "").strip()
     ok = append_feed_stock_transaction("shed_allocation", -kg, note=note, shed_no=shed_no, crop_id=crop_id)
     if ok:
-        log_event("office", "feed_stock_allocated", "Manual feed applied to shed", shed_no=shed_no, detail="%s KG to %s" % (fmt_value(kg, "f1"), fmt_crop_code(crop_id)))
-    return redirect_with_next("office_feed_stock_view", ok, "Manual feed applied to shed" if ok else "Shed feed application failed", shed_no=shed_no)
+        log_event("office", "feed_stock_allocated", "Feed stock allocated to shed", shed_no=shed_no, detail="%s KG to %s" % (fmt_value(kg, "f1"), fmt_crop_code(crop_id)))
+    return redirect_with_next("office_feed_stock_view", ok, "Feed stock allocated to shed" if ok else "Shed feed allocation failed", shed_no=shed_no)
 
 
 @app.route("/feed-stock/return", methods=["POST"])
@@ -10352,8 +10589,8 @@ def office_feed_stock_return_view():
     note = str(request.form.get("note", "") or "").strip()
     ok = append_feed_stock_transaction("shed_return", kg, note=note, shed_no=shed_no, crop_id=crop_id)
     if ok:
-        log_event("office", "feed_stock_returned", "Bin removal offset recorded", shed_no=shed_no, detail="%s KG" % fmt_value(kg, "f1"))
-    return redirect_with_next("office_feed_stock_view", ok, "Bin removal offset recorded" if ok else "Bin removal offset failed", shed_no=shed_no)
+        log_event("office", "feed_stock_returned", "Feed withdrawn from shed to stock", shed_no=shed_no, detail="%s KG" % fmt_value(kg, "f1"))
+    return redirect_with_next("office_feed_stock_view", ok, "Feed withdrawn from shed to stock" if ok else "Feed withdrawal failed", shed_no=shed_no)
 
 
 @app.route("/farm-health")
@@ -11067,6 +11304,7 @@ def shed_entry_start(shed_no, dest_shed):
     rec = clean_entry_record(rec)
 
     raw = str(request.form.get("bird_count", "") or "").strip()
+    placement_at_raw = request.form.get("placement_at", "")
     if raw != "":
         try:
             bird_count = int(raw)
@@ -11086,6 +11324,13 @@ def shed_entry_start(shed_no, dest_shed):
     if bird_count <= 0:
         return redirect(url_for("shed_detail", shed_no=shed_no, ok=0, msg="Set birds before starting"))
 
+    placement_epoch = parse_datetime_local_value(placement_at_raw)
+    if str(placement_at_raw or "").strip() and placement_epoch is None:
+        return redirect(url_for("shed_detail", shed_no=shed_no, ok=0, msg="Invalid placement date"))
+    now_ts = int(time.time())
+    if placement_epoch is not None and placement_epoch > now_ts:
+        return redirect(url_for("shed_detail", shed_no=shed_no, ok=0, msg="Placement date cannot be in the future"))
+
     other_shed = active_entry_location_for_dest(state, dest_shed, exclude_shed_name=shed_name)
     if other_shed:
         return redirect(
@@ -11098,11 +11343,13 @@ def shed_entry_start(shed_no, dest_shed):
         )
 
     rec["crop_active"] = 1
-    if rec.get("placement_epoch") is None:
-        rec["placement_epoch"] = int(time.time())
+    if placement_epoch is not None:
+        rec["placement_epoch"] = placement_epoch
+    elif rec.get("placement_epoch") is None:
+        rec["placement_epoch"] = now_ts
     if rec.get("crop_id") in [None, ""]:
         rec["crop_id"] = crop_id_for_new_start(state)
-    rec["updated_ts"] = int(time.time())
+    rec["updated_ts"] = now_ts
     rec["updated_by"] = "dashboard"
 
     entries[str(dest_shed)] = rec
@@ -11506,6 +11753,7 @@ def shed_crop_summary_view(shed_no, crop_id):
 
     shed_name = shed_name_from_number(shed_no)
     summary = build_crop_summary_for_shed(shed_name, crop_id)
+    farm_summary = build_farm_crop_summary(crop_id, farm_stock_snapshot_kg=crop_report_farm_stock_snapshot_kg(crop_id))
     daily_rows = summary.pop("daily_rows", [])
 
     summary["birds_placed"] = fmt_value(summary.get("birds_placed"), "i")
@@ -11541,6 +11789,8 @@ def shed_crop_summary_view(shed_no, crop_id):
         shed_name=shed_name,
         shed_no=shed_no,
         summary=summary,
+        farm_stock_kg=fmt_value(farm_summary.get("farm_stock_kg"), "f1"),
+        all_feed_on_farm_kg=fmt_value(farm_summary.get("all_feed_on_farm_kg"), "f1"),
         daily_rows=daily_rows,
     )
 
