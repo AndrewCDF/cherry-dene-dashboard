@@ -1515,15 +1515,18 @@ def fmt_duration_short(seconds_value):
 
     hours = total_seconds // 3600
     minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
     if hours > 0:
         return "%dh %02dm" % (hours, minutes)
-    return "%dm" % minutes
+    if minutes > 0:
+        return "%dm %02ds" % (minutes, seconds)
+    return "%ss" % seconds
 
 
 def auger_last_run_text(auger):
     if auger.get("last_started_ts") in [None, ""] or auger.get("last_duration_s") in [None, ""]:
-        return "Last run --"
-    return "Last %s • %s" % (
+        return "Last Run --"
+    return "Last Run %s • %s" % (
         fmt_clock_ts(auger.get("last_started_ts")),
         fmt_duration_short(auger.get("last_duration_s")),
     )
@@ -3459,10 +3462,11 @@ HTML = """
             margin-top: 10px;
             padding-top: 8px;
             border-top: 1px solid rgba(255,255,255,0.16);
-            font-size: 22px;
+            font-size: 24px;
             line-height: 1.2;
             color: var(--text);
             font-weight: 700;
+            text-align: center;
         }
         .main-grid {
             display: grid;
