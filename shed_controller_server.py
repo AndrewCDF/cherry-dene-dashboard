@@ -315,7 +315,7 @@ DEFAULT_CONFIG = {
     "serial_timeout": 1.0,
     "serial_enabled": True,
     "sync_on_sensor_update": True,
-    "touch_refresh_seconds": 1,
+    "touch_refresh_seconds": 0.5,
     "temp_low_c": 18.0,
     "temp_high_c": 24.0,
     "temp_amber_margin_c": 1.0,
@@ -807,10 +807,13 @@ def load_config():
         cfg["serial_timeout"] = float(cfg.get("serial_timeout", 1.0))
     except Exception:
         cfg["serial_timeout"] = 1.0
+    raw_touch_refresh = cfg.get("touch_refresh_seconds", DEFAULT_CONFIG["touch_refresh_seconds"])
+    if raw_touch_refresh in [None, "", 1, 1.0, "1", "1.0"]:
+        raw_touch_refresh = DEFAULT_CONFIG["touch_refresh_seconds"]
     try:
-        cfg["touch_refresh_seconds"] = int(cfg.get("touch_refresh_seconds", 1))
+        cfg["touch_refresh_seconds"] = max(0.5, float(raw_touch_refresh))
     except Exception:
-        cfg["touch_refresh_seconds"] = 1
+        cfg["touch_refresh_seconds"] = DEFAULT_CONFIG["touch_refresh_seconds"]
     cfg["cross_auger_enabled"] = bool(cfg.get("cross_auger_enabled", True))
     cfg["auger_left_enabled"] = bool(cfg.get("auger_left_enabled", True))
     cfg["auger_right_enabled"] = bool(cfg.get("auger_right_enabled", True))
@@ -1482,15 +1485,15 @@ def auger_runtime_text(auger, now_ts=None):
         now_ts = int(time.time())
 
     if not auger.get("on"):
-        return "Off / waiting"
+        return ""
 
     try:
         started_ts = int(auger.get("started_ts"))
     except Exception:
         return "Running"
 
-    runtime_minutes = max(0, (now_ts - started_ts) // 60)
-    return "Running %dm" % runtime_minutes
+    runtime_seconds = max(0, int(now_ts) - started_ts)
+    return "Running %ss" % runtime_seconds
 
 
 def fmt_clock_ts(ts_value):
@@ -2478,7 +2481,7 @@ def build_home_context():
         "host_ips": host_ipv4_display(),
         "dashboard_url": cfg["dashboard_url"],
         "serial_port": detect_serial_port(),
-        "refresh_seconds": max(1, cfg["touch_refresh_seconds"]),
+        "refresh_seconds": max(0.5, float(cfg["touch_refresh_seconds"])),
         "sync_status": sync_status,
         "sync_class": sync_class,
         "sync_short": "%s • %s" % (short_status_text("sync", sync_status), fmt_age_seconds(state.get("last_sync_ts"))),
@@ -3450,6 +3453,11 @@ HTML = """
             font-size: 15px;
             color: var(--muted);
         }
+        .metric-sub-auger-last {
+            font-size: 18px;
+            color: var(--text);
+            font-weight: 700;
+        }
         .main-grid {
             display: grid;
             grid-template-columns: 1fr;
@@ -3844,8 +3852,8 @@ HTML = """
                 <div id="auger-{{ auger.key }}" class="metric {{ auger.glow }}">
                     <div class="metric-label">{{ auger.label }}</div>
                     <div class="metric-val" style="font-size:30px;" data-auger-status>{{ auger.status }}</div>
-                    <div class="metric-sub" data-auger-runtime>{{ auger.runtime }}</div>
-                    <div class="metric-sub" data-auger-last-run>{{ auger.last_run }}</div>
+                    <div class="metric-sub" data-auger-runtime>{% if auger.runtime %}{{ auger.runtime }}{% else %}&nbsp;{% endif %}</div>
+                    <div class="metric-sub metric-sub-auger-last" data-auger-last-run>{{ auger.last_run }}</div>
                 </div>
                 {% endfor %}
             </div>
@@ -4535,7 +4543,7 @@ CONFIG_HTML = """
                     <div class="field"><label for="serial_port">Serial Port</label><input id="serial_port" type="text" name="serial_port" value="{{ cfg.serial_port }}"></div>
                     <div class="field"><label for="serial_baudrate">Serial Baudrate</label><input id="serial_baudrate" type="number" name="serial_baudrate" step="1" inputmode="numeric" value="{{ cfg.serial_baudrate }}"></div>
                     <div class="group-title">Display & Sync</div>
-                    <div class="field"><label for="touch_refresh_seconds">Home Poll Seconds</label><input id="touch_refresh_seconds" type="number" name="touch_refresh_seconds" step="1" inputmode="numeric" value="{{ cfg.touch_refresh_seconds }}"></div>
+                    <div class="field"><label for="touch_refresh_seconds">Home Poll Seconds</label><input id="touch_refresh_seconds" type="number" name="touch_refresh_seconds" step="0.1" min="0.5" inputmode="decimal" value="{{ cfg.touch_refresh_seconds }}"></div>
                     <div class="check"><span>Serial Enabled</span><input type="checkbox" name="serial_enabled" {% if cfg.serial_enabled %}checked{% endif %}></div>
                     <div class="check"><span>Auto Sync On Change</span><input type="checkbox" name="sync_on_sensor_update" {% if cfg.sync_on_sensor_update %}checked{% endif %}></div>
                     <div class="group-title">Augers</div>
@@ -6258,7 +6266,7 @@ def save_controller_config_view():
     except Exception:
         pass
     try:
-        cfg["touch_refresh_seconds"] = max(1, int(request.form.get("touch_refresh_seconds", cfg["touch_refresh_seconds"])))
+        cfg["touch_refresh_seconds"] = max(0.5, float(request.form.get("touch_refresh_seconds", cfg["touch_refresh_seconds"])))
     except Exception:
         pass
     cfg["serial_enabled"] = request.form.get("serial_enabled") == "on"
