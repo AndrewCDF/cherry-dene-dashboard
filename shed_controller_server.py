@@ -978,6 +978,7 @@ def create_backup_zip(label="auto"):
         os.path.join(DATA_DIR, "controller_config.json"),
         os.path.join(DATA_DIR, "controller_state.json"),
         os.path.join(DATA_DIR, "sensor_live.ndjson"),
+        os.path.join(DATA_DIR, "auger_runs.ndjson"),
     ]
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         i = 0
