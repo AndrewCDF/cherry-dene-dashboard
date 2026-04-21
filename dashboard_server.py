@@ -867,6 +867,17 @@ def controller_backup_hour_bucket(ts=None):
     return datetime.fromtimestamp(value).strftime("%Y%m%d%H")
 
 
+def seconds_until_next_hour(ts=None):
+    try:
+        value = float(time.time() if ts is None else ts)
+    except Exception:
+        value = float(time.time())
+    remainder = value % 3600.0
+    if remainder <= 0:
+        return 3600.0
+    return max(1.0, 3600.0 - remainder)
+
+
 def collect_controller_backup(controller_key, label, url, token=""):
     status_map = load_controller_backup_status()
     now_ts = int(time.time())
@@ -922,7 +933,7 @@ def controller_backup_worker():
             maybe_collect_controller_backups()
         except Exception as exc:
             log_event("office", "controller_backup_failed", "Automatic controller backup collection failed", detail=str(exc))
-        time.sleep(OFFICE_AUTO_BACKUP_CHECK_SECONDS)
+        time.sleep(seconds_until_next_hour())
 
 
 def start_office_background_workers():
@@ -1105,6 +1116,21 @@ def auger_runs_from_latest_controller_backup(shed_no, limit=200):
             "duration": duration_label,
         })
     return out
+
+
+def latest_controller_backup_info(controller_key):
+    files = list_controller_backup_files(controller_key)
+    if not files:
+        return {"name": "", "collected_at": None}
+    path = files[0]
+    try:
+        collected_at = int(os.path.getmtime(path))
+    except Exception:
+        collected_at = None
+    return {
+        "name": os.path.basename(path),
+        "collected_at": collected_at,
+    }
 
 
 def restore_full_office_from_backup(path):
@@ -9980,30 +10006,33 @@ METRIC_PERIOD_HTML = """
 
             <div class="card">
                 <h2>Auger Run Timestamps</h2>
-                {% if auger_run_rows %}
-                <details class="collapse" open>
-                    <summary>Open auger timestamp table</summary>
-                    <div class="table-wrap">
-                        <table>
-                            <thead>
-                                <tr><th>Auger</th><th>Started</th><th>Stopped</th><th>Duration</th></tr>
-                            </thead>
-                            <tbody>
-                                {% for r in auger_run_rows %}
-                                <tr>
-                                    <td>{{ r.auger_label }}</td>
-                                    <td>{{ r.started_at }}</td>
-                                    <td>{{ r.stopped_at }}</td>
-                                    <td>{{ r.duration }}</td>
-                                </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                </details>
-                {% else %}
-                <div class="empty">No auger run timestamps available from the latest controller backup yet.</div>
-                {% endif %}
+                <div id="augerRunsMeta" class="hint">{% if auger_runs_backup_name %}Latest office copy: {{ auger_runs_backup_name }}{% if auger_runs_backup_at %} at {{ auger_runs_backup_at }}{% endif %}{% else %}No controller backup copy collected yet.{% endif %}</div>
+                <div id="augerRunsContent">
+                    {% if auger_run_rows %}
+                    <details class="collapse" open>
+                        <summary>Open auger timestamp table</summary>
+                        <div class="table-wrap">
+                            <table>
+                                <thead>
+                                    <tr><th>Auger</th><th>Started</th><th>Stopped</th><th>Duration</th></tr>
+                                </thead>
+                                <tbody>
+                                    {% for r in auger_run_rows %}
+                                    <tr>
+                                        <td>{{ r.auger_label }}</td>
+                                        <td>{{ r.started_at }}</td>
+                                        <td>{{ r.stopped_at }}</td>
+                                        <td>{{ r.duration }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </details>
+                    {% else %}
+                    <div class="empty">No auger run timestamps available from the latest controller backup yet.</div>
+                    {% endif %}
+                </div>
             </div>
 
             <div class="card">
@@ -10045,6 +10074,8 @@ const xAxisTitle = {{ first_col|tojson }};
 const yAxisTitle = {{ metric_axis_title|tojson }};
 const chartLabel = {{ metric_chart_label|tojson }};
 const lineColor = {{ metric_chart_color|tojson }};
+const augerRunsApiUrl = {{ auger_runs_api_url|tojson }};
+let augerRunsSignature = {{ auger_run_rows|tojson }};
 let metricChart = null;
 
 function resetZoomSafe(chart) {
@@ -10104,7 +10135,67 @@ function buildChart() {
     });
 }
 
+function escapeHtml(value) {
+    return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function renderAugerRuns(rows) {
+    if (!Array.isArray(rows) || !rows.length) {
+        return '<div class="empty">No auger run timestamps available from the latest controller backup yet.</div>';
+    }
+    let body = '';
+    for (const row of rows) {
+        body += `<tr><td>${escapeHtml(row.auger_label || '--')}</td><td>${escapeHtml(row.started_at || '--')}</td><td>${escapeHtml(row.stopped_at || '--')}</td><td>${escapeHtml(row.duration || '--')}</td></tr>`;
+    }
+    return `
+<details class="collapse" open>
+    <summary>Open auger timestamp table</summary>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr><th>Auger</th><th>Started</th><th>Stopped</th><th>Duration</th></tr>
+            </thead>
+            <tbody>${body}</tbody>
+        </table>
+    </div>
+</details>`;
+}
+
+async function refreshAugerRuns() {
+    if (!augerRunsApiUrl) return;
+    try {
+        const resp = await fetch(augerRunsApiUrl, { cache: 'no-store' });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const rows = Array.isArray(data.rows) ? data.rows : [];
+        const nextSignature = JSON.stringify(rows);
+        const metaEl = document.getElementById('augerRunsMeta');
+        const contentEl = document.getElementById('augerRunsContent');
+        if (metaEl) {
+            if (data.latest_backup_name) {
+                metaEl.textContent = `Latest office copy: ${data.latest_backup_name}` + (data.latest_backup_at ? ` at ${data.latest_backup_at}` : '');
+            } else {
+                metaEl.textContent = 'No controller backup copy collected yet.';
+            }
+        }
+        if (contentEl && nextSignature !== JSON.stringify(augerRunsSignature)) {
+            contentEl.innerHTML = renderAugerRuns(rows);
+            augerRunsSignature = rows;
+        }
+    } catch (err) {
+    }
+}
+
 metricChart = buildChart();
+if (augerRunsApiUrl) {
+    refreshAugerRuns();
+    setInterval(refreshAugerRuns, 10000);
+}
 </script>
 </body>
 </html>
@@ -11128,6 +11219,9 @@ def shed_metric_period_view(shed_no, metric, period):
     shed_feed_stock_label = fmt_value(0, "f1")
     shed_stock_rows = []
     auger_run_rows = []
+    auger_runs_backup_name = ""
+    auger_runs_backup_at = ""
+    auger_runs_api_url = ""
     if metric == "feed":
         feed_delivery_rows = get_feed_delivery_history_for_shed(shed_name, crop_id=active_crop_id, max_rows=100)
         i = 0
@@ -11141,6 +11235,15 @@ def shed_metric_period_view(shed_no, metric, period):
         stock_context = build_feed_stock_context(shed_no)
         feed_stock_balance_label = stock_context.get("balance_kg_label", "--")
         auger_run_rows = auger_runs_from_latest_controller_backup(shed_no, limit=200)
+        auger_runs_api_url = url_for("shed_auger_runs_api_get", shed_no=shed_no)
+        backup_info = latest_controller_backup_info("shed_%d" % shed_no)
+        auger_runs_backup_name = str(backup_info.get("name") or "")
+        collected_at = backup_info.get("collected_at")
+        if collected_at not in [None, ""]:
+            try:
+                auger_runs_backup_at = datetime.fromtimestamp(int(collected_at)).strftime("%d %b %Y %H:%M:%S")
+            except Exception:
+                auger_runs_backup_at = ""
         if active_crop_id not in [None, ""]:
             shed_feed_stock_label = fmt_value(feed_stock_allocated_kg_for_target(shed_no, active_crop_id), "f1")
 
@@ -11196,6 +11299,9 @@ def shed_metric_period_view(shed_no, metric, period):
         feed_stock_balance_label=feed_stock_balance_label,
         shed_feed_stock_label=shed_feed_stock_label,
         auger_run_rows=auger_run_rows,
+        auger_runs_backup_name=auger_runs_backup_name,
+        auger_runs_backup_at=auger_runs_backup_at,
+        auger_runs_api_url=auger_runs_api_url,
         shed_stock_rows=shed_stock_rows,
     )
 
@@ -11273,6 +11379,19 @@ def shed_mortality_api_get(shed_no):
     if shed_no not in SHED_NUMBERS:
         abort(404)
     return jsonify(mortality_payload_for_shed(shed_no))
+
+
+@app.route("/api/shed/<int:shed_no>/auger-runs", methods=["GET"])
+def shed_auger_runs_api_get(shed_no):
+    if shed_no not in SHED_NUMBERS:
+        abort(404)
+    info = latest_controller_backup_info("shed_%d" % shed_no)
+    collected_at = info.get("collected_at")
+    return jsonify({
+        "rows": auger_runs_from_latest_controller_backup(shed_no, limit=200),
+        "latest_backup_name": info.get("name") or "",
+        "latest_backup_at": datetime.fromtimestamp(int(collected_at)).strftime("%d %b %Y %H:%M:%S") if collected_at not in [None, ""] else "",
+    })
 
 
 @app.route("/api/shed/<int:shed_no>/mortality", methods=["POST"])
