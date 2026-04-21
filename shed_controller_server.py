@@ -3454,7 +3454,13 @@ HTML = """
             color: var(--muted);
         }
         .metric-sub-auger-last {
-            font-size: 18px;
+            display: block;
+            width: 100%;
+            margin-top: 10px;
+            padding-top: 8px;
+            border-top: 1px solid rgba(255,255,255,0.16);
+            font-size: 22px;
+            line-height: 1.2;
             color: var(--text);
             font-weight: 700;
         }
