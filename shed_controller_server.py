@@ -358,6 +358,9 @@ STALE_OFFICE_SECONDS = 60
 STALE_LOG_SECONDS = 30
 WATER_LPM_AVERAGE_SECONDS = 12
 BACKUP_KEEP_COUNT = 6
+PICO_REBOOT_SETTLE_SECONDS = 2.0
+PICO_RECONNECT_TIMEOUT_SECONDS = 20.0
+PICO_RECONNECT_PACKET_TIMEOUT_SECONDS = 4.0
 LOCAL_DASHBOARD_PULL_SECONDS = 1
 LOCAL_DASHBOARD_HEARTBEAT_SECONDS = 10
 LOCAL_BACKGROUND_SYNC_LOOP_SECONDS = 5
@@ -580,6 +583,64 @@ def resume_sensor_threads():
     start_monitor_thread()
 
 
+def wait_for_pico_serial_ready(timeout_seconds=PICO_RECONNECT_TIMEOUT_SECONDS, packet_timeout_seconds=PICO_RECONNECT_PACKET_TIMEOUT_SECONDS):
+    if serial is None:
+        time.sleep(PICO_REBOOT_SETTLE_SECONDS)
+        return False, "pyserial not installed"
+
+    cfg = load_config()
+    deadline = time.time() + max(1.0, float(timeout_seconds))
+    last_error = "Timed out waiting for Pico serial device"
+
+    time.sleep(PICO_REBOOT_SETTLE_SECONDS)
+
+    while time.time() < deadline:
+        port = detect_serial_port()
+        if not port:
+            last_error = "Pico serial device not found yet"
+            time.sleep(0.5)
+            continue
+
+        conn = None
+        try:
+            conn = serial.Serial(
+                port=port,
+                baudrate=cfg["serial_baudrate"],
+                timeout=min(max(float(cfg["serial_timeout"]), 0.2), 1.0),
+            )
+            packet_deadline = time.time() + max(1.0, float(packet_timeout_seconds))
+            while time.time() < packet_deadline:
+                raw = conn.readline()
+                if not raw:
+                    continue
+                try:
+                    line = raw.decode("utf-8", errors="ignore").strip()
+                except Exception:
+                    continue
+                if not line:
+                    continue
+                try:
+                    packet = json.loads(line)
+                except Exception:
+                    last_error = "Pico serial returned non-JSON data"
+                    continue
+                if isinstance(packet, dict):
+                    return True, "Pico serial ready on %s" % port
+            last_error = "Pico serial reopened but no valid JSON packet arrived"
+        except Exception as exc:
+            last_error = str(exc) or "Pico serial reopen failed"
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+        time.sleep(0.5)
+
+    return False, last_error
+
+
 def run_git_command(args, timeout=20):
     proc = subprocess.run(
         ["git"] + args,
@@ -721,6 +782,9 @@ def deploy_pico_firmware():
     code, stdout, stderr = run_git_command(["rev-parse", "--short", "HEAD"])
     controller_commit = stdout if code == 0 and stdout else "--"
     mpremote = mpremote_command()
+    proc = None
+    ready_ok = False
+    ready_status = "Pico serial reconnect not attempted"
 
     pause_sensor_threads()
     try:
@@ -739,6 +803,7 @@ def deploy_pico_firmware():
                 text=True,
                 timeout=30,
             )
+            ready_ok, ready_status = wait_for_pico_serial_ready()
     finally:
         resume_sensor_threads()
     if proc.returncode != 0:
@@ -747,7 +812,10 @@ def deploy_pico_firmware():
         return status
     status.update({
         "ok": True,
-        "status": "Pico firmware deployed from controller %s" % controller_commit,
+        "status": "Pico firmware deployed from controller %s. %s" % (
+            controller_commit,
+            ready_status if ready_ok else "Pico copied, but reconnect check timed out: %s" % ready_status,
+        ),
         "last_deployed_hash": local_hash,
         "last_deployed_at": int(time.time()),
     })
@@ -763,6 +831,8 @@ def soft_reset_pico():
         "status": "Pico soft reset failed",
     })
     mpremote = mpremote_command()
+    ready_ok = False
+    ready_status = "Pico serial reconnect not attempted"
     pause_sensor_threads()
     try:
         proc = subprocess.run(
@@ -772,6 +842,8 @@ def soft_reset_pico():
             text=True,
             timeout=30,
         )
+        if proc.returncode == 0:
+            ready_ok, ready_status = wait_for_pico_serial_ready()
     finally:
         resume_sensor_threads()
     if proc.returncode != 0:
@@ -781,7 +853,9 @@ def soft_reset_pico():
 
     status.update({
         "ok": True,
-        "status": "Pico soft reset OK",
+        "status": "Pico soft reset OK. %s" % (
+            ready_status if ready_ok else "Reconnect check timed out: %s" % ready_status,
+        ),
     })
     save_pico_update_status(status)
     return status
