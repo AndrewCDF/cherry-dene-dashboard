@@ -1087,6 +1087,25 @@ def zip_ndjson_member(path, member_name):
 def format_auger_run_rows(rows, limit=200):
     if not isinstance(rows, list):
         return []
+    if rows and isinstance(rows[0], dict) and (
+        "started_at" in rows[0] or "stopped_at" in rows[0] or "duration" in rows[0]
+    ):
+        out = []
+        i = 0
+        while i < len(rows):
+            rec = rows[i]
+            i += 1
+            if not isinstance(rec, dict):
+                continue
+            out.append({
+                "auger_label": str(rec.get("auger_label") or rec.get("auger_key") or "--"),
+                "started_at": str(rec.get("started_at") or "--"),
+                "stopped_at": str(rec.get("stopped_at") or "--"),
+                "duration": str(rec.get("duration") or "--"),
+            })
+        if limit and limit > 0:
+            out = out[:limit]
+        return out
     rows.sort(key=lambda r: int(r.get("stopped_ts") or r.get("ts") or 0), reverse=True)
     if limit and limit > 0:
         rows = rows[:limit]
