@@ -1064,6 +1064,40 @@ def zip_ndjson_member(path, member_name):
         return []
 
 
+def auger_runs_from_latest_controller_backup(shed_no, limit=200):
+    if shed_no not in SHED_NUMBERS:
+        return []
+    files = list_controller_backup_files("shed_%d" % shed_no)
+    if not files:
+        return []
+    rows = zip_ndjson_member(files[0], "auger_runs.ndjson")
+    if not isinstance(rows, list):
+        return []
+    rows.sort(key=lambda r: int(r.get("stopped_ts") or r.get("ts") or 0), reverse=True)
+    if limit and limit > 0:
+        rows = rows[:limit]
+
+    out = []
+    i = 0
+    while i < len(rows):
+        rec = rows[i]
+        i += 1
+        started_ts = rec.get("started_ts")
+        stopped_ts = rec.get("stopped_ts") or rec.get("ts")
+        duration_s = rec.get("duration_s")
+        try:
+            duration_label = "%ss" % max(0, int(duration_s))
+        except Exception:
+            duration_label = "--"
+        out.append({
+            "auger_label": str(rec.get("auger_label") or rec.get("auger_key") or "--"),
+            "started_at": datetime.fromtimestamp(int(started_ts)).strftime("%d %b %Y %H:%M:%S") if started_ts not in [None, ""] else "--",
+            "stopped_at": datetime.fromtimestamp(int(stopped_ts)).strftime("%d %b %Y %H:%M:%S") if stopped_ts not in [None, ""] else "--",
+            "duration": duration_label,
+        })
+    return out
+
+
 def restore_full_office_from_backup(path):
     with zipfile.ZipFile(path, "r") as zf:
         for name in zf.namelist():
@@ -9936,6 +9970,34 @@ METRIC_PERIOD_HTML = """
             </div>
 
             <div class="card">
+                <h2>Auger Run Timestamps</h2>
+                {% if auger_run_rows %}
+                <details class="collapse" open>
+                    <summary>Open auger timestamp table</summary>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr><th>Auger</th><th>Started</th><th>Stopped</th><th>Duration</th></tr>
+                            </thead>
+                            <tbody>
+                                {% for r in auger_run_rows %}
+                                <tr>
+                                    <td>{{ r.auger_label }}</td>
+                                    <td>{{ r.started_at }}</td>
+                                    <td>{{ r.stopped_at }}</td>
+                                    <td>{{ r.duration }}</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </details>
+                {% else %}
+                <div class="empty">No auger run timestamps available from the latest controller backup yet.</div>
+                {% endif %}
+            </div>
+
+            <div class="card">
                 <h2>Feed Stock History</h2>
                 {% if shed_stock_rows %}
                 <details class="collapse" open>
@@ -11056,6 +11118,7 @@ def shed_metric_period_view(shed_no, metric, period):
     feed_stock_balance_label = "--"
     shed_feed_stock_label = fmt_value(0, "f1")
     shed_stock_rows = []
+    auger_run_rows = []
     if metric == "feed":
         feed_delivery_rows = get_feed_delivery_history_for_shed(shed_name, crop_id=active_crop_id, max_rows=100)
         i = 0
@@ -11068,6 +11131,7 @@ def shed_metric_period_view(shed_no, metric, period):
 
         stock_context = build_feed_stock_context(shed_no)
         feed_stock_balance_label = stock_context.get("balance_kg_label", "--")
+        auger_run_rows = auger_runs_from_latest_controller_backup(shed_no, limit=200)
         if active_crop_id not in [None, ""]:
             shed_feed_stock_label = fmt_value(feed_stock_allocated_kg_for_target(shed_no, active_crop_id), "f1")
 
@@ -11122,6 +11186,7 @@ def shed_metric_period_view(shed_no, metric, period):
         feed_delivery_total_label=fmt_value(feed_delivery_total, "f1"),
         feed_stock_balance_label=feed_stock_balance_label,
         shed_feed_stock_label=shed_feed_stock_label,
+        auger_run_rows=auger_run_rows,
         shed_stock_rows=shed_stock_rows,
     )
 
