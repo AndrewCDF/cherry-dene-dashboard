@@ -4,7 +4,7 @@ import time
 from machine import I2C, Pin
 
 
-SAMPLE_SECONDS = 1.0
+SAMPLE_SECONDS = 0.25
 TEMP_RH_MEASURE_SECONDS = 2.5
 DEVICE_NAME = "pico-2-shed"
 
