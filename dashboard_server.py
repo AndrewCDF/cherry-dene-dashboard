@@ -893,7 +893,7 @@ def collect_controller_backup(controller_key, label, url, token=""):
         return False
 
 
-def maybe_collect_controller_backups():
+def maybe_collect_controller_backups(force=False):
     status_map = load_controller_backup_status()
     urls = controller_backup_url_map()
     for controller_key, rec in urls.items():
@@ -902,7 +902,7 @@ def maybe_collect_controller_backups():
             last_ts = int(status_map.get(controller_key, {}).get("last_collected_ts"))
         except Exception:
             last_ts = None
-        if last_ts is not None and (int(time.time()) - last_ts) < OFFICE_AUTO_BACKUP_INTERVAL_SECONDS:
+        if (not force) and last_ts is not None and (int(time.time()) - last_ts) < OFFICE_AUTO_BACKUP_INTERVAL_SECONDS:
             continue
         collect_controller_backup(controller_key, rec.get("label", controller_key), rec.get("url", ""), str(rec.get("token", "") or ""))
 
@@ -10809,7 +10809,7 @@ def office_apply_update_view():
 
 @app.route("/settings/collect-backups")
 def collect_controller_backups_now_view():
-    maybe_collect_controller_backups()
+    maybe_collect_controller_backups(force=True)
     return redirect(url_for("office_settings_view", ok=1, msg="Collected controller backups"))
 
 
