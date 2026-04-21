@@ -7021,6 +7021,26 @@ def auger_runs_view():
     )
 
 
+@app.route("/api/history/feed/augers")
+def auger_runs_api_view():
+    auth_error = require_office_token()
+    if auth_error:
+        return auth_error
+    try:
+        limit = int(request.args.get("limit", "200"))
+    except Exception:
+        limit = 200
+    if limit <= 0:
+        limit = 200
+    if limit > 1000:
+        limit = 1000
+    return jsonify({
+        "ok": True,
+        "rows": get_auger_runs(limit),
+        "generated_at": int(time.time()),
+    })
+
+
 def save_entry_for_dest_impl(dest_shed, bird_count):
     if dest_shed not in SHED_NUMBERS:
         return False, "Invalid shed"

@@ -1084,13 +1084,7 @@ def zip_ndjson_member(path, member_name):
         return []
 
 
-def auger_runs_from_latest_controller_backup(shed_no, limit=200):
-    if shed_no not in SHED_NUMBERS:
-        return []
-    files = list_controller_backup_files("shed_%d" % shed_no)
-    if not files:
-        return []
-    rows = zip_ndjson_member(files[0], "auger_runs.ndjson")
+def format_auger_run_rows(rows, limit=200):
     if not isinstance(rows, list):
         return []
     rows.sort(key=lambda r: int(r.get("stopped_ts") or r.get("ts") or 0), reverse=True)
@@ -1116,6 +1110,55 @@ def auger_runs_from_latest_controller_backup(shed_no, limit=200):
             "duration": duration_label,
         })
     return out
+
+
+def auger_runs_from_latest_controller_backup(shed_no, limit=200):
+    if shed_no not in SHED_NUMBERS:
+        return []
+    files = list_controller_backup_files("shed_%d" % shed_no)
+    if not files:
+        return []
+    rows = zip_ndjson_member(files[0], "auger_runs.ndjson")
+    return format_auger_run_rows(rows, limit=limit)
+
+
+def fetch_live_auger_runs_from_controller(shed_no, limit=200):
+    if shed_no not in SHED_NUMBERS:
+        return {"ok": False, "rows": [], "source": "invalid"}
+    rec = controller_config_record(str(shed_no))
+    sync_url = str(rec.get("sync_url", "") or "").strip().rstrip("/")
+    if not sync_url:
+        return {"ok": False, "rows": [], "source": "missing_url"}
+
+    headers = {}
+    token = str(rec.get("sync_token", "") or "").strip()
+    if token:
+        headers["X-Controller-Token"] = token
+    url = "%s/api/history/feed/augers?limit=%d" % (sync_url, max(1, min(int(limit or 200), 1000)))
+
+    try:
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            if not (200 <= int(resp.status) < 300):
+                raise RuntimeError("HTTP %d" % int(resp.status))
+            payload = json.loads(resp.read().decode("utf-8"))
+        rows = payload.get("rows", []) if isinstance(payload, dict) else []
+        generated_at = payload.get("generated_at") if isinstance(payload, dict) else None
+        generated_at_label = ""
+        if generated_at not in [None, ""]:
+            try:
+                generated_at_label = datetime.fromtimestamp(int(generated_at)).strftime("%d %b %Y %H:%M:%S")
+            except Exception:
+                generated_at_label = ""
+        return {
+            "ok": True,
+            "rows": format_auger_run_rows(rows, limit=limit),
+            "source": "live",
+            "source_label": "Live controller feed",
+            "updated_at": generated_at_label,
+        }
+    except Exception:
+        return {"ok": False, "rows": [], "source": "live_failed"}
 
 
 def latest_controller_backup_info(controller_key):
@@ -10006,7 +10049,7 @@ METRIC_PERIOD_HTML = """
 
             <div class="card">
                 <h2>Auger Run Timestamps</h2>
-                <div id="augerRunsMeta" class="hint">{% if auger_runs_backup_name %}Latest office copy: {{ auger_runs_backup_name }}{% if auger_runs_backup_at %} at {{ auger_runs_backup_at }}{% endif %}{% else %}No controller backup copy collected yet.{% endif %}</div>
+                <div id="augerRunsMeta" class="hint">{% if auger_runs_backup_name %}Auger source: {{ auger_runs_backup_name }}{% if auger_runs_backup_at %} at {{ auger_runs_backup_at }}{% endif %}{% else %}No auger source available yet.{% endif %}</div>
                 <div id="augerRunsContent">
                     {% if auger_run_rows %}
                     <details class="collapse" open>
@@ -10178,9 +10221,9 @@ async function refreshAugerRuns() {
         const contentEl = document.getElementById('augerRunsContent');
         if (metaEl) {
             if (data.latest_backup_name) {
-                metaEl.textContent = `Latest office copy: ${data.latest_backup_name}` + (data.latest_backup_at ? ` at ${data.latest_backup_at}` : '');
+                metaEl.textContent = `Auger source: ${data.latest_backup_name}` + (data.latest_backup_at ? ` at ${data.latest_backup_at}` : '');
             } else {
-                metaEl.textContent = 'No controller backup copy collected yet.';
+                metaEl.textContent = 'No auger source available yet.';
             }
         }
         if (contentEl && nextSignature !== JSON.stringify(augerRunsSignature)) {
@@ -10194,7 +10237,7 @@ async function refreshAugerRuns() {
 metricChart = buildChart();
 if (augerRunsApiUrl) {
     refreshAugerRuns();
-    setInterval(refreshAugerRuns, 10000);
+    setInterval(refreshAugerRuns, 60000);
 }
 </script>
 </body>
@@ -11234,16 +11277,22 @@ def shed_metric_period_view(shed_no, metric, period):
 
         stock_context = build_feed_stock_context(shed_no)
         feed_stock_balance_label = stock_context.get("balance_kg_label", "--")
-        auger_run_rows = auger_runs_from_latest_controller_backup(shed_no, limit=200)
+        live_auger_runs = fetch_live_auger_runs_from_controller(shed_no, limit=200)
+        if live_auger_runs.get("ok"):
+            auger_run_rows = live_auger_runs.get("rows", [])
+            auger_runs_backup_name = str(live_auger_runs.get("source_label") or "")
+            auger_runs_backup_at = str(live_auger_runs.get("updated_at") or "")
+        else:
+            auger_run_rows = auger_runs_from_latest_controller_backup(shed_no, limit=200)
+            backup_info = latest_controller_backup_info("shed_%d" % shed_no)
+            auger_runs_backup_name = str(backup_info.get("name") or "")
+            collected_at = backup_info.get("collected_at")
+            if collected_at not in [None, ""]:
+                try:
+                    auger_runs_backup_at = datetime.fromtimestamp(int(collected_at)).strftime("%d %b %Y %H:%M:%S")
+                except Exception:
+                    auger_runs_backup_at = ""
         auger_runs_api_url = url_for("shed_auger_runs_api_get", shed_no=shed_no)
-        backup_info = latest_controller_backup_info("shed_%d" % shed_no)
-        auger_runs_backup_name = str(backup_info.get("name") or "")
-        collected_at = backup_info.get("collected_at")
-        if collected_at not in [None, ""]:
-            try:
-                auger_runs_backup_at = datetime.fromtimestamp(int(collected_at)).strftime("%d %b %Y %H:%M:%S")
-            except Exception:
-                auger_runs_backup_at = ""
         if active_crop_id not in [None, ""]:
             shed_feed_stock_label = fmt_value(feed_stock_allocated_kg_for_target(shed_no, active_crop_id), "f1")
 
@@ -11385,6 +11434,13 @@ def shed_mortality_api_get(shed_no):
 def shed_auger_runs_api_get(shed_no):
     if shed_no not in SHED_NUMBERS:
         abort(404)
+    live = fetch_live_auger_runs_from_controller(shed_no, limit=200)
+    if live.get("ok"):
+        return jsonify({
+            "rows": live.get("rows", []),
+            "latest_backup_name": live.get("source_label", "Live controller feed"),
+            "latest_backup_at": live.get("updated_at", ""),
+        })
     info = latest_controller_backup_info("shed_%d" % shed_no)
     collected_at = info.get("collected_at")
     return jsonify({
