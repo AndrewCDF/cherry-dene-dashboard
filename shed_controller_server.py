@@ -461,6 +461,11 @@ def append_ndjson(path, payload):
         f.write(json.dumps(payload) + "\n")
 
 
+def auger_runs_path():
+    ensure_data_dir()
+    return os.path.join(DATA_DIR, "auger_runs.ndjson")
+
+
 def update_status_path():
     ensure_data_dir()
     return os.path.join(DATA_DIR, "update_status.json")
@@ -1043,6 +1048,43 @@ def get_controller_events(limit=200):
     return rows
 
 
+def get_auger_runs(limit=300):
+    path = auger_runs_path()
+    if not os.path.exists(path):
+        return []
+    rows = []
+    try:
+        with open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except Exception:
+                    pass
+    except Exception:
+        return []
+    rows.sort(key=lambda r: int(r.get("stopped_ts") or r.get("ts") or 0), reverse=True)
+    rows = rows[:limit]
+
+    out = []
+    i = 0
+    while i < len(rows):
+        rec = rows[i]
+        i += 1
+        started_ts = rec.get("started_ts")
+        stopped_ts = rec.get("stopped_ts") or rec.get("ts")
+        duration_s = rec.get("duration_s")
+        out.append({
+            "auger_label": str(rec.get("auger_label") or rec.get("auger_key") or "--"),
+            "started_at": fmt_ts(started_ts),
+            "stopped_at": fmt_ts(stopped_ts),
+            "duration": fmt_duration_short(duration_s),
+        })
+    return out
+
+
 def post_event_to_dashboard(payload):
     try:
         with dashboard_request("/api/event", method="POST", payload=payload, timeout=4) as resp:
@@ -1350,7 +1392,7 @@ def ensure_augers_state(sensors):
     return out
 
 
-def update_auger_state(auger, is_on, now_ts):
+def update_auger_state(auger_key, auger, is_on, now_ts, cfg=None):
     changed = False
 
     if is_on:
@@ -1377,6 +1419,7 @@ def update_auger_state(auger, is_on, now_ts):
             auger["last_duration_s"] = duration_s
             auger["started_ts"] = None
             auger["overrun"] = False
+            record_auger_run(auger_key, auger, now_ts, cfg=cfg)
             changed = True
 
     return changed
@@ -1521,6 +1564,33 @@ def fmt_duration_short(seconds_value):
     if minutes > 0:
         return "%dm %02ds" % (minutes, seconds)
     return "%ss" % seconds
+
+
+def record_auger_run(auger_key, auger, stopped_ts, cfg=None):
+    cfg = cfg if isinstance(cfg, dict) else load_config()
+    try:
+        stopped_ts = int(stopped_ts)
+    except Exception:
+        return
+    try:
+        started_ts = int(auger.get("last_started_ts"))
+    except Exception:
+        started_ts = None
+    try:
+        duration_s = int(auger.get("last_duration_s"))
+    except Exception:
+        duration_s = None
+
+    payload = {
+        "ts": stopped_ts,
+        "shed_no": cfg.get("shed_no"),
+        "auger_key": auger_key,
+        "auger_label": auger_label_for(cfg, auger_key, auger_key.replace("_", " ").title()),
+        "started_ts": started_ts,
+        "stopped_ts": stopped_ts,
+        "duration_s": duration_s,
+    }
+    append_ndjson(auger_runs_path(), payload)
 
 
 def auger_last_run_text(auger):
@@ -2844,6 +2914,7 @@ def apply_sensor_packet(state, packet):
     if isinstance(packet.get("alarms"), list):
         sensors["alarms"] = packet.get("alarms")
 
+    cfg = load_config()
     augers = ensure_augers_state(sensors)
     i = 0
     while i < len(AUGER_DEFS):
@@ -2855,7 +2926,7 @@ def apply_sensor_packet(state, packet):
             if packet_key in packet:
                 bool_value = normalize_bool(packet.get(packet_key))
                 if bool_value is not None:
-                    update_auger_state(augers[auger_key], bool_value, now_ts)
+                    update_auger_state(auger_key, augers[auger_key], bool_value, now_ts, cfg=cfg)
                 break
             j += 1
         i += 1
@@ -4794,6 +4865,25 @@ HISTORY_HTML = """
             padding: 18px;
             margin-bottom: 16px;
         }
+        .action-row {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 14px;
+        }
+        .action-link {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 44px;
+            padding: 10px 14px;
+            border-radius: 12px;
+            border: 1px solid #8a8a8a;
+            background: var(--panel-2);
+            color: var(--text);
+            text-decoration: none;
+            font-weight: 700;
+        }
         h1 {
             margin: 0 0 8px 0;
             font-size: 38px;
@@ -4839,6 +4929,11 @@ HISTORY_HTML = """
         <div class="panel">
             <h1>Shed {{ shed_no }} {{ metric_title }}</h1>
             <div class="sub">Current crop {{ crop_code }} hourly {{ metric_title|lower }} history.</div>
+            {% if extra_link_href %}
+            <div class="action-row">
+                <a class="action-link" href="{{ extra_link_href }}">{{ extra_link_label }}</a>
+            </div>
+            {% endif %}
             {% if rows %}
             <div class="chart-wrap">
                 <div class="chart-box"><canvas id="historyChart"></canvas></div>
@@ -4903,6 +4998,71 @@ HISTORY_HTML = """
         });
     }
     </script>
+</body>
+</html>
+"""
+
+
+AUGER_RUNS_HTML = """
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Shed {{ shed_no }} Auger Runs</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <style>
+        :root {
+            --bg: #5b5b5b;
+            --panel: rgba(115, 115, 115, 0.96);
+            --line: #8a8a8a;
+            --text: #ececec;
+            --muted: #d2d2d2;
+        }
+        body { margin: 0; color: var(--text); font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; background: #5b5b5b; }
+        .wrap { max-width: 1100px; margin: 0 auto; padding: 18px; }
+        .topbar { margin-bottom: 16px; }
+        .topbar a { color: var(--text); text-decoration: none; font-size: 18px; }
+        .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 20px; padding: 18px; margin-bottom: 16px; }
+        h1 { margin: 0 0 8px 0; font-size: 38px; }
+        .sub { color: var(--muted); margin-bottom: 16px; font-size: 18px; }
+        table { width: 100%; border-collapse: collapse; font-size: 15px; }
+        th, td { border-bottom: 1px solid #818181; padding: 10px 8px; text-align: left; }
+        th { color: var(--muted); }
+        .empty { color: var(--muted); font-size: 18px; }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="topbar"><a href="{{ url_for('feed_history_view') }}">← Back to Feed History</a></div>
+        <div class="panel">
+            <h1>Shed {{ shed_no }} Auger Runs</h1>
+            <div class="sub">Completed auger run timestamps and durations recorded by this controller.</div>
+            {% if rows %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Auger</th>
+                        <th>Started</th>
+                        <th>Stopped</th>
+                        <th>Duration</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in rows %}
+                    <tr>
+                        <td>{{ row.auger_label }}</td>
+                        <td>{{ row.started_at }}</td>
+                        <td>{{ row.stopped_at }}</td>
+                        <td>{{ row.duration }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty">No auger runs recorded yet.</div>
+            {% endif %}
+        </div>
+    </div>
 </body>
 </html>
 """
@@ -6749,6 +6909,8 @@ def render_metric_history(metric_key, metric_title, y_axis_title, color, fmt):
         rows=view_rows,
         labels=labels,
         values=values,
+        extra_link_href=url_for("auger_runs_view") if metric_key == "feed" else None,
+        extra_link_label="Auger Run Timestamps" if metric_key == "feed" else "",
     )
 
 
@@ -6772,6 +6934,16 @@ def water_history_view():
 @app.route("/history/feed")
 def feed_history_view():
     return render_metric_history("feed", "Feed History", "Feed KG", "#7be1aa", "f1")
+
+
+@app.route("/history/feed/augers")
+def auger_runs_view():
+    cfg = load_config()
+    return render_template_string(
+        AUGER_RUNS_HTML,
+        shed_no=cfg["shed_no"],
+        rows=get_auger_runs(500),
+    )
 
 
 def save_entry_for_dest_impl(dest_shed, bird_count):
