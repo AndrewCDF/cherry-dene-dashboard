@@ -331,9 +331,11 @@ DEFAULT_CONFIG = {
     "cross_auger_enabled": True,
     "auger_left_enabled": True,
     "auger_right_enabled": True,
+    "lighting_enabled": True,
     "cross_auger_label": "Cross Auger",
     "auger_left_label": "Auger Left",
     "auger_right_label": "Auger Right",
+    "lighting_label": "Lighting",
 }
 
 SERIAL_THREAD = None
@@ -351,6 +353,7 @@ AUGER_PACKET_KEYS = {
     "auger_left": ["auger_left_on", "auger_left"],
     "auger_right": ["auger_right_on", "auger_right"],
 }
+LIGHTING_PACKET_KEYS = ["lighting_on", "lighting"]
 AUGER_OVERRUN_SECONDS = 20 * 60
 BACKUP_INTERVAL_SECONDS = 3600
 STALE_SENSOR_SECONDS = 30
@@ -896,9 +899,11 @@ def load_config():
     cfg["cross_auger_enabled"] = bool(cfg.get("cross_auger_enabled", True))
     cfg["auger_left_enabled"] = bool(cfg.get("auger_left_enabled", True))
     cfg["auger_right_enabled"] = bool(cfg.get("auger_right_enabled", True))
+    cfg["lighting_enabled"] = bool(cfg.get("lighting_enabled", True))
     cfg["cross_auger_label"] = str(cfg.get("cross_auger_label", "Cross Auger") or "Cross Auger").strip()
     cfg["auger_left_label"] = str(cfg.get("auger_left_label", "Auger Left") or "Auger Left").strip()
     cfg["auger_right_label"] = str(cfg.get("auger_right_label", "Auger Right") or "Auger Right").strip()
+    cfg["lighting_label"] = str(cfg.get("lighting_label", "Lighting") or "Lighting").strip()
     try:
         cfg["temp_low_c"] = float(cfg.get("temp_low_c", 18.0))
     except Exception:
@@ -981,6 +986,16 @@ def enabled_auger_keys(cfg):
     if cfg.get("auger_right_enabled", True):
         keys.append("auger_right")
     return keys
+
+
+def lighting_enabled(cfg):
+    cfg = cfg if isinstance(cfg, dict) else load_config()
+    return bool(cfg.get("lighting_enabled", True))
+
+
+def lighting_label_for(cfg=None):
+    cfg = cfg if isinstance(cfg, dict) else load_config()
+    return str(cfg.get("lighting_label", "Lighting") or "Lighting").strip() or "Lighting"
 
 
 def auger_label_for(cfg, auger_key, default_label):
@@ -1140,7 +1155,7 @@ def get_auger_runs(limit=300):
                     pass
     except Exception:
         return []
-    rows.sort(key=lambda r: int(r.get("stopped_ts") or r.get("ts") or 0), reverse=True)
+    rows = collate_auger_run_records(rows)
     rows = rows[:limit]
 
     out = []
@@ -1151,13 +1166,74 @@ def get_auger_runs(limit=300):
         started_ts = rec.get("started_ts")
         stopped_ts = rec.get("stopped_ts") or rec.get("ts")
         duration_s = rec.get("duration_s")
+        run_count = int(rec.get("run_count") or 1)
         out.append({
             "auger_label": str(rec.get("auger_label") or rec.get("auger_key") or "--"),
             "started_at": fmt_ts(started_ts),
             "stopped_at": fmt_ts(stopped_ts),
             "duration": fmt_duration_short(duration_s),
+            "run_count": run_count,
+            "run_count_label": "%d" % run_count,
         })
     return out
+
+
+def collate_auger_run_records(records, short_max_seconds=15, gap_max_seconds=30):
+    parsed = []
+    if not isinstance(records, list):
+        return parsed
+    i = 0
+    while i < len(records):
+        rec = records[i]
+        i += 1
+        if not isinstance(rec, dict):
+            continue
+        try:
+            started_ts = int(rec.get("started_ts"))
+            stopped_ts = int(rec.get("stopped_ts") or rec.get("ts"))
+        except Exception:
+            continue
+        try:
+            duration_s = int(rec.get("duration_s"))
+        except Exception:
+            duration_s = max(0, stopped_ts - started_ts)
+        parsed.append({
+            "auger_label": str(rec.get("auger_label") or rec.get("auger_key") or "--"),
+            "started_ts": started_ts,
+            "stopped_ts": stopped_ts,
+            "duration_s": max(0, duration_s),
+            "run_count": int(rec.get("run_count") or 1),
+        })
+
+    parsed.sort(key=lambda r: (r["auger_label"], r["started_ts"]))
+    groups = []
+    current = None
+    i = 0
+    while i < len(parsed):
+        rec = parsed[i]
+        i += 1
+        is_short = rec["duration_s"] <= short_max_seconds
+        can_merge = (
+            current is not None
+            and current["auger_label"] == rec["auger_label"]
+            and is_short
+            and current.get("all_short", False)
+            and (rec["started_ts"] - current["stopped_ts"]) <= gap_max_seconds
+        )
+        if can_merge:
+            current["stopped_ts"] = max(current["stopped_ts"], rec["stopped_ts"])
+            current["duration_s"] += rec["duration_s"]
+            current["run_count"] += rec["run_count"]
+            continue
+        if current is not None:
+            groups.append(current)
+        current = dict(rec)
+        current["all_short"] = is_short
+    if current is not None:
+        groups.append(current)
+
+    groups.sort(key=lambda r: r["stopped_ts"], reverse=True)
+    return groups
 
 
 def post_event_to_dashboard(payload):
@@ -1210,7 +1286,10 @@ def default_sensor_state():
         "water_last_pulse_delta": None,
         "water_last_elapsed_s": None,
         "feed_kg": None,
-        "light_lux": None,
+        "lighting_on": None,
+        "lighting_last_changed_ts": None,
+        "lighting_last_on_ts": None,
+        "lighting_last_off_ts": None,
         "pressure_pa": None,
         "device_status": "Waiting for Pico",
         "pico_connected": False,
@@ -1498,6 +1577,56 @@ def update_auger_state(auger_key, auger, is_on, now_ts, cfg=None):
             changed = True
 
     return changed
+
+
+def update_lighting_state(sensors, is_on, now_ts):
+    bool_value = bool(is_on)
+    previous = normalize_bool(sensors.get("lighting_on"))
+    changed = previous is None or previous != bool_value
+    sensors["lighting_on"] = bool_value
+    if changed:
+        sensors["lighting_last_changed_ts"] = now_ts
+        if bool_value:
+            sensors["lighting_last_on_ts"] = now_ts
+        else:
+            sensors["lighting_last_off_ts"] = now_ts
+    return changed
+
+
+def lighting_status_text(sensors):
+    state = normalize_bool(sensors.get("lighting_on"))
+    if state is None:
+        return "Waiting"
+    return "On" if state else "Off"
+
+
+def lighting_runtime_text(sensors, now_ts=None):
+    if now_ts is None:
+        now_ts = int(time.time())
+    if not normalize_bool(sensors.get("lighting_on")):
+        return ""
+    try:
+        started_ts = int(sensors.get("lighting_last_on_ts"))
+    except Exception:
+        return "On"
+    return "On %ss" % max(0, int(now_ts) - started_ts)
+
+
+def lighting_last_change_text(sensors):
+    if normalize_bool(sensors.get("lighting_on")):
+        if sensors.get("lighting_last_on_ts") not in [None, ""]:
+            return "Last On %s" % fmt_clock_ts(sensors.get("lighting_last_on_ts"))
+        return "Last On --"
+    if sensors.get("lighting_last_off_ts") not in [None, ""]:
+        return "Last Off %s" % fmt_clock_ts(sensors.get("lighting_last_off_ts"))
+    return "Last Off --"
+
+
+def lighting_glow_class(sensors):
+    state = normalize_bool(sensors.get("lighting_on"))
+    if state is None:
+        return "state-warn"
+    return "state-green" if state else "state-warn"
 
 
 def evaluate_augers(sensors, now_ts=None):
@@ -2084,6 +2213,9 @@ def sync_payload(state):
         "water_total_litres": water_total_litres,
         "feed_kg": sensors.get("feed_kg"),
         "feed_low_kg": cfg.get("feed_low_kg"),
+        "lighting_on": sensors.get("lighting_on"),
+        "lighting_label": lighting_label_for(cfg),
+        "lighting_last_changed_ts": sensors.get("lighting_last_changed_ts"),
         "feed_daily_burn_kg": state.get("feed_tracking", {}).get("avg_daily_burn_kg"),
         "last_feed_delivery_ts": state.get("feed_tracking", {}).get("last_delivery_ts"),
         "last_feed_delivery_kg": state.get("feed_tracking", {}).get("last_delivery_kg"),
@@ -2608,6 +2740,16 @@ def build_home_context():
             auger_tiles.append(tile)
         i += 1
 
+    if lighting_enabled(cfg):
+        auger_tiles.append({
+            "key": "lighting",
+            "label": lighting_label_for(cfg),
+            "status": lighting_status_text(sensors),
+            "runtime": lighting_runtime_text(sensors, now_ts=now_ts),
+            "last_run": lighting_last_change_text(sensors),
+            "glow": lighting_glow_class(sensors),
+        })
+
     alarm_rows = build_alarm_rows(state)
     controller_alerts = []
     i = 0
@@ -2672,7 +2814,6 @@ def build_home_context():
         "mortality_total": fmt_value(dashboard_summary.get("mortality_total") if total_birds > 0 else None, "i"),
         "water_glow": water_glow,
         "feed_glow": feed_glow,
-        "light_lux": fmt_value(sensors.get("light_lux"), "f0"),
         "pressure_pa": fmt_value(sensors.get("pressure_pa"), "f0"),
         "last_serial_line": sensors.get("last_serial_line", ""),
         "sensors": sensors,
@@ -2976,7 +3117,6 @@ def apply_sensor_packet(state, packet):
         "rh_pct": "rh_pct",
         "water_lpm": "water_lpm",
         "feed_kg": "feed_kg",
-        "light_lux": "light_lux",
         "pressure_pa": "pressure_pa",
         "status": "device_status",
         "device_status": "device_status",
@@ -3005,6 +3145,16 @@ def apply_sensor_packet(state, packet):
                 break
             j += 1
         i += 1
+
+    j = 0
+    while j < len(LIGHTING_PACKET_KEYS):
+        packet_key = LIGHTING_PACKET_KEYS[j]
+        if packet_key in packet:
+            bool_value = normalize_bool(packet.get(packet_key))
+            if bool_value is not None:
+                update_lighting_state(sensors, bool_value, now_ts)
+            break
+        j += 1
 
     sensors["raw"] = packet
     sensors["pico_connected"] = True
@@ -3516,6 +3666,9 @@ HTML = """
         .auger-grid-shell.count-3 {
             grid-template-columns: repeat(3, minmax(0, 1fr));
         }
+        .auger-grid-shell.count-4 {
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+        }
         .auger-grid-shell .metric {
             min-width: 0;
         }
@@ -3892,7 +4045,8 @@ HTML = """
             .auger-grid-shell,
             .auger-grid-shell.count-1,
             .auger-grid-shell.count-2,
-            .auger-grid-shell.count-3 {
+            .auger-grid-shell.count-3,
+            .auger-grid-shell.count-4 {
                 grid-column: auto;
                 grid-template-columns: 1fr;
             }
@@ -4624,11 +4778,11 @@ HEALTH_HTML = """
                 {% for auger in auger_rows %}
                 <div class="detail"><span class="label">{{ auger.label }}</span><span>{{ auger.status }} • {{ auger.runtime }} • {{ auger.last_run }}</span></div>
                 {% endfor %}
+                <div class="detail"><span class="label">Lighting State</span><span>{{ lighting_status }}{% if lighting_runtime %} • {{ lighting_runtime }}{% endif %} • {{ lighting_last_change }}</span></div>
                 <div class="detail"><span class="label">Crop Active</span><span>{{ "Yes" if entry.crop_active == 1 else "No" }}</span></div>
                 <div class="detail"><span class="label">Started</span><span>{{ started_at }}</span></div>
                 <div class="detail"><span class="label">Updated By</span><span>{{ entry.updated_by }}</span></div>
                 <div class="detail"><span class="label">Updated At</span><span>{{ updated_at }}</span></div>
-                <div class="detail"><span class="label">Light</span><span>{{ light_lux }}</span></div>
                 <div class="detail"><span class="label">Pressure</span><span>{{ pressure_pa }}</span></div>
             </div>
             {% if controller_alerts %}
@@ -4719,6 +4873,11 @@ CONFIG_HTML = """
                             <h3>Right Auger</h3>
                             <div class="field"><label for="auger_right_label">Label</label><input id="auger_right_label" type="text" name="auger_right_label" value="{{ cfg.auger_right_label }}"></div>
                             <div class="check"><span>Enabled</span><input type="checkbox" name="auger_right_enabled" {% if cfg.auger_right_enabled %}checked{% endif %}></div>
+                        </div>
+                        <div class="auger-card">
+                            <h3>Lighting</h3>
+                            <div class="field"><label for="lighting_label">Label</label><input id="lighting_label" type="text" name="lighting_label" value="{{ cfg.lighting_label }}"></div>
+                            <div class="check"><span>Enabled</span><input type="checkbox" name="lighting_enabled" {% if cfg.lighting_enabled %}checked{% endif %}></div>
                         </div>
                     </div>
                     <button type="submit">Save Controller Config</button>
@@ -4882,7 +5041,7 @@ COMMISSIONING_HTML = """
                 <div class="detail"><span class="label">Flow Total Pulses</span><span>{{ flow_total_pulses }}</span></div>
                 <div class="detail"><span class="label">Feed KG</span><span>{{ feed_kg }}</span></div>
                 <div class="detail"><span class="label">Feed Raw</span><span>{{ feed_raw_units }}</span></div>
-                <div class="detail"><span class="label">Light Lux</span><span>{{ light_lux }}</span></div>
+                <div class="detail"><span class="label">Lighting</span><span>{{ lighting_status }}</span></div>
                 <div class="detail"><span class="label">Pressure Pa</span><span>{{ pressure_pa }}</span></div>
             </div>
             <div class="panel">
@@ -5120,6 +5279,7 @@ AUGER_RUNS_HTML = """
                         <th>Started</th>
                         <th>Stopped</th>
                         <th>Duration</th>
+                        <th>Runs</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -5129,6 +5289,7 @@ AUGER_RUNS_HTML = """
                         <td>{{ row.started_at }}</td>
                         <td>{{ row.stopped_at }}</td>
                         <td>{{ row.duration }}</td>
+                        <td>{{ row.run_count_label }}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -6402,11 +6563,18 @@ def controller_health_view():
         waiting_override = auger_is_waiting_override(auger_key, augers, active_auger_keys, cfg=cfg)
         auger_rows.append({
             "label": label,
-            "status": "Waiting" if waiting_override else auger_status_text(auger),
-            "runtime": "Off / waiting" if waiting_override else auger_runtime_text(auger, now_ts=now_ts),
-            "last_run": auger_last_run_text(auger),
+                "status": "Waiting" if waiting_override else auger_status_text(auger),
+                "runtime": "Off / waiting" if waiting_override else auger_runtime_text(auger, now_ts=now_ts),
+                "last_run": auger_last_run_text(auger),
         })
         i += 1
+    if lighting_enabled(cfg):
+        auger_rows.append({
+            "label": lighting_label_for(cfg),
+            "status": lighting_status_text(sensors),
+            "runtime": lighting_runtime_text(sensors, now_ts=now_ts),
+            "last_run": lighting_last_change_text(sensors),
+        })
     alarm_rows = build_alarm_rows(state)
     controller_alerts = []
     i = 0
@@ -6435,7 +6603,9 @@ def controller_health_view():
         last_seen_office_sync_age=fmt_age_seconds(state.get("last_seen_office_sync_ts")),
         updated_at=fmt_ts(entry.get("updated_ts")),
         started_at=fmt_ts(entry.get("placement_epoch")),
-        light_lux=fmt_value(sensors.get("light_lux"), "f0"),
+        lighting_status=lighting_status_text(sensors),
+        lighting_runtime=lighting_runtime_text(sensors, now_ts=now_ts),
+        lighting_last_change=lighting_last_change_text(sensors),
         pressure_pa=fmt_value(sensors.get("pressure_pa"), "f0"),
         last_serial_line=sensors.get("last_serial_line", ""),
         sensors=sensors,
@@ -6476,7 +6646,7 @@ def commissioning_view():
         flow_total_pulses=fmt_value(sensors.get("flow_total_pulses"), "i"),
         feed_kg=fmt_value(sensors.get("feed_kg"), "f0"),
         feed_raw_units=fmt_value(sensors.get("feed_raw_units"), "f2"),
-        light_lux=fmt_value(sensors.get("light_lux"), "f0"),
+        lighting_status=lighting_status_text(sensors),
         pressure_pa=fmt_value(sensors.get("pressure_pa"), "f0"),
         raw_json=json.dumps(sensors.get("raw", {}), indent=2, sort_keys=True),
         last_serial_line=sensors.get("last_serial_line", ""),
@@ -6519,9 +6689,11 @@ def save_controller_config_view():
     cfg["cross_auger_enabled"] = request.form.get("cross_auger_enabled") == "on"
     cfg["auger_left_enabled"] = request.form.get("auger_left_enabled") == "on"
     cfg["auger_right_enabled"] = request.form.get("auger_right_enabled") == "on"
+    cfg["lighting_enabled"] = request.form.get("lighting_enabled") == "on"
     cfg["cross_auger_label"] = str(request.form.get("cross_auger_label", cfg["cross_auger_label"]) or "").strip() or "Cross Auger"
     cfg["auger_left_label"] = str(request.form.get("auger_left_label", cfg["auger_left_label"]) or "").strip() or "Auger Left"
     cfg["auger_right_label"] = str(request.form.get("auger_right_label", cfg["auger_right_label"]) or "").strip() or "Auger Right"
+    cfg["lighting_label"] = str(request.form.get("lighting_label", cfg["lighting_label"]) or "").strip() or "Lighting"
     save_config(cfg)
     return redirect(url_for("controller_config_view"))
 

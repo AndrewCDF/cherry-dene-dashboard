@@ -15,6 +15,7 @@ SHT_I2C_SDA_PIN = 4
 SHT_I2C_SCL_PIN = 5
 SHT45_ADDR = 0x44
 FLOW_PIN = 16
+LIGHTING_PIN = 28
 CROSS_AUGER_PIN = 18
 AUGER_LEFT_PIN = 20
 AUGER_RIGHT_PIN = 22
@@ -36,6 +37,7 @@ FLOW_DEBOUNCE_US = 1200
 status_led = Pin(STATUS_LED_PIN, Pin.OUT)
 sht_i2c = I2C(SHT_I2C_ID, sda=Pin(SHT_I2C_SDA_PIN), scl=Pin(SHT_I2C_SCL_PIN), freq=100000)
 flow_pin = Pin(FLOW_PIN, Pin.IN, Pin.PULL_UP)
+lighting_pin = Pin(LIGHTING_PIN, Pin.IN)
 cross_auger_pin = Pin(CROSS_AUGER_PIN, Pin.IN)
 auger_left_pin = Pin(AUGER_LEFT_PIN, Pin.IN)
 auger_right_pin = Pin(AUGER_RIGHT_PIN, Pin.IN)
@@ -196,10 +198,6 @@ def read_feed_raw_units(samples=HX711_READINGS):
     return round(sum(readings) / len(readings), 1)
 
 
-def read_light_lux():
-    return None
-
-
 def read_pressure_pa():
     return None
 
@@ -215,6 +213,7 @@ def read_value(read_fn, alarm_prefix, alarms, default=None):
 def read_auger_inputs(alarms):
     payload = {}
     input_map = {
+        "lighting_on": lighting_pin,
         "cross_auger_on": cross_auger_pin,
         "auger_left_on": auger_left_pin,
         "auger_right_on": auger_right_pin,
@@ -240,7 +239,6 @@ def build_payload():
     water_lpm = read_value(read_water_lpm, "Flow read failed", alarms)
     total_pulses = read_value(read_total_flow_pulses, "Total flow pulse read failed", alarms)
     feed_raw_units = read_value(read_feed_raw_units, "Feed raw read failed", alarms)
-    light_lux = read_value(read_light_lux, "Light read failed", alarms)
     pressure_pa = read_value(read_pressure_pa, "Pressure read failed", alarms)
     auger_payload = read_auger_inputs(alarms)
 
@@ -254,7 +252,6 @@ def build_payload():
         "total_flow_pulses": total_pulses,
         "feed_raw_units": feed_raw_units,
         "feed_kg": None,
-        "light_lux": light_lux,
         "pressure_pa": pressure_pa,
         "status": "Sensors OK" if not alarms else "Sensor warnings",
         "alarms": alarms,
@@ -301,6 +298,7 @@ def main():
                 payload = build_payload()
                 print(json.dumps(payload))
                 last_auger_payload = {
+                    "lighting_on": payload.get("lighting_on"),
                     "cross_auger_on": payload.get("cross_auger_on"),
                     "auger_left_on": payload.get("auger_left_on"),
                     "auger_right_on": payload.get("auger_right_on"),

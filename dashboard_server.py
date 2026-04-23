@@ -1084,29 +1084,109 @@ def zip_ndjson_member(path, member_name):
         return []
 
 
+def format_duration_compact(seconds):
+    try:
+        total = max(0, int(seconds))
+    except Exception:
+        return "--"
+    if total < 60:
+        return "%ss" % total
+    if total < 3600:
+        return "%dm %02ds" % (total // 60, total % 60)
+    return "%dh %02dm" % (total // 3600, (total % 3600) // 60)
+
+
+def format_ts_label(ts_value):
+    if ts_value in [None, ""]:
+        return "--"
+    try:
+        return datetime.fromtimestamp(int(ts_value)).strftime("%d %b %Y %H:%M:%S")
+    except Exception:
+        return "--"
+
+
+def parse_auger_ts(value):
+    if value in [None, "", "--"]:
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    text = str(value).strip()
+    for fmt in ["%d %b %Y %H:%M:%S", "%d %b %Y %H:%M", "%Y-%m-%d %H:%M:%S"]:
+        try:
+            return int(datetime.strptime(text, fmt).timestamp())
+        except Exception:
+            pass
+    return None
+
+
+def collate_auger_run_records(records, short_max_seconds=15, gap_max_seconds=30):
+    if not isinstance(records, list):
+        return []
+    parsed = []
+    i = 0
+    while i < len(records):
+        rec = records[i]
+        i += 1
+        if not isinstance(rec, dict):
+            continue
+        started_ts = rec.get("started_ts")
+        stopped_ts = rec.get("stopped_ts") or rec.get("ts")
+        if started_ts in [None, ""]:
+            started_ts = parse_auger_ts(rec.get("started_at"))
+        if stopped_ts in [None, ""]:
+            stopped_ts = parse_auger_ts(rec.get("stopped_at"))
+        try:
+            started_ts = int(started_ts)
+            stopped_ts = int(stopped_ts)
+        except Exception:
+            continue
+        try:
+            duration_s = int(rec.get("duration_s"))
+        except Exception:
+            duration_s = max(0, stopped_ts - started_ts)
+        parsed.append({
+            "auger_label": str(rec.get("auger_label") or rec.get("auger_key") or "--"),
+            "started_ts": started_ts,
+            "stopped_ts": stopped_ts,
+            "duration_s": max(0, duration_s),
+            "run_count": int(rec.get("run_count") or 1),
+        })
+
+    parsed.sort(key=lambda r: (r["auger_label"], r["started_ts"]))
+    groups = []
+    current = None
+    i = 0
+    while i < len(parsed):
+        rec = parsed[i]
+        i += 1
+        is_short = rec["duration_s"] <= short_max_seconds
+        can_merge = (
+            current is not None
+            and current["auger_label"] == rec["auger_label"]
+            and is_short
+            and current.get("all_short", False)
+            and (rec["started_ts"] - current["stopped_ts"]) <= gap_max_seconds
+        )
+        if can_merge:
+            current["stopped_ts"] = max(current["stopped_ts"], rec["stopped_ts"])
+            current["duration_s"] += rec["duration_s"]
+            current["run_count"] += rec["run_count"]
+            continue
+        if current is not None:
+            groups.append(current)
+        current = dict(rec)
+        current["all_short"] = is_short
+    if current is not None:
+        groups.append(current)
+
+    groups.sort(key=lambda r: r["stopped_ts"], reverse=True)
+    return groups
+
+
 def format_auger_run_rows(rows, limit=200):
     if not isinstance(rows, list):
         return []
-    if rows and isinstance(rows[0], dict) and (
-        "started_at" in rows[0] or "stopped_at" in rows[0] or "duration" in rows[0]
-    ):
-        out = []
-        i = 0
-        while i < len(rows):
-            rec = rows[i]
-            i += 1
-            if not isinstance(rec, dict):
-                continue
-            out.append({
-                "auger_label": str(rec.get("auger_label") or rec.get("auger_key") or "--"),
-                "started_at": str(rec.get("started_at") or "--"),
-                "stopped_at": str(rec.get("stopped_at") or "--"),
-                "duration": str(rec.get("duration") or "--"),
-            })
-        if limit and limit > 0:
-            out = out[:limit]
-        return out
-    rows.sort(key=lambda r: int(r.get("stopped_ts") or r.get("ts") or 0), reverse=True)
+    rows = collate_auger_run_records(rows)
     if limit and limit > 0:
         rows = rows[:limit]
 
@@ -1118,15 +1198,14 @@ def format_auger_run_rows(rows, limit=200):
         started_ts = rec.get("started_ts")
         stopped_ts = rec.get("stopped_ts") or rec.get("ts")
         duration_s = rec.get("duration_s")
-        try:
-            duration_label = "%ss" % max(0, int(duration_s))
-        except Exception:
-            duration_label = "--"
+        run_count = int(rec.get("run_count") or 1)
         out.append({
             "auger_label": str(rec.get("auger_label") or rec.get("auger_key") or "--"),
-            "started_at": datetime.fromtimestamp(int(started_ts)).strftime("%d %b %Y %H:%M:%S") if started_ts not in [None, ""] else "--",
-            "stopped_at": datetime.fromtimestamp(int(stopped_ts)).strftime("%d %b %Y %H:%M:%S") if stopped_ts not in [None, ""] else "--",
-            "duration": duration_label,
+            "started_at": format_ts_label(started_ts),
+            "stopped_at": format_ts_label(stopped_ts),
+            "duration": format_duration_compact(duration_s),
+            "run_count": run_count,
+            "run_count_label": "%d" % run_count,
         })
     return out
 
@@ -1528,6 +1607,9 @@ def clean_controller_meta(meta):
         "feed_kg": meta.get("feed_kg"),
         "feed_low_kg": meta.get("feed_low_kg"),
         "feed_amber_buffer_kg": meta.get("feed_amber_buffer_kg"),
+        "lighting_on": meta.get("lighting_on"),
+        "lighting_label": meta.get("lighting_label"),
+        "lighting_last_changed_ts": meta.get("lighting_last_changed_ts"),
         "feed_daily_burn_kg": meta.get("feed_daily_burn_kg"),
         "last_feed_delivery_ts": meta.get("last_feed_delivery_ts"),
         "last_feed_delivery_kg": meta.get("last_feed_delivery_kg"),
@@ -10076,7 +10158,7 @@ METRIC_PERIOD_HTML = """
                         <div class="table-wrap">
                             <table>
                                 <thead>
-                                    <tr><th>Auger</th><th>Started</th><th>Stopped</th><th>Duration</th></tr>
+                                    <tr><th>Auger</th><th>Started</th><th>Stopped</th><th>Duration</th><th>Runs</th></tr>
                                 </thead>
                                 <tbody>
                                     {% for r in auger_run_rows %}
@@ -10085,6 +10167,7 @@ METRIC_PERIOD_HTML = """
                                         <td>{{ r.started_at }}</td>
                                         <td>{{ r.stopped_at }}</td>
                                         <td>{{ r.duration }}</td>
+                                        <td>{{ r.run_count_label if r.run_count_label else "1" }}</td>
                                     </tr>
                                     {% endfor %}
                                 </tbody>
@@ -10212,7 +10295,7 @@ function renderAugerRuns(rows) {
     }
     let body = '';
     for (const row of rows) {
-        body += `<tr><td>${escapeHtml(row.auger_label || '--')}</td><td>${escapeHtml(row.started_at || '--')}</td><td>${escapeHtml(row.stopped_at || '--')}</td><td>${escapeHtml(row.duration || '--')}</td></tr>`;
+        body += `<tr><td>${escapeHtml(row.auger_label || '--')}</td><td>${escapeHtml(row.started_at || '--')}</td><td>${escapeHtml(row.stopped_at || '--')}</td><td>${escapeHtml(row.duration || '--')}</td><td>${escapeHtml(row.run_count_label || row.run_count || '1')}</td></tr>`;
     }
     return `
 <details class="collapse" open>
@@ -10220,7 +10303,7 @@ function renderAugerRuns(rows) {
     <div class="table-wrap">
         <table>
             <thead>
-                <tr><th>Auger</th><th>Started</th><th>Stopped</th><th>Duration</th></tr>
+                <tr><th>Auger</th><th>Started</th><th>Stopped</th><th>Duration</th><th>Runs</th></tr>
             </thead>
             <tbody>${body}</tbody>
         </table>
