@@ -331,7 +331,7 @@ DEFAULT_CONFIG = {
     "cross_auger_enabled": True,
     "auger_left_enabled": True,
     "auger_right_enabled": True,
-    "lighting_enabled": True,
+    "lighting_enabled": False,
     "cross_auger_label": "Cross Auger",
     "auger_left_label": "Auger Left",
     "auger_right_label": "Auger Right",
@@ -989,8 +989,7 @@ def enabled_auger_keys(cfg):
 
 
 def lighting_enabled(cfg):
-    cfg = cfg if isinstance(cfg, dict) else load_config()
-    return bool(cfg.get("lighting_enabled", True))
+    return False
 
 
 def lighting_label_for(cfg=None):
@@ -2765,6 +2764,7 @@ def build_home_context():
     offline_banner = ""
     if office_stale:
         offline_banner = "Office sync is stale. Controller is running on local cached state."
+    pico_warning_banner = pico_warning_banner_text(sensors, now_ts=now_ts)
 
     return {
         "shed_no": cfg["shed_no"],
@@ -2825,6 +2825,7 @@ def build_home_context():
         "alarm_class": alarm_class,
         "alarm_short": alarm_short,
         "offline_banner": offline_banner,
+        "pico_warning_banner": pico_warning_banner,
         "office_stale": office_stale,
         "state_version": state.get("state_version", 0),
         "state_updated_at": fmt_ts(state.get("state_updated_ts")),
@@ -2857,6 +2858,8 @@ def build_water_stream_payload():
 
 
 def sensor_status_class(sensors):
+    if pico_frozen(sensors):
+        return "bad"
     if sensors.get("pico_connected"):
         return "ok"
     if sensors.get("last_sensor_ts"):
@@ -2865,9 +2868,35 @@ def sensor_status_class(sensors):
 
 
 def sensor_status_text(sensors):
+    if pico_frozen(sensors):
+        return "Pico Frozen"
     if sensors.get("pico_connected"):
         return "USB Connected"
     return "USB Disconnected"
+
+
+def sensor_age_seconds(sensors, now_ts=None):
+    if now_ts is None:
+        now_ts = int(time.time())
+    last_sensor_ts = sensors.get("last_sensor_ts")
+    if last_sensor_ts in [None, ""]:
+        return None
+    try:
+        return max(0, int(now_ts) - int(last_sensor_ts))
+    except Exception:
+        return None
+
+
+def pico_frozen(sensors, stale_after_s=STALE_SENSOR_SECONDS, now_ts=None):
+    sensor_age = sensor_age_seconds(sensors, now_ts=now_ts)
+    return sensor_age is not None and sensor_age > int(stale_after_s)
+
+
+def pico_warning_banner_text(sensors, now_ts=None):
+    sensor_age = sensor_age_seconds(sensors, now_ts=now_ts)
+    if sensor_age is None or sensor_age <= STALE_SENSOR_SECONDS:
+        return ""
+    return "Pico frozen. No sensor update received for %s." % fmt_age_seconds(sensors.get("last_sensor_ts"))
 
 
 def recent_ok_class(ts_value, ok, stale_after_s, unknown_warn=True):
@@ -2894,6 +2923,8 @@ def short_status_text(kind, status_text):
         return "Error"
 
     if kind == "pico":
+        if "FROZEN" in upper:
+            return "Frozen"
         if "NOT CONNECTED" in upper or "DISCONNECTED" in upper:
             return "Disconnected"
         if "CONNECTED" in upper:
@@ -2941,12 +2972,9 @@ def build_alarm_rows(state):
     if last_sensor_ts in [None, ""]:
         add_row("sensor_missing", "bad", "Sensor Data Missing", "No Pico sensor packet has been received yet.")
     else:
-        try:
-            sensor_age = max(0, now_ts - int(last_sensor_ts))
-            if sensor_age > STALE_SENSOR_SECONDS:
-                add_row("sensor_stale", "bad", "Sensor Data Stale", "Last Pico update was %ds ago." % sensor_age)
-        except Exception:
-            pass
+        sensor_age = sensor_age_seconds(sensors, now_ts=now_ts)
+        if sensor_age is not None and sensor_age > STALE_SENSOR_SECONDS:
+            add_row("pico_frozen", "bad", "Pico Frozen", "No Pico update has been received for %ds." % sensor_age)
 
     last_office_ts = state.get("last_dashboard_contact_ts")
     if last_office_ts in [None, ""]:
@@ -4072,6 +4100,7 @@ HTML = """
         {% endif %}
         {% if not hide_home_alerts %}
         <div id="offlineBanner" class="msg warn" {% if not offline_banner %}style="display:none"{% endif %}>{{ offline_banner }}</div>
+        <div id="picoFreezeBanner" class="msg error" {% if not pico_warning_banner %}style="display:none"{% endif %}>{{ pico_warning_banner }}</div>
         {% endif %}
 
         <div class="hero">
@@ -4268,6 +4297,17 @@ HTML = """
                 } else {
                     banner.style.display = 'none';
                     banner.textContent = '';
+                }
+            }
+
+            const picoBanner = document.getElementById('picoFreezeBanner');
+            if (picoBanner) {
+                if (data.pico_warning_banner) {
+                    picoBanner.style.display = '';
+                    picoBanner.textContent = data.pico_warning_banner;
+                } else {
+                    picoBanner.style.display = 'none';
+                    picoBanner.textContent = '';
                 }
             }
 
