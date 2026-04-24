@@ -360,6 +360,11 @@ STALE_SENSOR_SECONDS = 30
 STALE_OFFICE_SECONDS = 60
 STALE_LOG_SECONDS = 30
 WATER_LPM_AVERAGE_SECONDS = 12
+WATER_ALARM_WINDOW_SECONDS = 10 * 60
+WATER_ALARM_BASELINE_SECONDS = 60 * 60
+WATER_ALARM_MIN_DROP_RATIO = 0.5
+WATER_ALARM_HISTORY_KEEP_SECONDS = 2 * 60 * 60
+WATER_ALARM_SNAPSHOT_SECONDS = 30
 BACKUP_KEEP_COUNT = 6
 PICO_REBOOT_SETTLE_SECONDS = 2.0
 PICO_RECONNECT_TIMEOUT_SECONDS = 20.0
@@ -1067,6 +1072,7 @@ def create_backup_zip(label="auto"):
         os.path.join(DATA_DIR, "controller_state.json"),
         os.path.join(DATA_DIR, "sensor_live.ndjson"),
         os.path.join(DATA_DIR, "auger_runs.ndjson"),
+        os.path.join(DATA_DIR, "alarm_history.ndjson"),
     ]
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         i = 0
@@ -1133,6 +1139,43 @@ def get_controller_events(limit=200):
             rows[i]["ts_label"] = datetime.fromtimestamp(int(rows[i].get("ts"))).strftime("%d %b %Y %H:%M:%S")
         except Exception:
             rows[i]["ts_label"] = "--"
+        i += 1
+    return rows
+
+
+def append_alarm_history(payload):
+    append_ndjson(os.path.join(DATA_DIR, "alarm_history.ndjson"), payload)
+
+
+def get_alarm_history(limit=200):
+    path = os.path.join(DATA_DIR, "alarm_history.ndjson")
+    if not os.path.exists(path):
+        return []
+    rows = []
+    try:
+        with open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except Exception:
+                    pass
+    except Exception:
+        return []
+    rows.sort(key=lambda r: int(r.get("ts", 0)), reverse=True)
+    rows = rows[:limit]
+    i = 0
+    while i < len(rows):
+        row = rows[i]
+        try:
+            row["ts_label"] = datetime.fromtimestamp(int(row.get("ts"))).strftime("%d %b %Y %H:%M:%S")
+        except Exception:
+            row["ts_label"] = "--"
+        event_type = str(row.get("event_type") or "").strip().lower()
+        row["event_label"] = "Activated" if event_type == "activated" else ("Cleared" if event_type == "cleared" else "--")
+        row["event_class"] = "bad" if event_type == "activated" else "ok"
         i += 1
     return rows
 
@@ -1302,6 +1345,7 @@ def default_sensor_state():
         "flow_prev_total_pulses": None,
         "flow_prev_ts": None,
         "flow_rate_samples": [],
+        "water_history_samples": [],
         "feed_raw_units": None,
     }
 
@@ -1847,6 +1891,7 @@ def load_state():
         "last_log_status": "",
         "last_backup_ts": None,
         "last_backup_status": "",
+        "last_alarm_snapshot": [],
     }
     state.update(data)
 
@@ -1903,6 +1948,8 @@ def load_state():
         state["last_backup_ts"] = None
     if not isinstance(state.get("last_backup_status"), str):
         state["last_backup_status"] = ""
+    if not isinstance(state.get("last_alarm_snapshot"), list):
+        state["last_alarm_snapshot"] = []
 
     sensors = default_sensor_state()
     sensors.update(state["sensors"])
@@ -1910,6 +1957,8 @@ def load_state():
         sensors["raw"] = {}
     if not isinstance(sensors.get("alarms"), list):
         sensors["alarms"] = []
+    if not isinstance(sensors.get("water_history_samples"), list):
+        sensors["water_history_samples"] = []
     sensors["controller_alarms"] = normalize_controller_alarms(sensors.get("controller_alarms", []))
     ensure_augers_state(sensors)
     evaluate_augers(sensors)
@@ -2893,6 +2942,170 @@ def pico_warning_banner_text(sensors, now_ts=None):
     return "Pico frozen. No sensor update received for %s." % fmt_age_seconds(sensors.get("last_sensor_ts"))
 
 
+def update_water_history_samples(sensors, total_pulses, now_ts):
+    samples = sensors.get("water_history_samples")
+    if not isinstance(samples, list):
+        samples = []
+
+    clean_samples = []
+    cutoff_ts = int(now_ts) - WATER_ALARM_HISTORY_KEEP_SECONDS
+    i = 0
+    while i < len(samples):
+        sample = samples[i]
+        i += 1
+        if not isinstance(sample, dict):
+            continue
+        try:
+            sample_ts = int(sample.get("ts"))
+            sample_total = int(sample.get("total_pulses"))
+        except Exception:
+            continue
+        if sample_ts < cutoff_ts:
+            continue
+        clean_samples.append({
+            "ts": sample_ts,
+            "total_pulses": sample_total,
+        })
+
+    append_sample = True
+    if clean_samples:
+        last_sample = clean_samples[-1]
+        if (
+            int(now_ts) - int(last_sample.get("ts", 0)) < WATER_ALARM_SNAPSHOT_SECONDS
+            and int(total_pulses) == int(last_sample.get("total_pulses", 0))
+        ):
+            append_sample = False
+
+    if append_sample:
+        clean_samples.append({
+            "ts": int(now_ts),
+            "total_pulses": int(total_pulses),
+        })
+
+    sensors["water_history_samples"] = clean_samples
+
+
+def water_window_stats(sensors, start_ts, end_ts, pulses_per_litre):
+    if start_ts >= end_ts or pulses_per_litre <= 0:
+        return None
+
+    samples = sensors.get("water_history_samples")
+    if not isinstance(samples, list) or len(samples) < 2:
+        return None
+
+    clean_samples = []
+    i = 0
+    while i < len(samples):
+        sample = samples[i]
+        i += 1
+        if not isinstance(sample, dict):
+            continue
+        try:
+            sample_ts = int(sample.get("ts"))
+            sample_total = int(sample.get("total_pulses"))
+        except Exception:
+            continue
+        clean_samples.append({
+            "ts": sample_ts,
+            "total_pulses": sample_total,
+        })
+
+    if len(clean_samples) < 2:
+        return None
+
+    start_sample = None
+    end_sample = None
+    i = 0
+    while i < len(clean_samples):
+        sample = clean_samples[i]
+        sample_ts = sample["ts"]
+        if sample_ts <= start_ts:
+            start_sample = sample
+        if sample_ts <= end_ts:
+            end_sample = sample
+        else:
+            if end_sample is None:
+                end_sample = sample
+            break
+        i += 1
+
+    if start_sample is None:
+        start_sample = clean_samples[0]
+    if end_sample is None:
+        end_sample = clean_samples[-1]
+
+    try:
+        observed_elapsed_s = max(0, int(end_sample["ts"]) - int(start_sample["ts"]))
+        pulse_delta = max(0, int(end_sample["total_pulses"]) - int(start_sample["total_pulses"]))
+    except Exception:
+        return None
+
+    requested_elapsed_s = max(1, int(end_ts) - int(start_ts))
+    if observed_elapsed_s < int(requested_elapsed_s * 0.8):
+        return None
+
+    litres = float(pulse_delta) / float(pulses_per_litre)
+    avg_lpm = (litres / float(observed_elapsed_s)) * 60.0 if observed_elapsed_s > 0 else 0.0
+    return {
+        "litres": litres,
+        "avg_lpm": avg_lpm,
+        "elapsed_s": observed_elapsed_s,
+    }
+
+
+def water_alarm_metrics(sensors, cfg, now_ts=None):
+    if now_ts is None:
+        now_ts = int(time.time())
+    if pico_frozen(sensors, now_ts=now_ts):
+        return None
+
+    try:
+        pulses_per_litre = float(cfg.get("water_pulses_per_litre", 450.0))
+    except Exception:
+        pulses_per_litre = 450.0
+    if pulses_per_litre <= 0:
+        return None
+
+    try:
+        water_low_lpm = float(cfg.get("water_low_lpm", 0.1))
+    except Exception:
+        water_low_lpm = 0.1
+
+    recent_stats = water_window_stats(
+        sensors,
+        int(now_ts) - WATER_ALARM_WINDOW_SECONDS,
+        int(now_ts),
+        pulses_per_litre,
+    )
+    if not recent_stats:
+        return None
+
+    baseline_stats = water_window_stats(
+        sensors,
+        int(now_ts) - WATER_ALARM_WINDOW_SECONDS - WATER_ALARM_BASELINE_SECONDS,
+        int(now_ts) - WATER_ALARM_WINDOW_SECONDS,
+        pulses_per_litre,
+    )
+    if not baseline_stats:
+        return None
+
+    baseline_avg_lpm = float(baseline_stats["avg_lpm"])
+    recent_avg_lpm = float(recent_stats["avg_lpm"])
+    expected_recent_litres = baseline_avg_lpm * (float(WATER_ALARM_WINDOW_SECONDS) / 60.0)
+    return {
+        "recent_avg_lpm": recent_avg_lpm,
+        "baseline_avg_lpm": baseline_avg_lpm,
+        "recent_litres": float(recent_stats["litres"]),
+        "expected_recent_litres": expected_recent_litres,
+        "water_low_lpm": water_low_lpm,
+        "low_lpm_triggered": recent_avg_lpm < water_low_lpm,
+        "consumption_drop_triggered": (
+            baseline_avg_lpm >= max(water_low_lpm, 0.1)
+            and recent_avg_lpm <= baseline_avg_lpm * WATER_ALARM_MIN_DROP_RATIO
+        ),
+    }
+
+
 def recent_ok_class(ts_value, ok, stale_after_s, unknown_warn=True):
     if not ok:
         return "bad"
@@ -2951,6 +3164,7 @@ def short_status_text(kind, status_text):
 
 def build_alarm_rows(state):
     sensors = state.get("sensors", default_sensor_state())
+    cfg = load_config()
     rows = []
     now_ts = int(time.time())
 
@@ -2969,6 +3183,32 @@ def build_alarm_rows(state):
         sensor_age = sensor_age_seconds(sensors, now_ts=now_ts)
         if sensor_age is not None and sensor_age > STALE_SENSOR_SECONDS:
             add_row("pico_frozen", "bad", "Pico Frozen", "No Pico update has been received for %ds." % sensor_age)
+
+    water_alarm = water_alarm_metrics(sensors, cfg, now_ts=now_ts)
+    if water_alarm and water_alarm.get("low_lpm_triggered"):
+        add_row(
+            "water_low_lpm",
+            "warn",
+            "Low Water LPM",
+            "Last 10 minutes averaged %.2f L/PM, below the %.2f L/PM threshold."
+            % (
+                water_alarm["recent_avg_lpm"],
+                water_alarm["water_low_lpm"],
+            ),
+        )
+    if water_alarm and water_alarm.get("consumption_drop_triggered"):
+        add_row(
+            "water_consumption_drop",
+            "warn",
+            "Water Consumption Drop",
+            "Last 10 minutes averaged %.2f L/PM versus %.2f L/PM baseline. Recent use %.1f L vs expected %.1f L."
+            % (
+                water_alarm["recent_avg_lpm"],
+                water_alarm["baseline_avg_lpm"],
+                water_alarm["recent_litres"],
+                water_alarm["expected_recent_litres"],
+            ),
+        )
 
     last_office_ts = state.get("last_dashboard_contact_ts")
     if last_office_ts in [None, ""]:
@@ -3015,6 +3255,79 @@ def build_alarm_rows(state):
     return rows
 
 
+def alarm_history_signature(row):
+    alarm_key = str(row.get("alarm_key", "") or "").strip()
+    title = str(row.get("title", "") or "").strip()
+    detail = str(row.get("detail", "") or "").strip()
+    if alarm_key.startswith("sensor_alarm_"):
+        return "sensor_warning:%s" % detail
+    return alarm_key or title or detail
+
+
+def alarm_snapshot_rows(rows):
+    out = []
+    if not isinstance(rows, list):
+        return out
+    i = 0
+    while i < len(rows):
+        row = rows[i]
+        i += 1
+        if not isinstance(row, dict):
+            continue
+        out.append({
+            "alarm_key": str(row.get("alarm_key", "") or "").strip(),
+            "severity": str(row.get("severity", "") or "").strip(),
+            "title": str(row.get("title", "") or "").strip(),
+            "detail": str(row.get("detail", "") or "").strip(),
+        })
+    return out
+
+
+def reconcile_alarm_history(state, now_ts=None):
+    if now_ts is None:
+        now_ts = int(time.time())
+    current_rows = alarm_snapshot_rows(build_alarm_rows(state))
+    previous_rows = alarm_snapshot_rows(state.get("last_alarm_snapshot", []))
+
+    current_map = {}
+    i = 0
+    while i < len(current_rows):
+        row = current_rows[i]
+        current_map[alarm_history_signature(row)] = row
+        i += 1
+
+    previous_map = {}
+    i = 0
+    while i < len(previous_rows):
+        row = previous_rows[i]
+        previous_map[alarm_history_signature(row)] = row
+        i += 1
+
+    for signature, row in current_map.items():
+        if signature not in previous_map:
+            append_alarm_history({
+                "ts": int(now_ts),
+                "event_type": "activated",
+                "alarm_key": row.get("alarm_key", ""),
+                "severity": row.get("severity", ""),
+                "title": row.get("title", ""),
+                "detail": row.get("detail", ""),
+            })
+
+    for signature, row in previous_map.items():
+        if signature not in current_map:
+            append_alarm_history({
+                "ts": int(now_ts),
+                "event_type": "cleared",
+                "alarm_key": row.get("alarm_key", ""),
+                "severity": row.get("severity", ""),
+                "title": row.get("title", ""),
+                "detail": row.get("detail", ""),
+            })
+
+    state["last_alarm_snapshot"] = current_rows
+
+
 def update_water_from_pulses(sensors, now_ts):
     raw = sensors.get("raw", {})
     try:
@@ -3039,6 +3352,7 @@ def update_water_from_pulses(sensors, now_ts):
     if not isinstance(samples, list):
         samples = []
     sensors["flow_total_pulses"] = total_pulses
+    update_water_history_samples(sensors, total_pulses, now_ts)
     if prev_total is not None and prev_ts is not None:
         try:
             pulse_delta = int(total_pulses) - int(prev_total)
@@ -3225,6 +3539,8 @@ def apply_sensor_packet(state, packet):
                 calib["pulse_delta"] = None
         state["water_calibration"] = calib
 
+    reconcile_alarm_history(state, now_ts=now_ts)
+
 
 def serial_error_update(message):
     def mutator(state):
@@ -3232,6 +3548,7 @@ def serial_error_update(message):
         sensors["pico_connected"] = False
         sensors["device_status"] = message
         state["sensors"] = sensors
+        reconcile_alarm_history(state)
     mutate_state(mutator)
 
 
@@ -3306,6 +3623,7 @@ def _record_raw_serial_line(state, line):
     sensors["last_sensor_ts"] = int(time.time())
     evaluate_augers(sensors)
     state["sensors"] = sensors
+    reconcile_alarm_history(state)
 
 
 def start_serial_thread():
@@ -3323,6 +3641,7 @@ def auger_monitor_loop():
         def mutator(s):
             evaluate_augers(s.get("sensors", default_sensor_state()))
             maybe_auto_backup(s)
+            reconcile_alarm_history(s)
         state = mutate_state(mutator)
         if load_config().get("sync_on_sensor_update"):
             auto_sync_if_changed(state, pull_back=False)
@@ -5033,6 +5352,13 @@ ALARMS_HTML = """
         .alarm-title { font-size:20px; font-weight:700; margin-bottom:4px; }
         .alarm-detail { color:var(--muted); font-size:16px; }
         .okbox { padding:18px; border-radius:16px; border:1px solid rgba(123,225,170,0.35); color:var(--green); background:rgba(30,57,42,0.25); font-size:20px; }
+        .section-title { margin:22px 0 12px 0; font-size:24px; font-weight:700; }
+        .history-table { width:100%; border-collapse:collapse; }
+        .history-table th, .history-table td { text-align:left; padding:12px 10px; border-bottom:1px solid #818181; font-size:16px; vertical-align:top; }
+        .history-table th { color:var(--muted); font-weight:700; }
+        .history-pill { display:inline-block; padding:4px 10px; border-radius:999px; border:1px solid #818181; font-size:13px; font-weight:700; }
+        .history-pill.bad { border-color:rgba(255,119,119,0.45); color:var(--red); }
+        .history-pill.ok { border-color:rgba(123,225,170,0.45); color:var(--green); }
         button { display:block; width:100%; min-height:68px; border-radius:16px; border:1px solid #8a8a8a; background:linear-gradient(180deg, #7d7d7d, #696969); color:var(--text); font-size:20px; font-weight:700; cursor:pointer; margin-top:16px; }
     </style>
 </head>
@@ -5053,6 +5379,31 @@ ALARMS_HTML = """
             </div>
             {% else %}
             <div class="okbox">No active controller alarms.</div>
+            {% endif %}
+            <div class="section-title">Previous Alarms</div>
+            {% if alarm_history_rows %}
+            <table class="history-table">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Event</th>
+                        <th>Alarm</th>
+                        <th>Detail</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in alarm_history_rows %}
+                    <tr>
+                        <td>{{ row.ts_label }}</td>
+                        <td><span class="history-pill {{ row.event_class }}">{{ row.event_label }}</span></td>
+                        <td>{{ row.title if row.title else "--" }}</td>
+                        <td>{{ row.detail if row.detail else "--" }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="okbox">No previous alarms logged yet.</div>
             {% endif %}
             <form method="post" action="{{ url_for('clear_controller_alarms_view') }}">
                 <button type="submit">Clear Alarms</button>
@@ -6801,6 +7152,7 @@ def controller_alarms_view():
         ALARMS_HTML,
         shed_no=cfg["shed_no"],
         alarm_rows=build_alarm_rows(state),
+        alarm_history_rows=get_alarm_history(200),
     )
 
 
