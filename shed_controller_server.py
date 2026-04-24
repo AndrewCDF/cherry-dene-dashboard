@@ -4216,20 +4216,22 @@ HTML = """
         {% endif %}
 
         <div class="top-grid">
-            <a class="metric-split-link" href="{{ url_for('temp_settings_view') }}">
-                <div class="metric-split-grid">
+            <div class="metric-split-grid">
+                <a class="metric-link" href="{{ url_for('temp_settings_view') }}">
                     <div id="tempTile" class="metric metric-mini {{ temp_glow }}">
                         <div class="metric-label">Temp</div>
                         <div class="metric-val" id="tempValue">{{ temp_c }}</div>
                         <div class="metric-sub">C</div>
                     </div>
+                </a>
+                <a class="metric-link" href="{{ url_for('rh_settings_view') }}">
                     <div id="rhTile" class="metric metric-mini {{ rh_glow }}">
                         <div class="metric-label">RH</div>
                         <div class="metric-val" id="rhValue">{{ rh_pct }}</div>
                         <div class="metric-sub">%RH</div>
                     </div>
-                </div>
-            </a>
+                </a>
+            </div>
             <a class="metric-link" href="{{ url_for('water_settings_view') }}">
                 <div id="waterTile" class="metric {{ water_glow }}">
                     <div class="metric-label">Water L/PM</div>
@@ -5411,12 +5413,12 @@ AUGER_RUNS_HTML = """
 """
 
 
-TEMP_SETTINGS_HTML = """
+RANGE_SETTINGS_HTML = """
 <!doctype html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
-    <title>Shed {{ shed_no }} Temperature Settings</title>
+    <title>Shed {{ shed_no }} {{ title }}</title>
     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
     <style>
         :root {
@@ -5582,45 +5584,31 @@ TEMP_SETTINGS_HTML = """
     <div class="wrap">
         <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
         <div class="panel">
-            <h1>Shed {{ shed_no }} Temperature</h1>
-            <div class="sub">Adjust the temperature and humidity thresholds for the top tile warning glow.</div>
-            <div class="current">Current: {{ temp_c }} C / {{ rh_pct }} %RH</div>
+            <h1>Shed {{ shed_no }} {{ title }}</h1>
+            <div class="sub">{{ subtitle }}</div>
+            <div class="current">Current: {{ current_value }} {{ unit }}</div>
         </div>
         <div class="panel">
-            <form method="post" action="{{ url_for('save_temp_settings') }}">
+            <form method="post" action="{{ save_url }}">
                 <div class="form-rows">
                     <div class="form-row">
                         <div>
-                            <label for="temp_low_c">Temp Red Low C</label>
-                            <input id="temp_low_c" type="number" name="temp_low_c" step="0.1" inputmode="decimal" enterkeyhint="done" value="{{ temp_low_c }}">
+                            <label for="low_value">{{ low_label }}</label>
+                            <input id="low_value" type="number" name="low_value" step="{{ step }}" inputmode="{{ inputmode }}" enterkeyhint="done" value="{{ low_value }}">
                         </div>
                         <div>
-                            <label for="temp_high_c">Temp Red High C</label>
-                            <input id="temp_high_c" type="number" name="temp_high_c" step="0.1" inputmode="decimal" enterkeyhint="done" value="{{ temp_high_c }}">
+                            <label for="high_value">{{ high_label }}</label>
+                            <input id="high_value" type="number" name="high_value" step="{{ step }}" inputmode="{{ inputmode }}" enterkeyhint="done" value="{{ high_value }}">
                         </div>
                         <div>
-                            <label for="temp_amber_margin_c">Temp Amber Margin C</label>
-                            <input id="temp_amber_margin_c" type="number" name="temp_amber_margin_c" step="0.1" inputmode="decimal" enterkeyhint="done" value="{{ temp_amber_margin_c }}">
-                        </div>
-                    </div>
-                    <div class="form-row">
-                        <div>
-                            <label for="rh_low_pct">RH Red Low %</label>
-                            <input id="rh_low_pct" type="number" name="rh_low_pct" step="1" inputmode="numeric" enterkeyhint="done" value="{{ rh_low_pct }}">
-                        </div>
-                        <div>
-                            <label for="rh_high_pct">RH Red High %</label>
-                            <input id="rh_high_pct" type="number" name="rh_high_pct" step="1" inputmode="numeric" enterkeyhint="done" value="{{ rh_high_pct }}">
-                        </div>
-                        <div>
-                            <label for="rh_amber_margin_pct">RH Amber Margin %</label>
-                            <input id="rh_amber_margin_pct" type="number" name="rh_amber_margin_pct" step="1" inputmode="numeric" enterkeyhint="done" value="{{ rh_amber_margin_pct }}">
+                            <label for="amber_margin">{{ amber_label }}</label>
+                            <input id="amber_margin" type="number" name="amber_margin" step="{{ step }}" inputmode="{{ inputmode }}" enterkeyhint="done" value="{{ amber_margin }}">
                         </div>
                     </div>
                 </div>
-                <button type="submit">Save Temperature & Humidity Limits</button>
+                <button type="submit">{{ button_label }}</button>
             </form>
-            <div class="hint">The red-below and red-above values are the hard limits. The amber margin creates an amber warning zone just inside those limits.</div>
+            <div class="hint">{{ hint }}</div>
             <div class="preview">
                 <div class="preview-title">How The Colours Work</div>
                 <div class="preview-grid">
@@ -6872,16 +6860,23 @@ def temp_settings_view():
     state = load_state()
     sensors = state.get("sensors", default_sensor_state())
     return render_template_string(
-        TEMP_SETTINGS_HTML,
+        RANGE_SETTINGS_HTML,
         shed_no=cfg["shed_no"],
-        temp_c=fmt_value(sensors.get("temp_c"), "f1"),
-        rh_pct=fmt_value(sensors.get("rh_pct"), "f0"),
-        temp_low_c=cfg.get("temp_low_c", 18.0),
-        temp_high_c=cfg.get("temp_high_c", 24.0),
-        temp_amber_margin_c=cfg.get("temp_amber_margin_c", 1.0),
-        rh_low_pct=cfg.get("rh_low_pct", 40.0),
-        rh_high_pct=cfg.get("rh_high_pct", 80.0),
-        rh_amber_margin_pct=cfg.get("rh_amber_margin_pct", 5.0),
+        title="Temperature",
+        subtitle="Adjust the temperature thresholds for the home tile warning glow.",
+        current_value=fmt_value(sensors.get("temp_c"), "f1"),
+        unit="C",
+        save_url=url_for("save_temp_settings"),
+        low_label="Temp Red Low C",
+        high_label="Temp Red High C",
+        amber_label="Temp Amber Margin C",
+        low_value=cfg.get("temp_low_c", 18.0),
+        high_value=cfg.get("temp_high_c", 24.0),
+        amber_margin=cfg.get("temp_amber_margin_c", 1.0),
+        step="0.1",
+        inputmode="decimal",
+        button_label="Save Temperature Limits",
+        hint="The red-below and red-above values are the hard limits. The amber margin creates an amber warning zone just inside those limits.",
     )
 
 
@@ -6889,28 +6884,70 @@ def temp_settings_view():
 def save_temp_settings():
     cfg = load_config()
     try:
-        temp_low_c = float(request.form.get("temp_low_c", "").strip())
-        temp_high_c = float(request.form.get("temp_high_c", "").strip())
-        temp_amber_margin_c = float(request.form.get("temp_amber_margin_c", "").strip())
-        rh_low_pct = float(request.form.get("rh_low_pct", "").strip())
-        rh_high_pct = float(request.form.get("rh_high_pct", "").strip())
-        rh_amber_margin_pct = float(request.form.get("rh_amber_margin_pct", "").strip())
+        temp_low_c = float(request.form.get("low_value", "").strip())
+        temp_high_c = float(request.form.get("high_value", "").strip())
+        temp_amber_margin_c = float(request.form.get("amber_margin", "").strip())
     except Exception:
         return redirect(url_for("temp_settings_view"))
 
-    if temp_low_c >= temp_high_c or rh_low_pct >= rh_high_pct:
+    if temp_low_c >= temp_high_c:
         return redirect(url_for("temp_settings_view"))
-    if temp_amber_margin_c < 0 or rh_amber_margin_pct < 0:
+    if temp_amber_margin_c < 0:
         return redirect(url_for("temp_settings_view"))
 
     cfg["temp_low_c"] = temp_low_c
     cfg["temp_high_c"] = temp_high_c
     cfg["temp_amber_margin_c"] = temp_amber_margin_c
+    save_config(cfg)
+    return redirect(url_for("temp_settings_view"))
+
+
+@app.route("/settings/rh")
+def rh_settings_view():
+    cfg = load_config()
+    state = load_state()
+    sensors = state.get("sensors", default_sensor_state())
+    return render_template_string(
+        RANGE_SETTINGS_HTML,
+        shed_no=cfg["shed_no"],
+        title="Humidity",
+        subtitle="Adjust the humidity thresholds for the home tile warning glow.",
+        current_value=fmt_value(sensors.get("rh_pct"), "f0"),
+        unit="%RH",
+        save_url=url_for("save_rh_settings"),
+        low_label="RH Red Low %",
+        high_label="RH Red High %",
+        amber_label="RH Amber Margin %",
+        low_value=cfg.get("rh_low_pct", 40.0),
+        high_value=cfg.get("rh_high_pct", 80.0),
+        amber_margin=cfg.get("rh_amber_margin_pct", 5.0),
+        step="1",
+        inputmode="numeric",
+        button_label="Save Humidity Limits",
+        hint="The red-below and red-above values are the hard limits. The amber margin creates an amber warning zone just inside those limits.",
+    )
+
+
+@app.route("/settings/rh/save", methods=["POST"])
+def save_rh_settings():
+    cfg = load_config()
+    try:
+        rh_low_pct = float(request.form.get("low_value", "").strip())
+        rh_high_pct = float(request.form.get("high_value", "").strip())
+        rh_amber_margin_pct = float(request.form.get("amber_margin", "").strip())
+    except Exception:
+        return redirect(url_for("rh_settings_view"))
+
+    if rh_low_pct >= rh_high_pct:
+        return redirect(url_for("rh_settings_view"))
+    if rh_amber_margin_pct < 0:
+        return redirect(url_for("rh_settings_view"))
+
     cfg["rh_low_pct"] = rh_low_pct
     cfg["rh_high_pct"] = rh_high_pct
     cfg["rh_amber_margin_pct"] = rh_amber_margin_pct
     save_config(cfg)
-    return redirect(url_for("temp_settings_view"))
+    return redirect(url_for("rh_settings_view"))
 
 
 def build_water_settings_context(cfg, state):
