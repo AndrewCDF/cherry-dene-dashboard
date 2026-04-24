@@ -2706,13 +2706,6 @@ def build_home_context():
         rh_glow = "temp-warn"
     else:
         rh_glow = "temp-green"
-    if "temp-red" in [temp_glow, rh_glow]:
-        temp_glow = "temp-red"
-    elif "temp-warn" in [temp_glow, rh_glow]:
-        temp_glow = "temp-warn"
-    else:
-        temp_glow = "temp-green"
-
     water_low_lpm = float(cfg.get("water_low_lpm", 0.1))
     feed_low_kg = float(cfg.get("feed_low_kg", 2000.0))
 
@@ -2807,6 +2800,7 @@ def build_home_context():
         "temp_c": fmt_value(sensors.get("temp_c"), "f1"),
         "rh_pct": fmt_value(sensors.get("rh_pct"), "f0"),
         "temp_glow": temp_glow,
+        "rh_glow": rh_glow,
         "water_lpm": fmt_value(sensors.get("water_lpm"), "f2"),
         "feed_kg": fmt_value(sensors.get("feed_kg"), "f0"),
         "water_7to7": fmt_value(dashboard_summary.get("water_7to7"), "f0"),
@@ -3679,6 +3673,32 @@ HTML = """
             color: inherit;
             height: 100%;
         }
+        .metric-split-link {
+            display: block;
+            text-decoration: none;
+            color: inherit;
+            height: 100%;
+        }
+        .metric-split-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 14px;
+            height: 100%;
+        }
+        .metric.metric-mini {
+            min-width: 0;
+            padding: 14px;
+        }
+        .metric.metric-mini .metric-label {
+            margin-bottom: 8px;
+            font-size: 12px;
+        }
+        .metric.metric-mini .metric-val {
+            font-size: 32px;
+        }
+        .metric.metric-mini .metric-sub {
+            font-size: 13px;
+        }
         .auger-grid-shell {
             grid-column: 1 / span 3;
             display: grid;
@@ -3730,6 +3750,27 @@ HTML = """
                 0 0 34px rgba(255,208,106,0.35);
         }
         .metric.temp-red {
+            border-color: #ff5b5b;
+            box-shadow:
+                0 0 10px rgba(255,91,91,0.95),
+                0 0 20px rgba(255,91,91,0.65),
+                0 0 34px rgba(255,91,91,0.35);
+        }
+        .metric.rh-green {
+            border-color: #35d07f;
+            box-shadow:
+                0 0 10px rgba(53,208,127,0.95),
+                0 0 20px rgba(53,208,127,0.65),
+                0 0 34px rgba(53,208,127,0.35);
+        }
+        .metric.rh-warn {
+            border-color: #ffd06a;
+            box-shadow:
+                0 0 10px rgba(255,208,106,0.95),
+                0 0 20px rgba(255,208,106,0.65),
+                0 0 34px rgba(255,208,106,0.35);
+        }
+        .metric.rh-red {
             border-color: #ff5b5b;
             box-shadow:
                 0 0 10px rgba(255,91,91,0.95),
@@ -4037,6 +4078,21 @@ HTML = """
                 border-radius: 16px;
                 padding: 10px;
             }
+            .metric-split-grid {
+                gap: 10px;
+            }
+            .metric.metric-mini {
+                padding: 10px;
+            }
+            .metric.metric-mini .metric-label {
+                font-size: 11px;
+            }
+            .metric.metric-mini .metric-val {
+                font-size: 26px;
+            }
+            .metric.metric-mini .metric-sub {
+                font-size: 12px;
+            }
             .metric-label {
                 margin-bottom: 8px;
                 font-size: 15px;
@@ -4069,6 +4125,9 @@ HTML = """
         @media (max-width: 900px) {
             .hero, .top-grid, .main-grid, .action-grid, .allocation-form, .pill-grid {
                 grid-template-columns: 1fr;
+            }
+            .metric-split-grid {
+                gap: 10px;
             }
             .auger-grid-shell,
             .auger-grid-shell.count-1,
@@ -4157,11 +4216,18 @@ HTML = """
         {% endif %}
 
         <div class="top-grid">
-            <a class="metric-link" href="{{ url_for('temp_settings_view') }}">
-                <div id="tempTile" class="metric {{ temp_glow }}">
-                    <div class="metric-label">Temp / RH</div>
-                    <div class="metric-val" style="font-size:30px;"><span id="tempValue">{{ temp_c }}</span> / <span id="rhValue">{{ rh_pct }}</span></div>
-                    <div class="metric-sub">C and %RH</div>
+            <a class="metric-split-link" href="{{ url_for('temp_settings_view') }}">
+                <div class="metric-split-grid">
+                    <div id="tempTile" class="metric metric-mini {{ temp_glow }}">
+                        <div class="metric-label">Temp</div>
+                        <div class="metric-val" id="tempValue">{{ temp_c }}</div>
+                        <div class="metric-sub">C</div>
+                    </div>
+                    <div id="rhTile" class="metric metric-mini {{ rh_glow }}">
+                        <div class="metric-label">RH</div>
+                        <div class="metric-val" id="rhValue">{{ rh_pct }}</div>
+                        <div class="metric-sub">%RH</div>
+                    </div>
                 </div>
             </a>
             <a class="metric-link" href="{{ url_for('water_settings_view') }}">
@@ -4218,7 +4284,7 @@ HTML = """
     </div>
     <script>
         const controllerPollMs = {{ refresh_seconds * 1000 }};
-        const glowClasses = ['temp-green', 'temp-warn', 'temp-red', 'flow-green', 'flow-red', 'feed-green', 'feed-red', 'state-green', 'state-warn', 'state-red'];
+        const glowClasses = ['temp-green', 'temp-warn', 'temp-red', 'rh-green', 'rh-warn', 'rh-red', 'flow-green', 'flow-red', 'feed-green', 'feed-red', 'state-green', 'state-warn', 'state-red'];
 
         function setText(id, value) {
             const el = document.getElementById(id);
@@ -4275,6 +4341,7 @@ HTML = """
             setText('feed7to7Value', data.feed_7to7);
             setText('mortalityValue', data.mortality_total);
             setGlowClass('tempTile', data.temp_glow);
+            setGlowClass('rhTile', data.rh_glow);
             setGlowClass('waterTile', data.water_glow);
             setGlowClass('feedTile', data.feed_glow);
 
