@@ -4,8 +4,7 @@ import time
 from machine import I2C, Pin
 
 
-FULL_SAMPLE_SECONDS = 0.5
-AUGER_CHANGE_POLL_SECONDS = 0.05
+SAMPLE_SECONDS = 1.0
 TEMP_RH_MEASURE_SECONDS = 2.5
 DEVICE_NAME = "pico-2-shed"
 
@@ -213,7 +212,6 @@ def read_value(read_fn, alarm_prefix, alarms, default=None):
 def read_auger_inputs(alarms):
     payload = {}
     input_map = {
-        "lighting_on": lighting_pin,
         "cross_auger_on": cross_auger_pin,
         "auger_left_on": auger_left_pin,
         "auger_right_on": auger_right_pin,
@@ -263,54 +261,21 @@ def build_payload():
     return payload
 
 
-def build_auger_change_payload(auger_payload):
-    payload = {
-        "device": DEVICE_NAME,
-        "ts": time.time(),
-        "uptime_s": int(time.ticks_diff(time.ticks_ms(), boot_ms) / 1000),
-        "status": "Sensors OK",
-        "alarms": [],
-    }
-    for key in auger_payload:
-        payload[key] = auger_payload[key]
-    return payload
-
-
 def main():
     setup_inputs()
     flow_pin.irq(trigger=Pin.IRQ_FALLING, handler=flow_pulse_handler)
-    last_full_sample_ms = time.ticks_ms() - int(FULL_SAMPLE_SECONDS * 1000)
-    last_auger_payload = read_auger_inputs([])
 
     while True:
-        now_ms = time.ticks_ms()
         try:
-            current_auger_payload = read_auger_inputs([])
-            if current_auger_payload != last_auger_payload:
-                print(json.dumps(build_auger_change_payload(current_auger_payload)))
-                last_auger_payload = dict(current_auger_payload)
-        except Exception:
-            pass
+            status_led.toggle()
+            print(json.dumps(build_payload()))
+        except Exception as exc:
+            print(json.dumps({
+                "status": "Sensor read error",
+                "alarms": [str(exc)],
+            }))
 
-        if time.ticks_diff(now_ms, last_full_sample_ms) >= int(FULL_SAMPLE_SECONDS * 1000):
-            try:
-                status_led.toggle()
-                payload = build_payload()
-                print(json.dumps(payload))
-                last_auger_payload = {
-                    "lighting_on": payload.get("lighting_on"),
-                    "cross_auger_on": payload.get("cross_auger_on"),
-                    "auger_left_on": payload.get("auger_left_on"),
-                    "auger_right_on": payload.get("auger_right_on"),
-                }
-            except Exception as exc:
-                print(json.dumps({
-                    "status": "Sensor read error",
-                    "alarms": [str(exc)],
-                }))
-            last_full_sample_ms = now_ms
-
-        time.sleep(AUGER_CHANGE_POLL_SECONDS)
+        time.sleep(SAMPLE_SECONDS)
 
 
 main()

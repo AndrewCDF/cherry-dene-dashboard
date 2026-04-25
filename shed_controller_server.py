@@ -2286,9 +2286,27 @@ def sync_payload(state):
     return payload
 
 
+def sync_signature_payload(state):
+    payload = sync_payload(state)
+    controller_meta = payload.get("controller_meta")
+    if isinstance(controller_meta, dict):
+        filtered_meta = dict(controller_meta)
+        volatile_keys = [
+            "last_sensor_ts",
+            "controller_sync_version",
+            "controller_state_updated_ts",
+        ]
+        i = 0
+        while i < len(volatile_keys):
+            filtered_meta.pop(volatile_keys[i], None)
+            i += 1
+        payload["controller_meta"] = filtered_meta
+    return payload
+
+
 def sync_signature(state):
     try:
-        return json.dumps(sync_payload(state), sort_keys=True, separators=(",", ":"))
+        return json.dumps(sync_signature_payload(state), sort_keys=True, separators=(",", ":"))
     except Exception:
         return ""
 
@@ -3326,6 +3344,10 @@ def reconcile_alarm_history(state, now_ts=None):
             })
 
     state["last_alarm_snapshot"] = current_rows
+
+
+def current_alarm_snapshot(state):
+    return alarm_snapshot_rows(state.get("last_alarm_snapshot", []))
 
 
 def update_water_from_pulses(sensors, now_ts):
@@ -5647,7 +5669,7 @@ HISTORY_HTML = """
                     </tr>
                 </thead>
                 <tbody>
-                    {% for row in rows %}
+                    {% for row in table_rows %}
                     <tr>
                         <td>{{ row.label }}</td>
                         <td>{{ row.value }}</td>
@@ -7147,11 +7169,11 @@ def save_controller_config_view():
 @app.route("/alarms")
 def controller_alarms_view():
     cfg = load_config()
-    state = load_state()
+    state = mutate_state(lambda s: reconcile_alarm_history(s))
     return render_template_string(
         ALARMS_HTML,
         shed_no=cfg["shed_no"],
-        alarm_rows=build_alarm_rows(state),
+        alarm_rows=current_alarm_snapshot(state),
         alarm_history_rows=get_alarm_history(200),
     )
 
@@ -7650,6 +7672,7 @@ def render_metric_history(metric_key, metric_title, y_axis_title, color, fmt):
         y_axis_title=y_axis_title,
         color=color,
         rows=view_rows,
+        table_rows=list(reversed(view_rows)),
         labels=labels,
         values=values,
         extra_link_href=url_for("auger_runs_view") if metric_key == "feed" else None,
