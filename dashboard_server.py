@@ -193,7 +193,6 @@ OFFICE_BACKUP_KEEP_COUNT = 6
 OFFICE_AUTO_BACKUP_INTERVAL_SECONDS = 3600
 OFFICE_AUTO_BACKUP_CHECK_SECONDS = 60
 AUTO_FEED_BIN_REMOVAL_MIN_KG = 80.0
-AUTO_FEED_BIN_REMOVAL_MIN_CHUNK_KG = 10.0
 AUTO_FEED_BIN_REMOVAL_TRACKING_MIN_STEP_KG = 2.0
 AUTO_FEED_BIN_REMOVAL_MAX_SECONDS = 10800
 AUTO_FEED_BIN_REMOVAL_CONTINUE_GAP_SECONDS = 7200
@@ -567,32 +566,6 @@ def environment_limits_for_shed(shed_no, office_limits_map=None, controller_meta
     return controller_environment_limits(controller_meta)
 
 
-def office_environment_settings_rows(controller_meta=None):
-    controller_meta = controller_meta if isinstance(controller_meta, dict) else load_controller_meta()
-    office_limits = office_environment_limits_map()
-    rows = []
-    i = 0
-    while i < len(SHED_NUMBERS):
-        shed_no = SHED_NUMBERS[i]
-        meta = controller_meta.get(str(int(shed_no)), {}) if isinstance(controller_meta, dict) else {}
-        limits = environment_limits_for_shed(shed_no, office_limits, meta)
-        rows.append({
-            "shed_no": shed_no,
-            "temp_low_c": fmt_value(limits.get("temp_low_c"), "f1"),
-            "temp_high_c": fmt_value(limits.get("temp_high_c"), "f1"),
-            "temp_amber_margin_c": fmt_value(limits.get("temp_amber_margin_c"), "f1"),
-            "rh_low_pct": fmt_value(limits.get("rh_low_pct"), "f0"),
-            "rh_high_pct": fmt_value(limits.get("rh_high_pct"), "f0"),
-            "rh_amber_margin_pct": fmt_value(limits.get("rh_amber_margin_pct"), "f0"),
-            "water_low_lpm": fmt_value(limits.get("water_low_lpm"), "f2"),
-            "water_amber_buffer_lpm": fmt_value(limits.get("water_amber_buffer_lpm"), "f2"),
-            "feed_low_kg": fmt_value(limits.get("feed_low_kg"), "f0"),
-            "feed_amber_buffer_kg": fmt_value(limits.get("feed_amber_buffer_kg"), "f0"),
-        })
-        i += 1
-    return rows
-
-
 def office_environment_settings_row_for_shed(shed_no, controller_meta=None):
     if shed_no not in SHED_NUMBERS:
         return None
@@ -612,40 +585,6 @@ def office_environment_settings_row_for_shed(shed_no, controller_meta=None):
         "feed_low_kg": fmt_value(limits.get("feed_low_kg"), "f0"),
         "feed_amber_buffer_kg": fmt_value(limits.get("feed_amber_buffer_kg"), "f0"),
     }
-
-
-def save_office_environment_settings_from_form(form):
-    cfg = load_office_config()
-    out = {}
-    i = 0
-    while i < len(SHED_NUMBERS):
-        shed_no = SHED_NUMBERS[i]
-        low_key = "shed_%d_temp_low_c" % shed_no
-        high_key = "shed_%d_temp_high_c" % shed_no
-        rh_low_key = "shed_%d_rh_low_pct" % shed_no
-        rh_high_key = "shed_%d_rh_high_pct" % shed_no
-        water_low_key = "shed_%d_water_low_lpm" % shed_no
-        feed_low_key = "shed_%d_feed_low_kg" % shed_no
-        temp_amber_key = "shed_%d_temp_amber_margin_c" % shed_no
-        rh_amber_key = "shed_%d_rh_amber_margin_pct" % shed_no
-        water_amber_key = "shed_%d_water_amber_buffer_lpm" % shed_no
-        feed_amber_key = "shed_%d_feed_amber_buffer_kg" % shed_no
-        limits = clean_environment_limits({
-            "temp_low_c": form.get(low_key, DEFAULT_ENVIRONMENT_LIMITS["temp_low_c"]),
-            "temp_high_c": form.get(high_key, DEFAULT_ENVIRONMENT_LIMITS["temp_high_c"]),
-            "temp_amber_margin_c": form.get(temp_amber_key, DEFAULT_ENVIRONMENT_LIMITS["temp_amber_margin_c"]),
-            "rh_low_pct": form.get(rh_low_key, DEFAULT_ENVIRONMENT_LIMITS["rh_low_pct"]),
-            "rh_high_pct": form.get(rh_high_key, DEFAULT_ENVIRONMENT_LIMITS["rh_high_pct"]),
-            "rh_amber_margin_pct": form.get(rh_amber_key, DEFAULT_ENVIRONMENT_LIMITS["rh_amber_margin_pct"]),
-            "water_low_lpm": form.get(water_low_key, DEFAULT_ENVIRONMENT_LIMITS["water_low_lpm"]),
-            "water_amber_buffer_lpm": form.get(water_amber_key, DEFAULT_ENVIRONMENT_LIMITS["water_amber_buffer_lpm"]),
-            "feed_low_kg": form.get(feed_low_key, DEFAULT_ENVIRONMENT_LIMITS["feed_low_kg"]),
-            "feed_amber_buffer_kg": form.get(feed_amber_key, DEFAULT_ENVIRONMENT_LIMITS["feed_amber_buffer_kg"]),
-        })
-        out[str(shed_no)] = limits
-        i += 1
-    cfg["shed_environment_limits"] = out
-    save_office_config(cfg)
 
 
 def save_office_environment_settings_for_shed(shed_no, form):
@@ -9622,6 +9561,13 @@ PERIOD_HTML = """
             font-size: 14px;
             padding: 10px 0;
         }
+        .table-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
         @media (max-width: 1200px) {
             .grid { grid-template-columns: 1fr; }
         }
@@ -9662,8 +9608,8 @@ PERIOD_HTML = """
                                 </tr>
                             </thead>
                             <tbody>
-                                {% for r in rows %}
-                                <tr>
+                                {% for r in table_rows %}
+                                <tr class="paged-row">
                                     <td>{{ r.label }}</td>
                                     <td>{{ "%.1f"|format(r.water) if r.water is not none else "--" }}</td>
                                     <td>{{ "%.2f"|format(r.feed) if r.feed is not none else "--" }}</td>
@@ -9673,6 +9619,10 @@ PERIOD_HTML = """
                                 {% endfor %}
                             </tbody>
                         </table>
+                    </div>
+                    <div class="table-controls">
+                        <button type="button" id="periodTableLoadMore">Load next 20</button>
+                        <div class="hint" id="periodTableInfo"></div>
                     </div>
                 </details>
                 {% else %}
@@ -9726,6 +9676,40 @@ const xAxisTitle = {{ first_col|tojson }};
 
 let feedChart = null;
 let waterChart = null;
+
+function setupPagedTable(buttonId, infoId, initialCount = 20, step = 20) {
+    const rows = Array.from(document.querySelectorAll('.paged-row'));
+    const button = document.getElementById(buttonId);
+    const info = document.getElementById(infoId);
+    if (!rows.length) {
+        if (button) button.style.display = 'none';
+        if (info) info.textContent = '';
+        return;
+    }
+
+    let visibleCount = Math.min(initialCount, rows.length);
+
+    function render() {
+        rows.forEach((row, index) => {
+            row.style.display = index < visibleCount ? '' : 'none';
+        });
+        if (info) {
+            info.textContent = `Showing ${Math.min(visibleCount, rows.length)} of ${rows.length}`;
+        }
+        if (button) {
+            button.style.display = visibleCount < rows.length ? '' : 'none';
+        }
+    }
+
+    if (button) {
+        button.addEventListener('click', () => {
+            visibleCount = Math.min(rows.length, visibleCount + step);
+            render();
+        });
+    }
+
+    render();
+}
 
 function resetZoomSafe(chart) {
     if (chart && chart.resetZoom) {
@@ -9817,6 +9801,7 @@ function buildChart(canvasId, chartLabel, values, yTitle, lineColor) {
 
 feedChart = buildChart('feedChart', 'Feed KG', feedValues, 'Feed KG', '#35d07f');
 waterChart = buildChart('waterChart', 'Water L', waterValues, 'Water L', '#4db6ff');
+setupPagedTable('periodTableLoadMore', 'periodTableInfo');
 </script>
 </body>
 </html>
@@ -9952,6 +9937,13 @@ METRIC_PERIOD_HTML = """
         th { color: #f0f0f0; position: sticky; top: 0; background: #686868; }
         .hint { color: #d2d2d2; font-size: 12px; margin-top: 8px; }
         .empty { color: #d2d2d2; font-size: 14px; padding: 10px 0; }
+        .table-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
         @media (max-width: 1200px) {
             .grid { grid-template-columns: 1fr; }
             .summary-grid { grid-template-columns: 1fr 1fr; }
@@ -10005,8 +9997,8 @@ METRIC_PERIOD_HTML = """
                                 </tr>
                             </thead>
                             <tbody>
-                                {% for r in rows %}
-                                <tr>
+                                {% for r in table_rows %}
+                                <tr class="paged-row">
                                     <td>{{ r.label }}</td>
                                     <td>{{ value_format(r[metric_key]) if r[metric_key] is not none else "--" }}</td>
                                     <td>{{ value_format(r[running_key]) if r[running_key] is not none else "--" }}</td>
@@ -10014,6 +10006,10 @@ METRIC_PERIOD_HTML = """
                                 {% endfor %}
                             </tbody>
                         </table>
+                    </div>
+                    <div class="table-controls">
+                        <button type="button" id="metricTableLoadMore">Load next 20</button>
+                        <div class="hint" id="metricTableInfo"></div>
                     </div>
                 </details>
                 {% else %}
@@ -10223,6 +10219,40 @@ const augerRunsApiUrl = {{ auger_runs_api_url|tojson }};
 let augerRunsSignature = {{ auger_run_rows|tojson }};
 let metricChart = null;
 
+function setupPagedTable(buttonId, infoId, initialCount = 20, step = 20) {
+    const rows = Array.from(document.querySelectorAll('.paged-row'));
+    const button = document.getElementById(buttonId);
+    const info = document.getElementById(infoId);
+    if (!rows.length) {
+        if (button) button.style.display = 'none';
+        if (info) info.textContent = '';
+        return;
+    }
+
+    let visibleCount = Math.min(initialCount, rows.length);
+
+    function render() {
+        rows.forEach((row, index) => {
+            row.style.display = index < visibleCount ? '' : 'none';
+        });
+        if (info) {
+            info.textContent = `Showing ${Math.min(visibleCount, rows.length)} of ${rows.length}`;
+        }
+        if (button) {
+            button.style.display = visibleCount < rows.length ? '' : 'none';
+        }
+    }
+
+    if (button) {
+        button.addEventListener('click', () => {
+            visibleCount = Math.min(rows.length, visibleCount + step);
+            render();
+        });
+    }
+
+    render();
+}
+
 function resetZoomSafe(chart) {
     if (chart && chart.resetZoom) chart.resetZoom();
 }
@@ -10337,6 +10367,7 @@ async function refreshAugerRuns() {
 }
 
 metricChart = buildChart();
+setupPagedTable('metricTableLoadMore', 'metricTableInfo');
 if (augerRunsApiUrl) {
     refreshAugerRuns();
     setInterval(refreshAugerRuns, 60000);
@@ -10489,6 +10520,13 @@ BOREHOLE_PERIOD_HTML = """
             font-size: 14px;
             padding: 10px 0;
         }
+        .table-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
         @media (max-width: 1200px) {
             .grid { grid-template-columns: 1fr; }
         }
@@ -10527,8 +10565,8 @@ BOREHOLE_PERIOD_HTML = """
                                 </tr>
                             </thead>
                             <tbody>
-                                {% for r in rows %}
-                                <tr>
+                                {% for r in table_rows %}
+                                <tr class="paged-row">
                                     <td>{{ r.label }}</td>
                                     <td>{{ "%.1f"|format(r.water) if r.water is not none else "--" }}</td>
                                     <td>{{ "%.1f"|format(r.running_water) if r.running_water is not none else "--" }}</td>
@@ -10536,6 +10574,10 @@ BOREHOLE_PERIOD_HTML = """
                                 {% endfor %}
                             </tbody>
                         </table>
+                    </div>
+                    <div class="table-controls">
+                        <button type="button" id="boreholeTableLoadMore">Load next 20</button>
+                        <div class="hint" id="boreholeTableInfo"></div>
                     </div>
                 </details>
                 {% else %}
@@ -10568,6 +10610,40 @@ const waterValues = {{ water_values|tojson }};
 const xAxisTitle = {{ first_col|tojson }};
 
 let waterChart = null;
+
+function setupPagedTable(buttonId, infoId, initialCount = 20, step = 20) {
+    const rows = Array.from(document.querySelectorAll('.paged-row'));
+    const button = document.getElementById(buttonId);
+    const info = document.getElementById(infoId);
+    if (!rows.length) {
+        if (button) button.style.display = 'none';
+        if (info) info.textContent = '';
+        return;
+    }
+
+    let visibleCount = Math.min(initialCount, rows.length);
+
+    function render() {
+        rows.forEach((row, index) => {
+            row.style.display = index < visibleCount ? '' : 'none';
+        });
+        if (info) {
+            info.textContent = `Showing ${Math.min(visibleCount, rows.length)} of ${rows.length}`;
+        }
+        if (button) {
+            button.style.display = visibleCount < rows.length ? '' : 'none';
+        }
+    }
+
+    if (button) {
+        button.addEventListener('click', () => {
+            visibleCount = Math.min(rows.length, visibleCount + step);
+            render();
+        });
+    }
+
+    render();
+}
 
 function resetZoomSafe(chart) {
     if (chart && chart.resetZoom) {
@@ -10658,6 +10734,7 @@ function buildChart(canvasId, chartLabel, values, yTitle, lineColor) {
 }
 
 waterChart = buildChart('waterChart', 'Water L', waterValues, 'Water L', '#4db6ff');
+setupPagedTable('boreholeTableLoadMore', 'boreholeTableInfo');
 </script>
 </body>
 </html>
@@ -10752,7 +10829,6 @@ def office_settings_view():
         latest_backup_name=os.path.basename(latest_backups[0]) if latest_backups else "--",
         feed_stock_balance=fmt_value(feed_stock_balance_kg(), "f1"),
         email_settings=office_email_settings_form_state(),
-        env_settings_rows=office_environment_settings_rows(controller_meta),
         farm_health=farm_health,
         controller_backup_rows=controller_backup_rows,
         status_msg=request.args.get("msg", ""),
@@ -10875,31 +10951,6 @@ def office_feed_stock_allocate_view():
     return redirect_with_next("office_feed_stock_view", ok, "Feed stock allocated to shed" if ok else "Shed feed allocation failed", shed_no=shed_no)
 
 
-@app.route("/feed-stock/return", methods=["POST"])
-def office_feed_stock_return_view():
-    try:
-        shed_no = int(request.form.get("shed_no", "").strip())
-    except Exception:
-        shed_no = None
-    try:
-        kg = round(float(request.form.get("kg", "").strip()), 3)
-    except Exception:
-        kg = None
-    if shed_no not in SHED_NUMBERS:
-        return redirect_with_next("office_feed_stock_view", False, "Choose a valid shed")
-    if kg is None or kg <= 0:
-        return redirect_with_next("office_feed_stock_view", False, "Enter a valid shed removal KG", shed_no=shed_no)
-    shed_name = shed_name_from_number(shed_no)
-    crop_id = get_active_crop_id_for_shed(shed_name)
-    if crop_id in [None, ""]:
-        return redirect_with_next("office_feed_stock_view", False, "That shed does not have an active crop to remove feed against", shed_no=shed_no)
-    note = str(request.form.get("note", "") or "").strip()
-    ok = append_feed_stock_transaction("shed_return", kg, note=note, shed_no=shed_no, crop_id=crop_id)
-    if ok:
-        log_event("office", "feed_stock_returned", "Feed withdrawn from shed to stock", shed_no=shed_no, detail="%s KG" % fmt_value(kg, "f1"))
-    return redirect_with_next("office_feed_stock_view", ok, "Feed withdrawn from shed to stock" if ok else "Feed withdrawal failed", shed_no=shed_no)
-
-
 @app.route("/farm-health")
 def office_farm_health_view():
     controller_meta = load_controller_meta()
@@ -10974,15 +11025,6 @@ def office_save_email_settings_view():
         return redirect(url_for("office_settings_view", ok=1, msg="Email settings saved"))
     except Exception as exc:
         return redirect(url_for("office_settings_view", ok=0, msg="Email settings save failed: %s" % exc))
-
-
-@app.route("/settings/environment/save", methods=["POST"])
-def office_save_environment_settings_view():
-    try:
-        save_office_environment_settings_from_form(request.form)
-        return redirect(url_for("office_settings_view", ok=1, msg="Shed environment settings saved"))
-    except Exception as exc:
-        return redirect(url_for("office_settings_view", ok=0, msg="Environment settings save failed: %s" % exc))
 
 
 @app.route("/settings/email/add-recipient", methods=["POST"])
@@ -11431,6 +11473,7 @@ def shed_metric_period_view(shed_no, metric, period):
         period_sub=period_sub,
         first_col=first_col,
         rows=rows,
+        table_rows=list(reversed(rows)),
         labels=labels,
         values=values,
         metric_key=metric_key,
@@ -12076,6 +12119,7 @@ def borehole_period_view(period):
         period_sub=period_sub,
         first_col=first_col,
         rows=rows,
+        table_rows=list(reversed(rows)),
         labels=labels,
         water_values=water_values,
     )
@@ -12202,6 +12246,7 @@ def shed_crop_period_view(shed_no, crop_id, period):
         period_sub=period_sub,
         first_col=first_col,
         rows=rows,
+        table_rows=list(reversed(rows)),
         labels=labels,
         feed_values=feed_values,
         water_values=water_values,

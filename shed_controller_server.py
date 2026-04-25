@@ -5665,6 +5665,13 @@ HISTORY_HTML = """
             color: var(--muted);
             font-size: 18px;
         }
+        .table-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-top: 12px;
+        }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -5699,13 +5706,17 @@ HISTORY_HTML = """
                 </thead>
                 <tbody>
                     {% for row in table_rows %}
-                    <tr>
+                    <tr class="paged-row">
                         <td>{{ row.label }}</td>
                         <td>{{ row.value }}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
             </table>
+            <div class="table-controls">
+                <button type="button" id="historyTableLoadMore" class="action-link">Load next 20</button>
+                <div class="empty" id="historyTableInfo" style="font-size:15px; padding:0;"></div>
+            </div>
             {% else %}
             <div class="empty">No rows to display.</div>
             {% endif %}
@@ -5714,6 +5725,41 @@ HISTORY_HTML = """
     <script>
     const labels = {{ labels|tojson }};
     const values = {{ values|tojson }};
+
+    function setupPagedTable(buttonId, infoId, initialCount = 20, step = 20) {
+        const rows = Array.from(document.querySelectorAll('.paged-row'));
+        const button = document.getElementById(buttonId);
+        const info = document.getElementById(infoId);
+        if (!rows.length) {
+            if (button) button.style.display = 'none';
+            if (info) info.textContent = '';
+            return;
+        }
+
+        let visibleCount = Math.min(initialCount, rows.length);
+
+        function render() {
+            rows.forEach((row, index) => {
+                row.style.display = index < visibleCount ? '' : 'none';
+            });
+            if (info) {
+                info.textContent = `Showing ${Math.min(visibleCount, rows.length)} of ${rows.length}`;
+            }
+            if (button) {
+                button.style.display = visibleCount < rows.length ? '' : 'none';
+            }
+        }
+
+        if (button) {
+            button.addEventListener('click', () => {
+                visibleCount = Math.min(rows.length, visibleCount + step);
+                render();
+            });
+        }
+
+        render();
+    }
+
     const ctx = document.getElementById('historyChart');
     if (ctx) {
         new Chart(ctx, {
@@ -5742,6 +5788,7 @@ HISTORY_HTML = """
             }
         });
     }
+    setupPagedTable('historyTableLoadMore', 'historyTableInfo');
     </script>
 </body>
 </html>
@@ -6028,118 +6075,6 @@ RANGE_SETTINGS_HTML = """
                     </div>
                 </div>
             </div>
-        </div>
-    </div>
-</body>
-</html>
-"""
-
-
-SINGLE_THRESHOLD_HTML = """
-<!doctype html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <title>Shed {{ shed_no }} {{ title }}</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-    <style>
-        :root {
-            --bg: #5b5b5b;
-            --panel: rgba(115, 115, 115, 0.96);
-            --line: #8a8a8a;
-            --text: #ececec;
-            --muted: #d2d2d2;
-        }
-        body {
-            margin: 0;
-            color: var(--text);
-            font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-            background: #5b5b5b;
-        }
-        .wrap {
-            max-width: 860px;
-            margin: 0 auto;
-            padding: 18px;
-        }
-        .topbar {
-            margin-bottom: 16px;
-        }
-        .topbar a {
-            color: var(--text);
-            text-decoration: none;
-            font-size: 18px;
-        }
-        .panel {
-            background: var(--panel);
-            border: 1px solid var(--line);
-            border-radius: 20px;
-            padding: 18px;
-            margin-bottom: 16px;
-        }
-        h1 {
-            margin: 0 0 8px 0;
-            font-size: 38px;
-        }
-        .sub {
-            color: var(--muted);
-            margin-bottom: 16px;
-            font-size: 18px;
-        }
-        .current {
-            font-size: 34px;
-            font-weight: 700;
-        }
-        label {
-            display: block;
-            color: var(--muted);
-            font-size: 16px;
-            margin-bottom: 8px;
-        }
-        input[type="number"] {
-            width: 100%;
-            min-height: 72px;
-            border-radius: 16px;
-            border: 1px solid var(--line);
-            background: #686868;
-            color: var(--text);
-            font-size: 30px;
-            padding: 12px 16px;
-            box-sizing: border-box;
-        }
-        button {
-            min-height: 72px;
-            border-radius: 16px;
-            border: 1px solid #8a8a8a;
-            background: linear-gradient(180deg, #7d7d7d, #696969);
-            color: var(--text);
-            font-size: 22px;
-            font-weight: 700;
-            padding: 0 18px;
-            cursor: pointer;
-            margin-top: 14px;
-        }
-        .hint {
-            color: var(--muted);
-            font-size: 16px;
-            margin-top: 12px;
-        }
-    </style>
-</head>
-<body>
-    <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
-        <div class="panel">
-            <h1>Shed {{ shed_no }} {{ title }}</h1>
-            <div class="sub">{{ subtitle }}</div>
-            <div class="current">Current: {{ current_value }} {{ unit }}</div>
-        </div>
-        <div class="panel">
-            <form method="post" action="{{ save_url }}">
-                <label for="threshold_value">{{ field_label }}</label>
-                <input id="threshold_value" type="number" name="threshold_value" step="{{ step }}" inputmode="{% if step == '1' %}numeric{% else %}decimal{% endif %}" enterkeyhint="done" value="{{ threshold_value }}">
-                <button type="submit">Save {{ field_label }}</button>
-            </form>
-            <div class="hint">{{ hint }}</div>
         </div>
     </div>
 </body>
@@ -6877,19 +6812,6 @@ def apply_update_view():
         """,
         pico_message=pico_message,
     )
-
-
-@app.route("/settings/update/pico", methods=["POST"])
-def apply_pico_update_view():
-    deploy_pico_firmware()
-    return redirect(url_for("controller_settings_view"))
-
-
-@app.route("/settings/pico/soft-reset", methods=["POST"])
-def soft_reset_pico_view():
-    soft_reset_pico()
-    return redirect(url_for("controller_settings_view"))
-
 
 @app.route("/settings/mode/switch", methods=["POST"])
 def switch_controller_mode_view():
