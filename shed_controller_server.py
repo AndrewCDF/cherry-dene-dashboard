@@ -649,6 +649,38 @@ def wait_for_pico_serial_ready(timeout_seconds=PICO_RECONNECT_TIMEOUT_SECONDS, p
     return False, last_error
 
 
+def perform_pico_reset(mpremote):
+    commands = [
+        ("soft-reset", mpremote + ["connect", "auto", "soft-reset"]),
+        ("machine.reset()", mpremote + ["connect", "auto", "exec", "import machine; machine.reset()"]),
+    ]
+
+    last_detail = "Pico reset command failed"
+    i = 0
+    while i < len(commands):
+        label, cmd = commands[i]
+        i += 1
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=APP_ROOT,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except Exception as exc:
+            last_detail = "%s failed: %s" % (label, exc)
+            continue
+
+        if proc.returncode == 0:
+            return True, "%s sent" % label
+
+        detail = (proc.stderr or proc.stdout or "").strip()
+        last_detail = "%s failed: %s" % (label, detail or "command returned non-zero")
+
+    return False, last_detail
+
+
 def run_git_command(args, timeout=20):
     proc = subprocess.run(
         ["git"] + args,
@@ -791,6 +823,8 @@ def deploy_pico_firmware():
     controller_commit = stdout if code == 0 and stdout else "--"
     mpremote = mpremote_command()
     proc = None
+    reset_ok = False
+    reset_status = "Pico reset not attempted"
     ready_ok = False
     ready_status = "Pico serial reconnect not attempted"
 
@@ -804,25 +838,24 @@ def deploy_pico_firmware():
             timeout=60,
         )
         if proc.returncode == 0:
-            subprocess.run(
-                mpremote + ["connect", "auto", "soft-reset"],
-                cwd=APP_ROOT,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            ready_ok, ready_status = wait_for_pico_serial_ready()
+            reset_ok, reset_status = perform_pico_reset(mpremote)
+            if reset_ok:
+                ready_ok, ready_status = wait_for_pico_serial_ready()
     finally:
         resume_sensor_threads()
     if proc.returncode != 0:
         status["status"] = (proc.stderr or proc.stdout or "Pico copy failed").strip()
         save_pico_update_status(status)
         return status
+    if not reset_ok:
+        status["status"] = "Pico copied, but reset failed: %s" % reset_status
+        save_pico_update_status(status)
+        return status
     status.update({
-        "ok": True,
+        "ok": ready_ok,
         "status": "Pico firmware deployed from controller %s. %s" % (
             controller_commit,
-            ready_status if ready_ok else "Pico copied, but reconnect check timed out: %s" % ready_status,
+            ready_status if ready_ok else "Pico reset sent, but reconnect check timed out: %s" % ready_status,
         ),
         "last_deployed_hash": local_hash,
         "last_deployed_at": int(time.time()),
@@ -839,28 +872,24 @@ def soft_reset_pico():
         "status": "Pico soft reset failed",
     })
     mpremote = mpremote_command()
+    reset_ok = False
+    reset_status = "Pico reset not attempted"
     ready_ok = False
     ready_status = "Pico serial reconnect not attempted"
     pause_sensor_threads()
     try:
-        proc = subprocess.run(
-            mpremote + ["connect", "auto", "soft-reset"],
-            cwd=APP_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if proc.returncode == 0:
+        reset_ok, reset_status = perform_pico_reset(mpremote)
+        if reset_ok:
             ready_ok, ready_status = wait_for_pico_serial_ready()
     finally:
         resume_sensor_threads()
-    if proc.returncode != 0:
-        status["status"] = (proc.stderr or proc.stdout or "Pico soft reset failed").strip()
+    if not reset_ok:
+        status["status"] = reset_status
         save_pico_update_status(status)
         return status
 
     status.update({
-        "ok": True,
+        "ok": ready_ok,
         "status": "Pico soft reset OK. %s" % (
             ready_status if ready_ok else "Reconnect check timed out: %s" % ready_status,
         ),
