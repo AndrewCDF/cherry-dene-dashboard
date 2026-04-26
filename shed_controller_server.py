@@ -3048,7 +3048,10 @@ def pico_recovery_banner_text(state, now_ts=None):
     now_ts = int(time.time()) if now_ts is None else int(now_ts)
     status = str(state.get("last_pico_recovery_status") or "").strip()
     result_ts = state.get("last_pico_recovery_result_ts")
+    sensors = state.get("sensors", default_sensor_state())
     if not status or result_ts in [None, ""]:
+        return ""
+    if not bool(state.get("pending_pico_update_recovery")) and not pico_frozen(sensors, now_ts=now_ts):
         return ""
     try:
         result_ts = int(result_ts)
