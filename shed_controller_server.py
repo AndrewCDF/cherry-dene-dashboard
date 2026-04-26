@@ -366,6 +366,8 @@ WATER_ALARM_MIN_DROP_RATIO = 0.5
 WATER_ALARM_HISTORY_KEEP_SECONDS = 2 * 60 * 60
 WATER_ALARM_SNAPSHOT_SECONDS = 30
 BACKUP_KEEP_COUNT = 6
+PICO_AUTO_RECOVERY_FREEZE_SECONDS = 90
+PICO_AUTO_RECOVERY_COOLDOWN_SECONDS = 10 * 60
 PICO_REBOOT_SETTLE_SECONDS = 2.0
 PICO_RECONNECT_TIMEOUT_SECONDS = 20.0
 PICO_RECONNECT_PACKET_TIMEOUT_SECONDS = 4.0
@@ -1361,9 +1363,13 @@ def default_sensor_state():
         "lighting_last_changed_ts": None,
         "lighting_last_on_ts": None,
         "lighting_last_off_ts": None,
-        "pressure_pa": None,
         "device_status": "Waiting for Pico",
         "pico_connected": False,
+        "pico_boot_count": None,
+        "pico_reset_cause": "",
+        "pico_packet_kind": "",
+        "pico_checkpoint": "",
+        "pico_checkpoint_ts": None,
         "last_sensor_ts": None,
         "last_serial_line": "",
         "raw": {},
@@ -1921,6 +1927,9 @@ def load_state():
         "last_backup_ts": None,
         "last_backup_status": "",
         "last_alarm_snapshot": [],
+        "last_pico_recovery_attempt_ts": None,
+        "last_pico_recovery_result_ts": None,
+        "last_pico_recovery_status": "",
     }
     state.update(data)
 
@@ -1979,6 +1988,12 @@ def load_state():
         state["last_backup_status"] = ""
     if not isinstance(state.get("last_alarm_snapshot"), list):
         state["last_alarm_snapshot"] = []
+    if state.get("last_pico_recovery_attempt_ts") in [""]:
+        state["last_pico_recovery_attempt_ts"] = None
+    if state.get("last_pico_recovery_result_ts") in [""]:
+        state["last_pico_recovery_result_ts"] = None
+    if not isinstance(state.get("last_pico_recovery_status"), str):
+        state["last_pico_recovery_status"] = ""
 
     sensors = default_sensor_state()
     sensors.update(state["sensors"])
@@ -1989,6 +2004,15 @@ def load_state():
     if not isinstance(sensors.get("water_history_samples"), list):
         sensors["water_history_samples"] = []
     sensors["controller_alarms"] = normalize_controller_alarms(sensors.get("controller_alarms", []))
+    try:
+        sensors["pico_boot_count"] = int(sensors.get("pico_boot_count")) if sensors.get("pico_boot_count") not in [None, ""] else None
+    except Exception:
+        sensors["pico_boot_count"] = None
+    sensors["pico_reset_cause"] = str(sensors.get("pico_reset_cause") or "")
+    sensors["pico_packet_kind"] = str(sensors.get("pico_packet_kind") or "")
+    sensors["pico_checkpoint"] = str(sensors.get("pico_checkpoint") or "")
+    if sensors.get("pico_checkpoint_ts") in [""]:
+        sensors["pico_checkpoint_ts"] = None
     ensure_augers_state(sensors)
     evaluate_augers(sensors)
     state["sensors"] = sensors
@@ -2854,6 +2878,7 @@ def build_home_context():
     if office_stale:
         offline_banner = "Office sync is stale. Controller is running on local cached state."
     pico_warning_banner = pico_warning_banner_text(sensors, now_ts=now_ts)
+    pico_recovery_banner = pico_recovery_banner_text(state, now_ts=now_ts)
 
     return {
         "shed_no": cfg["shed_no"],
@@ -2904,7 +2929,6 @@ def build_home_context():
         "mortality_total": fmt_value(dashboard_summary.get("mortality_total") if total_birds > 0 else None, "i"),
         "water_glow": water_glow,
         "feed_glow": feed_glow,
-        "pressure_pa": fmt_value(sensors.get("pressure_pa"), "f0"),
         "last_serial_line": sensors.get("last_serial_line", ""),
         "sensors": sensors,
         "entry": entry,
@@ -2916,6 +2940,7 @@ def build_home_context():
         "alarm_short": alarm_short,
         "offline_banner": offline_banner,
         "pico_warning_banner": pico_warning_banner,
+        "pico_recovery_banner": pico_recovery_banner,
         "office_stale": office_stale,
         "state_version": state.get("state_version", 0),
         "state_updated_at": fmt_ts(state.get("state_updated_ts")),
@@ -2987,6 +3012,54 @@ def pico_warning_banner_text(sensors, now_ts=None):
     if sensor_age is None or sensor_age <= STALE_SENSOR_SECONDS:
         return ""
     return "Pico frozen. No sensor update received for %s." % fmt_age_seconds(sensors.get("last_sensor_ts"))
+
+
+def pico_trace_summary(sensors):
+    parts = []
+    checkpoint = str(sensors.get("pico_checkpoint") or "").strip()
+    if checkpoint:
+        checkpoint_ts = fmt_ts(sensors.get("pico_checkpoint_ts"))
+        if checkpoint_ts != "--":
+            parts.append("Last checkpoint %s at %s" % (checkpoint, checkpoint_ts))
+        else:
+            parts.append("Last checkpoint %s" % checkpoint)
+    reset_cause = str(sensors.get("pico_reset_cause") or "").strip()
+    if reset_cause:
+        parts.append("Reset %s" % reset_cause)
+    boot_count = sensors.get("pico_boot_count")
+    if boot_count not in [None, ""]:
+        parts.append("Boot %s" % boot_count)
+    return " • ".join(parts)
+
+
+def pico_recovery_banner_text(state, now_ts=None):
+    now_ts = int(time.time()) if now_ts is None else int(now_ts)
+    status = str(state.get("last_pico_recovery_status") or "").strip()
+    result_ts = state.get("last_pico_recovery_result_ts")
+    if not status or result_ts in [None, ""]:
+        return ""
+    try:
+        result_ts = int(result_ts)
+    except Exception:
+        return ""
+    if max(0, now_ts - result_ts) > 24 * 60 * 60:
+        return ""
+    return "Pico auto recovery at %s. %s" % (fmt_ts(result_ts), status)
+
+
+def pico_auto_recovery_due(state, now_ts=None):
+    now_ts = int(time.time()) if now_ts is None else int(now_ts)
+    sensors = state.get("sensors", default_sensor_state())
+    if not pico_frozen(sensors, stale_after_s=PICO_AUTO_RECOVERY_FREEZE_SECONDS, now_ts=now_ts):
+        return False
+    last_attempt_ts = state.get("last_pico_recovery_attempt_ts")
+    try:
+        last_attempt_ts = int(last_attempt_ts) if last_attempt_ts not in [None, ""] else None
+    except Exception:
+        last_attempt_ts = None
+    if last_attempt_ts is None:
+        return True
+    return (now_ts - last_attempt_ts) >= int(PICO_AUTO_RECOVERY_COOLDOWN_SECONDS)
 
 
 def update_water_history_samples(sensors, total_pulses, now_ts):
@@ -3229,7 +3302,11 @@ def build_alarm_rows(state):
     else:
         sensor_age = sensor_age_seconds(sensors, now_ts=now_ts)
         if sensor_age is not None and sensor_age > STALE_SENSOR_SECONDS:
-            add_row("pico_frozen", "bad", "Pico Frozen", "No Pico update has been received for %ds." % sensor_age)
+            detail = "No Pico update has been received for %ds." % sensor_age
+            trace_summary = pico_trace_summary(sensors)
+            if trace_summary:
+                detail = "%s %s." % (detail, trace_summary)
+            add_row("pico_frozen", "bad", "Pico Frozen", detail)
 
     water_alarm = water_alarm_metrics(sensors, cfg, now_ts=now_ts)
     if water_alarm and water_alarm.get("low_lpm_triggered"):
@@ -3498,13 +3575,25 @@ def update_feed_from_raw(sensors):
 def apply_sensor_packet(state, packet):
     sensors = state.get("sensors", default_sensor_state())
     now_ts = int(time.time())
+    packet_kind = str(packet.get("packet_kind") or "full").strip().lower()
+
+    if packet.get("boot_count") not in [None, ""]:
+        try:
+            sensors["pico_boot_count"] = int(packet.get("boot_count"))
+        except Exception:
+            pass
+    if "reset_cause" in packet:
+        sensors["pico_reset_cause"] = str(packet.get("reset_cause") or "")
+    sensors["pico_packet_kind"] = packet_kind
+    if "checkpoint" in packet:
+        sensors["pico_checkpoint"] = str(packet.get("checkpoint") or "")
+        sensors["pico_checkpoint_ts"] = now_ts
 
     key_map = {
         "temp_c": "temp_c",
         "rh_pct": "rh_pct",
         "water_lpm": "water_lpm",
         "feed_kg": "feed_kg",
-        "pressure_pa": "pressure_pa",
         "status": "device_status",
         "device_status": "device_status",
     }
@@ -3513,8 +3602,17 @@ def apply_sensor_packet(state, packet):
         if key in packet:
             sensors[key_map[key]] = packet.get(key)
 
-    if isinstance(packet.get("alarms"), list):
+    if isinstance(packet.get("alarms"), list) and packet_kind != "checkpoint":
         sensors["alarms"] = packet.get("alarms")
+
+    sensors["pico_connected"] = True
+    sensors["last_sensor_ts"] = now_ts
+    sensors["last_serial_line"] = json.dumps(packet)
+
+    if packet_kind == "checkpoint":
+        reconcile_alarm_history(state, now_ts=now_ts)
+        state["sensors"] = sensors
+        return
 
     cfg = load_config()
     augers = ensure_augers_state(sensors)
@@ -3544,10 +3642,7 @@ def apply_sensor_packet(state, packet):
         j += 1
 
     sensors["raw"] = packet
-    sensors["pico_connected"] = True
     sensors["device_status"] = str(packet.get("status", sensors.get("device_status", "Pico connected")))
-    sensors["last_sensor_ts"] = now_ts
-    sensors["last_serial_line"] = json.dumps(packet)
     try:
         append_ndjson(os.path.join(DATA_DIR, "sensor_live.ndjson"), {
             "ts": now_ts,
@@ -3657,7 +3752,7 @@ def serial_reader_loop():
                     continue
 
                 state = mutate_state(lambda s: apply_sensor_packet(s, packet))
-                if load_config().get("sync_on_sensor_update"):
+                if packet.get("packet_kind") != "checkpoint" and load_config().get("sync_on_sensor_update"):
                     auto_sync_if_changed(state, pull_back=False)
         finally:
             try:
@@ -3694,6 +3789,33 @@ def auger_monitor_loop():
             maybe_auto_backup(s)
             reconcile_alarm_history(s)
         state = mutate_state(mutator)
+        if pico_auto_recovery_due(state):
+            attempt_ts = int(time.time())
+            mutate_state(lambda s: s.update({
+                "last_pico_recovery_attempt_ts": attempt_ts,
+                "last_pico_recovery_status": "Attempting automatic Pico reset",
+            }))
+            record_controller_event(
+                "pico_auto_recovery",
+                "Attempting automatic Pico reset",
+                "No sensor update received for %s" % fmt_age_seconds(state.get("sensors", {}).get("last_sensor_ts")),
+                push_to_office=False,
+            )
+            reset_status = soft_reset_pico()
+            recovery_status = str(reset_status.get("status") or "")
+            recovery_ok = bool(reset_status.get("ok"))
+            result_ts = int(time.time())
+            state = mutate_state(lambda s: s.update({
+                "last_pico_recovery_attempt_ts": attempt_ts,
+                "last_pico_recovery_result_ts": result_ts,
+                "last_pico_recovery_status": recovery_status,
+            }))
+            record_controller_event(
+                "pico_auto_recovery_result",
+                "Automatic Pico reset %s" % ("successful" if recovery_ok else "failed"),
+                recovery_status,
+                push_to_office=False,
+            )
         if load_config().get("sync_on_sensor_update"):
             auto_sync_if_changed(state, pull_back=False)
         SERIAL_STOP.wait(5.0)
@@ -4530,6 +4652,7 @@ HTML = """
         {% if not hide_home_alerts %}
         <div id="offlineBanner" class="msg warn" {% if not offline_banner %}style="display:none"{% endif %}>{{ offline_banner }}</div>
         <div id="picoFreezeBanner" class="msg error" {% if not pico_warning_banner %}style="display:none"{% endif %}>{{ pico_warning_banner }}</div>
+        <div id="picoRecoveryBanner" class="msg warn" {% if not pico_recovery_banner %}style="display:none"{% endif %}>{{ pico_recovery_banner }}</div>
         {% endif %}
 
         <div class="hero">
@@ -4747,6 +4870,17 @@ HTML = """
                 } else {
                     picoBanner.style.display = 'none';
                     picoBanner.textContent = '';
+                }
+            }
+
+            const picoRecoveryBanner = document.getElementById('picoRecoveryBanner');
+            if (picoRecoveryBanner) {
+                if (data.pico_recovery_banner) {
+                    picoRecoveryBanner.style.display = '';
+                    picoRecoveryBanner.textContent = data.pico_recovery_banner;
+                } else {
+                    picoRecoveryBanner.style.display = 'none';
+                    picoRecoveryBanner.textContent = '';
                 }
             }
 
@@ -5258,11 +5392,12 @@ HEALTH_HTML = """
                 <div class="detail"><span class="label">{{ auger.label }}</span><span>{{ auger.status }} • {{ auger.runtime }} • {{ auger.last_run }}</span></div>
                 {% endfor %}
                 <div class="detail"><span class="label">Lighting State</span><span>{{ lighting_status }}{% if lighting_runtime %} • {{ lighting_runtime }}{% endif %} • {{ lighting_last_change }}</span></div>
+                <div class="detail"><span class="label">Pico Trace</span><span>{{ pico_trace_summary or "--" }}</span></div>
+                <div class="detail"><span class="label">Auto Recovery</span><span>{{ pico_recovery_status or "--" }}</span></div>
                 <div class="detail"><span class="label">Crop Active</span><span>{{ "Yes" if entry.crop_active == 1 else "No" }}</span></div>
                 <div class="detail"><span class="label">Started</span><span>{{ started_at }}</span></div>
                 <div class="detail"><span class="label">Updated By</span><span>{{ entry.updated_by }}</span></div>
                 <div class="detail"><span class="label">Updated At</span><span>{{ updated_at }}</span></div>
-                <div class="detail"><span class="label">Pressure</span><span>{{ pressure_pa }}</span></div>
             </div>
             {% if controller_alerts %}
             <div class="alarm-list">
@@ -5553,7 +5688,8 @@ COMMISSIONING_HTML = """
                 <div class="detail"><span class="label">Feed KG</span><span>{{ feed_kg }}</span></div>
                 <div class="detail"><span class="label">Feed Raw</span><span>{{ feed_raw_units }}</span></div>
                 <div class="detail"><span class="label">Lighting</span><span>{{ lighting_status }}</span></div>
-                <div class="detail"><span class="label">Pressure Pa</span><span>{{ pressure_pa }}</span></div>
+                <div class="detail"><span class="label">Pico Trace</span><span>{{ pico_trace_summary or "--" }}</span></div>
+                <div class="detail"><span class="label">Auto Recovery</span><span>{{ pico_recovery_status or "--" }}</span></div>
             </div>
             <div class="panel">
                 <h1>Raw Packet</h1>
@@ -7025,8 +7161,9 @@ def controller_health_view():
         lighting_status=lighting_status_text(sensors),
         lighting_runtime=lighting_runtime_text(sensors, now_ts=now_ts),
         lighting_last_change=lighting_last_change_text(sensors),
-        pressure_pa=fmt_value(sensors.get("pressure_pa"), "f0"),
         last_serial_line=sensors.get("last_serial_line", ""),
+        pico_trace_summary=pico_trace_summary(sensors),
+        pico_recovery_status=state.get("last_pico_recovery_status", "") or "",
         sensors=sensors,
         auger_rows=auger_rows,
         controller_alerts=controller_alerts,
@@ -7066,9 +7203,10 @@ def commissioning_view():
         feed_kg=fmt_value(sensors.get("feed_kg"), "f0"),
         feed_raw_units=fmt_value(sensors.get("feed_raw_units"), "f2"),
         lighting_status=lighting_status_text(sensors),
-        pressure_pa=fmt_value(sensors.get("pressure_pa"), "f0"),
         raw_json=json.dumps(sensors.get("raw", {}), indent=2, sort_keys=True),
         last_serial_line=sensors.get("last_serial_line", ""),
+        pico_trace_summary=pico_trace_summary(sensors),
+        pico_recovery_status=state.get("last_pico_recovery_status", "") or "",
     )
 
 

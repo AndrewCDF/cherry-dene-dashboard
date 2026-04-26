@@ -38,7 +38,6 @@ What the firmware sends over USB serial:
 - feed_raw_units
 - feed_kg
 - light_lux
-- pressure_pa
 - cross_auger_on
 - auger_left_on
 - auger_right_on
@@ -55,7 +54,6 @@ What you need to edit:
 7. Change HX711_DOUT_PIN and HX711_SCK_PIN if your HX711 is wired differently.
 8. Replace the placeholder functions if you later add:
    - light sensor
-   - pressure sensor
 9. Set `DEVICE_NAME` so the shed Pi can identify the Pico cleanly.
 
 Wiring notes:

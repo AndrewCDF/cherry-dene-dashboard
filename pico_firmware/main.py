@@ -1,12 +1,15 @@
 import json
 import time
 
-from machine import I2C, Pin
+import machine
+from machine import I2C, Pin, WDT
 
 
 SAMPLE_SECONDS = 1.0
 TEMP_RH_MEASURE_SECONDS = 2.5
+WATCHDOG_TIMEOUT_MS = 8000
 DEVICE_NAME = "pico-2-shed"
+BOOT_COUNT_FILE = "boot_count.txt"
 
 # Change these pin numbers to match your wiring.
 SHT_I2C_ID = 0
@@ -42,6 +45,7 @@ auger_left_pin = Pin(AUGER_LEFT_PIN, Pin.IN)
 auger_right_pin = Pin(AUGER_RIGHT_PIN, Pin.IN)
 hx711_dout = Pin(HX711_DOUT_PIN, Pin.IN, Pin.PULL_UP)
 hx711_sck = Pin(HX711_SCK_PIN, Pin.OUT)
+watchdog = WDT(timeout=WATCHDOG_TIMEOUT_MS)
 
 flow_pulse_count = 0
 total_flow_pulses = 0
@@ -51,6 +55,43 @@ last_flow_calc_ms = time.ticks_ms()
 last_temp_rh_ms = time.ticks_ms() - int(TEMP_RH_MEASURE_SECONDS * 1000)
 last_temp_c = None
 last_rh_pct = None
+
+
+def next_boot_count():
+    current = 0
+    try:
+        with open(BOOT_COUNT_FILE, "r") as handle:
+            current = int((handle.read() or "0").strip() or "0")
+    except Exception:
+        current = 0
+
+    current += 1
+    try:
+        with open(BOOT_COUNT_FILE, "w") as handle:
+            handle.write(str(current))
+    except Exception:
+        pass
+    return current
+
+
+def current_reset_cause_label():
+    try:
+        cause = machine.reset_cause()
+    except Exception:
+        return "unknown"
+
+    labels = {
+        getattr(machine, "PWRON_RESET", object()): "power_on",
+        getattr(machine, "HARD_RESET", object()): "hard_reset",
+        getattr(machine, "WDT_RESET", object()): "watchdog_reset",
+        getattr(machine, "DEEPSLEEP_RESET", object()): "deepsleep_reset",
+        getattr(machine, "SOFT_RESET", object()): "soft_reset",
+    }
+    return labels.get(cause, str(cause))
+
+
+BOOT_COUNT = next_boot_count()
+RESET_CAUSE_LABEL = current_reset_cause_label()
 
 
 def setup_inputs():
@@ -197,10 +238,6 @@ def read_feed_raw_units(samples=HX711_READINGS):
     return round(sum(readings) / len(readings), 1)
 
 
-def read_pressure_pa():
-    return None
-
-
 def read_value(read_fn, alarm_prefix, alarms, default=None):
     try:
         return read_fn()
@@ -227,33 +264,50 @@ def read_auger_inputs(alarms):
     return payload
 
 
+def base_payload(packet_kind="full", checkpoint=None):
+    payload = {
+        "device": DEVICE_NAME,
+        "ts": time.time(),
+        "uptime_s": int(time.ticks_diff(time.ticks_ms(), boot_ms) / 1000),
+        "boot_count": BOOT_COUNT,
+        "reset_cause": RESET_CAUSE_LABEL,
+        "packet_kind": packet_kind,
+    }
+    if checkpoint:
+        payload["checkpoint"] = checkpoint
+    return payload
+
+
+def emit_checkpoint(checkpoint):
+    payload = base_payload(packet_kind="checkpoint", checkpoint=checkpoint)
+    payload["status"] = "Checkpoint"
+    payload["alarms"] = []
+    print(json.dumps(payload))
+
+
 def build_payload():
     alarms = []
-    ts = time.time()
-    uptime_s = int(time.ticks_diff(time.ticks_ms(), boot_ms) / 1000)
-
+    emit_checkpoint("pre_sht")
     temp_c = read_value(read_temp_c, "Temp read failed", alarms)
     rh_pct = read_value(read_rh_pct, "Humidity read failed", alarms)
     water_lpm = read_value(read_water_lpm, "Flow read failed", alarms)
     total_pulses = read_value(read_total_flow_pulses, "Total flow pulse read failed", alarms)
+    emit_checkpoint("pre_hx711")
     feed_raw_units = read_value(read_feed_raw_units, "Feed raw read failed", alarms)
-    pressure_pa = read_value(read_pressure_pa, "Pressure read failed", alarms)
+    emit_checkpoint("pre_augers")
     auger_payload = read_auger_inputs(alarms)
 
-    payload = {
-        "device": DEVICE_NAME,
-        "ts": ts,
-        "uptime_s": uptime_s,
+    payload = base_payload(packet_kind="full", checkpoint="full")
+    payload.update({
         "temp_c": temp_c,
         "rh_pct": rh_pct,
         "water_lpm": water_lpm,
         "total_flow_pulses": total_pulses,
         "feed_raw_units": feed_raw_units,
         "feed_kg": None,
-        "pressure_pa": pressure_pa,
         "status": "Sensors OK" if not alarms else "Sensor warnings",
         "alarms": alarms,
-    }
+    })
 
     for key in auger_payload:
         payload[key] = auger_payload[key]
@@ -267,13 +321,17 @@ def main():
 
     while True:
         try:
+            watchdog.feed()
             status_led.toggle()
             print(json.dumps(build_payload()))
         except Exception as exc:
-            print(json.dumps({
+            watchdog.feed()
+            payload = base_payload(packet_kind="error", checkpoint="exception")
+            payload.update({
                 "status": "Sensor read error",
                 "alarms": [str(exc)],
-            }))
+            })
+            print(json.dumps(payload))
 
         time.sleep(SAMPLE_SECONDS)
 
