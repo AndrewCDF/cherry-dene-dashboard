@@ -368,6 +368,7 @@ WATER_ALARM_SNAPSHOT_SECONDS = 30
 BACKUP_KEEP_COUNT = 6
 PICO_AUTO_RECOVERY_FREEZE_SECONDS = 90
 PICO_AUTO_RECOVERY_COOLDOWN_SECONDS = 10 * 60
+PICO_POST_UPDATE_RECOVERY_WAIT_SECONDS = 20
 PICO_REBOOT_SETTLE_SECONDS = 2.0
 PICO_RECONNECT_TIMEOUT_SECONDS = 20.0
 PICO_RECONNECT_PACKET_TIMEOUT_SECONDS = 4.0
@@ -1936,6 +1937,8 @@ def load_state():
         "last_pico_recovery_attempt_ts": None,
         "last_pico_recovery_result_ts": None,
         "last_pico_recovery_status": "",
+        "pending_pico_update_recovery": False,
+        "pending_pico_update_recovery_set_ts": None,
     }
     state.update(data)
 
@@ -2000,6 +2003,9 @@ def load_state():
         state["last_pico_recovery_result_ts"] = None
     if not isinstance(state.get("last_pico_recovery_status"), str):
         state["last_pico_recovery_status"] = ""
+    state["pending_pico_update_recovery"] = bool(state.get("pending_pico_update_recovery", False))
+    if state.get("pending_pico_update_recovery_set_ts") in [""]:
+        state["pending_pico_update_recovery_set_ts"] = None
 
     sensors = default_sensor_state()
     sensors.update(state["sensors"])
@@ -3068,6 +3074,31 @@ def pico_auto_recovery_due(state, now_ts=None):
     return (now_ts - last_attempt_ts) >= int(PICO_AUTO_RECOVERY_COOLDOWN_SECONDS)
 
 
+def pico_post_update_recovery_due(state, now_ts=None):
+    now_ts = int(time.time()) if now_ts is None else int(now_ts)
+    if not bool(state.get("pending_pico_update_recovery")):
+        return False
+    set_ts = state.get("pending_pico_update_recovery_set_ts")
+    try:
+        set_ts = int(set_ts) if set_ts not in [None, ""] else None
+    except Exception:
+        set_ts = None
+    if set_ts is None:
+        return False
+    if (now_ts - set_ts) < int(PICO_POST_UPDATE_RECOVERY_WAIT_SECONDS):
+        return False
+
+    sensors = state.get("sensors", default_sensor_state())
+    last_sensor_ts = sensors.get("last_sensor_ts")
+    try:
+        last_sensor_ts = int(last_sensor_ts) if last_sensor_ts not in [None, ""] else None
+    except Exception:
+        last_sensor_ts = None
+    if last_sensor_ts is not None and last_sensor_ts >= set_ts:
+        return False
+    return True
+
+
 def update_water_history_samples(sensors, total_pulses, now_ts):
     samples = sensors.get("water_history_samples")
     if not isinstance(samples, list):
@@ -3665,6 +3696,11 @@ def apply_sensor_packet(state, packet):
     detected_delivery_kg = update_feed_tracking(state, sensors.get("feed_kg"), now_ts)
     evaluate_augers(sensors, now_ts=now_ts)
     state["sensors"] = sensors
+    if bool(state.get("pending_pico_update_recovery")):
+        state["pending_pico_update_recovery"] = False
+        state["pending_pico_update_recovery_set_ts"] = None
+        state["last_pico_recovery_status"] = "Pico returned after update"
+        state["last_pico_recovery_result_ts"] = now_ts
     if detected_delivery_kg is not None:
         record_controller_event(
             "feed_delivery_auto",
@@ -3795,6 +3831,35 @@ def auger_monitor_loop():
             maybe_auto_backup(s)
             reconcile_alarm_history(s)
         state = mutate_state(mutator)
+        if pico_post_update_recovery_due(state):
+            attempt_ts = int(time.time())
+            mutate_state(lambda s: s.update({
+                "last_pico_recovery_attempt_ts": attempt_ts,
+                "last_pico_recovery_status": "Attempting post-update Pico reset",
+            }))
+            record_controller_event(
+                "pico_post_update_recovery",
+                "Attempting post-update Pico reset",
+                "No fresh Pico packet arrived after controller restart",
+                push_to_office=False,
+            )
+            reset_status = soft_reset_pico()
+            recovery_status = str(reset_status.get("status") or "")
+            recovery_ok = bool(reset_status.get("ok"))
+            result_ts = int(time.time())
+            state = mutate_state(lambda s: s.update({
+                "last_pico_recovery_attempt_ts": attempt_ts,
+                "last_pico_recovery_result_ts": result_ts,
+                "last_pico_recovery_status": recovery_status,
+                "pending_pico_update_recovery": False,
+                "pending_pico_update_recovery_set_ts": None,
+            }))
+            record_controller_event(
+                "pico_post_update_recovery_result",
+                "Post-update Pico reset %s" % ("successful" if recovery_ok else "failed"),
+                recovery_status,
+                push_to_office=False,
+            )
         if pico_auto_recovery_due(state):
             attempt_ts = int(time.time())
             mutate_state(lambda s: s.update({
@@ -6930,6 +6995,11 @@ def apply_update_view():
     if pico_deployed:
         pause_sensor_threads()
         restart_delay_seconds = 5.0
+        mutate_state(lambda s: s.update({
+            "pending_pico_update_recovery": True,
+            "pending_pico_update_recovery_set_ts": int(time.time()),
+            "last_pico_recovery_status": "Waiting for Pico after firmware update",
+        }))
         try:
             record_controller_event(
                 "controller_update_restart",
