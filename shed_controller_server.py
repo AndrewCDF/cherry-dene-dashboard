@@ -378,11 +378,11 @@ HIDE_HOME_ALERTS_DURING_SETUP = True
 SYSTEM_ACTION_PATHS = {
     "shutdown": [("/sbin/shutdown", ["-h", "now"]), ("/usr/sbin/shutdown", ["-h", "now"])],
     "reboot": [("/sbin/reboot", []), ("/usr/sbin/reboot", [])],
+    "restart_controller": [
+        ("/bin/systemctl", ["restart", "shed-controller.service"]),
+        ("/usr/bin/systemctl", ["restart", "shed-controller.service"]),
+    ],
 }
-SERVICE_RESTART_PATHS = [
-    ("/bin/systemctl", ["restart", "shed-controller.service"]),
-    ("/usr/bin/systemctl", ["restart", "shed-controller.service"]),
-]
 
 
 def ensure_data_dir():
@@ -744,10 +744,10 @@ def check_for_update():
     return status
 
 
-def restart_self_delayed(delay_seconds=1.0):
+def restart_self_delayed(delay_seconds=1.0, supervised_exit=True):
     def _restart():
         time.sleep(delay_seconds)
-        if os.environ.get("INVOCATION_ID") or os.environ.get("JOURNAL_STREAM"):
+        if supervised_exit and (os.environ.get("INVOCATION_ID") or os.environ.get("JOURNAL_STREAM")):
             os._exit(0)
         os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)])
 
@@ -757,22 +757,28 @@ def restart_self_delayed(delay_seconds=1.0):
 def restart_service_or_self(delay_seconds=1.0):
     def _restart_service():
         time.sleep(delay_seconds)
-        for executable, args in SERVICE_RESTART_PATHS:
-            if not os.path.exists(executable):
-                continue
+        ok, detail = run_system_action("restart_controller")
+        if ok:
             try:
-                proc = subprocess.run(
-                    ["sudo", "-n", executable] + list(args),
-                    cwd=APP_ROOT,
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
+                record_controller_event(
+                    "controller_restart",
+                    "Controller restart requested",
+                    "Restart handoff sent to shed-controller.service",
+                    push_to_office=False,
                 )
-                if proc.returncode == 0:
-                    return
             except Exception:
                 pass
-        restart_self_delayed(0.1)
+            return
+        try:
+            record_controller_event(
+                "controller_restart_fallback",
+                "Controller service restart failed",
+                str(detail or "Falling back to in-process restart"),
+                push_to_office=False,
+            )
+        except Exception:
+            pass
+        restart_self_delayed(0.1, supervised_exit=False)
 
     threading.Thread(target=_restart_service, daemon=True).start()
     return True
@@ -6894,7 +6900,9 @@ def apply_update_view():
 
     pico_message = "Pico firmware already current."
     pico_status_ok = True
+    pico_deployed = False
     if pico_firmware_needs_deploy():
+        pico_deployed = True
         pico_status = deploy_pico_firmware()
         pico_status_ok = bool(pico_status.get("ok"))
         pico_message = str(pico_status.get("status") or "Pico firmware deploy failed")
@@ -6918,7 +6926,21 @@ def apply_update_view():
         "remote_commit": remote_commit,
     })
 
-    restart_service_or_self(2.5)
+    restart_delay_seconds = 2.5
+    if pico_deployed:
+        pause_sensor_threads()
+        restart_delay_seconds = 5.0
+        try:
+            record_controller_event(
+                "controller_update_restart",
+                "Controller quiesced after Pico deploy",
+                "Preparing full controller restart after Pico firmware update",
+                push_to_office=False,
+            )
+        except Exception:
+            pass
+
+    restart_service_or_self(restart_delay_seconds)
     return render_template_string(
         """
 <!doctype html>
