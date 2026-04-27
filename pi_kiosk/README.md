@@ -19,7 +19,7 @@
 The controller expects one JSON object per line over USB serial, for example:
 
 ```json
-{"temp_c": 21.4, "rh_pct": 64.1, "water_lpm": 3.22, "feed_kg": 1840, "light_lux": 320, "status": "Sensors OK", "alarms": []}
+{"temp_c": 21.4, "rh_pct": 64.1, "water_lpm": 3.22, "feed_kg": 1840, "status": "Sensors OK", "alarms": []}
 ```
 
 ## Shed first run

@@ -1032,7 +1032,7 @@ def enabled_auger_keys(cfg):
 
 
 def lighting_enabled(cfg):
-    return False
+    return bool(cfg.get("lighting_enabled", True))
 
 
 def lighting_label_for(cfg=None):
@@ -2327,6 +2327,7 @@ def sync_payload(state):
         "feed_kg": sensors.get("feed_kg"),
         "feed_low_kg": cfg.get("feed_low_kg"),
         "lighting_on": sensors.get("lighting_on"),
+        "lighting_enabled": lighting_enabled(cfg),
         "lighting_label": lighting_label_for(cfg),
         "lighting_last_changed_ts": sensors.get("lighting_last_changed_ts"),
         "feed_daily_burn_kg": state.get("feed_tracking", {}).get("avg_daily_burn_kg"),
@@ -2336,6 +2337,11 @@ def sync_payload(state):
         "device_status": sensors.get("device_status"),
         "pico_connected": sensors.get("pico_connected"),
         "augers": sensors.get("augers", {}),
+        "auger_enabled": {
+            "cross_auger": cfg.get("cross_auger_enabled", True),
+            "auger_left": cfg.get("auger_left_enabled", True),
+            "auger_right": cfg.get("auger_right_enabled", True),
+        },
         "controller_alarms": sensors.get("controller_alarms", []),
         "controller_sync_version": state.get("state_version", 0),
         "controller_state_updated_ts": state.get("state_updated_ts"),
@@ -2864,16 +2870,6 @@ def build_home_context():
             auger_tiles.append(tile)
         i += 1
 
-    if lighting_enabled(cfg):
-        auger_tiles.append({
-            "key": "lighting",
-            "label": lighting_label_for(cfg),
-            "status": lighting_status_text(sensors),
-            "runtime": lighting_runtime_text(sensors, now_ts=now_ts),
-            "last_run": lighting_last_change_text(sensors),
-            "glow": lighting_glow_class(sensors),
-        })
-
     alarm_rows = build_alarm_rows(state)
     controller_alerts = []
     i = 0
@@ -2891,6 +2887,10 @@ def build_home_context():
         offline_banner = "Office sync is stale. Controller is running on local cached state."
     pico_warning_banner = pico_warning_banner_text(sensors, now_ts=now_ts)
     pico_recovery_banner = pico_recovery_banner_text(state, now_ts=now_ts)
+    lighting_visible = True
+    lighting_on = normalize_bool(sensors.get("lighting_on"))
+    lighting_badge_class = "lighting-on" if lighting_on else "lighting-off"
+    lighting_badge_text = "💡"
 
     return {
         "shed_no": cfg["shed_no"],
@@ -2953,6 +2953,10 @@ def build_home_context():
         "offline_banner": offline_banner,
         "pico_warning_banner": pico_warning_banner,
         "pico_recovery_banner": pico_recovery_banner,
+        "lighting_visible": lighting_visible,
+        "lighting_on": lighting_on,
+        "lighting_badge_class": lighting_badge_class,
+        "lighting_badge_text": lighting_badge_text,
         "office_stale": office_stale,
         "state_version": state.get("state_version", 0),
         "state_updated_at": fmt_ts(state.get("state_updated_ts")),
@@ -4119,6 +4123,22 @@ HTML = """
             color: var(--text);
             white-space: nowrap;
         }
+        .hero-light-icon {
+            font-size: 22px;
+            line-height: 1;
+            margin-left: 6px;
+            transition: opacity 120ms ease, filter 120ms ease, color 120ms ease;
+        }
+        .hero-light-icon.lighting-on {
+            color: #fff3c3;
+            opacity: 1;
+            filter: drop-shadow(0 0 8px rgba(255, 208, 106, 0.75));
+        }
+        .hero-light-icon.lighting-off {
+            color: #d5d5d5;
+            opacity: 0.65;
+            filter: grayscale(1) brightness(0.75);
+        }
         .hero-mortality {
             display: inline-flex;
             align-items: baseline;
@@ -4752,6 +4772,10 @@ HTML = """
                                 <span class="hero-age-label">Bird Age</span>
                                 <span class="hero-age-val" id="birdAgeValue">{{ oldest_bird_age }}</span>
                             </div>
+                            <div class="hero-age {{ crop_class }}" id="lightingBox">
+                                <span class="hero-age-label">Lighting</span>
+                                <span id="lightingHeroIcon" class="hero-age-val hero-light-icon {{ lighting_badge_class }}">💡</span>
+                            </div>
                             <div class="hero-datetime-inline">
                                 <div id="cropDateTime" class="hero-datetime {{ crop_class }}">{{ current_datetime }}</div>
                             </div>
@@ -4956,6 +4980,12 @@ HTML = """
                     picoRecoveryBanner.style.display = 'none';
                     picoRecoveryBanner.textContent = '';
                 }
+            }
+
+            const lightingHeroIcon = document.getElementById('lightingHeroIcon');
+            if (lightingHeroIcon) {
+                lightingHeroIcon.classList.remove('lighting-on', 'lighting-off');
+                lightingHeroIcon.classList.add(data.lighting_badge_class || 'lighting-off');
             }
 
             (data.auger_tiles || []).forEach(auger => {

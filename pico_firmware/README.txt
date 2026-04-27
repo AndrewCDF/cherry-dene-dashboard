@@ -37,7 +37,6 @@ What the firmware sends over USB serial:
 - total_flow_pulses
 - feed_raw_units
 - feed_kg
-- light_lux
 - cross_auger_on
 - auger_left_on
 - auger_right_on

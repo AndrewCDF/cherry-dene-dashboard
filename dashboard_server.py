@@ -1547,6 +1547,7 @@ def clean_controller_meta(meta):
         "feed_low_kg": meta.get("feed_low_kg"),
         "feed_amber_buffer_kg": meta.get("feed_amber_buffer_kg"),
         "lighting_on": meta.get("lighting_on"),
+        "lighting_enabled": bool(meta.get("lighting_enabled", False)),
         "lighting_label": meta.get("lighting_label"),
         "lighting_last_changed_ts": meta.get("lighting_last_changed_ts"),
         "feed_daily_burn_kg": meta.get("feed_daily_burn_kg"),
@@ -1575,6 +1576,7 @@ def clean_controller_meta(meta):
         "pico_deployed_hash": meta.get("pico_deployed_hash"),
         "controller_alarms": [],
         "augers": {},
+        "auger_enabled": {},
     }
 
     controller_alarms = meta.get("controller_alarms", [])
@@ -1610,7 +1612,43 @@ def clean_controller_meta(meta):
                 "overrun": bool(rec.get("overrun", False)),
             }
 
+    auger_enabled = meta.get("auger_enabled", {})
+    if isinstance(auger_enabled, dict):
+        for key in ["cross_auger", "auger_left", "auger_right"]:
+            if key in auger_enabled:
+                out["auger_enabled"][key] = bool(auger_enabled.get(key, False))
+
     return out
+
+
+def dashboard_auger_tiles(controller_meta):
+    tiles = []
+    augers = controller_meta.get("augers", {})
+    auger_enabled = controller_meta.get("auger_enabled", {})
+    if not isinstance(augers, dict):
+        return tiles
+    has_enabled_map = isinstance(auger_enabled, dict) and any(
+        key in auger_enabled for key in ["cross_auger", "auger_left", "auger_right"]
+    )
+
+    for key in ["cross_auger", "auger_left", "auger_right"]:
+        if has_enabled_map and not bool(auger_enabled.get(key, False)):
+            continue
+        rec = augers.get(key, {})
+        if not isinstance(rec, dict):
+            rec = {}
+        label = str(rec.get("label") or key.replace("_", " ").title())
+        is_on = bool(rec.get("on", False))
+        overrun = bool(rec.get("overrun", False))
+        status = "Overrun" if overrun else ("On" if is_on else "Waiting")
+        glow = "state-red" if overrun else ("state-green" if is_on else "state-warn")
+        tiles.append({
+            "key": key,
+            "label": label,
+            "status": status,
+            "glow": glow,
+        })
+    return tiles
 
 
 def save_live_latest_map(data):
@@ -5322,6 +5360,11 @@ def build_rows():
         is_online = controller_online(controller_meta)
         tile_state = "online" if is_online and bool(live) else "offline"
         card_state = "online" if is_online and has_active_entry else "offline"
+        auger_tiles = dashboard_auger_tiles(controller_meta)
+        lighting_visible = True
+        lighting_on = bool(controller_meta.get("lighting_on", False))
+        if int(shed_no) == 1:
+            lighting_on = True
 
         rows.append({
             "shed": shed,
@@ -5338,6 +5381,12 @@ def build_rows():
             "feed_glow": feed_glow,
             "water_lpm": fmt_value(water_lpm, "f2"),
             "water_glow": water_glow,
+            "auger_tiles": auger_tiles,
+            "auger_count": len(auger_tiles),
+            "lighting_visible": lighting_visible,
+            "lighting_on": lighting_on,
+            "lighting_tile_class": "lighting-on" if lighting_on else "lighting-off",
+            "lighting_status_text": "ON" if lighting_on else "OFF",
             "crop_id": fmt_crop_code(crop_id, placement_epoch),
             "farm_crop_id": fmt_crop_code(current_farm_crop_id, current_farm_crop_epoch),
             "bird_count": fmt_value(birds if birds > 0 else None, "i"),
@@ -5756,6 +5805,12 @@ HTML = """
             gap: 8px;
             margin-bottom: 8px;
         }
+        .big-triple {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 8px;
+            margin-bottom: 8px;
+        }
         .big-one {
             display: grid;
             grid-template-columns: 1fr;
@@ -5804,14 +5859,8 @@ HTML = """
         }
         .metric-columns {
             display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 8px;
-        }
-        .metric-stack {
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 6px 8px;
-            min-width: 0;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 6px;
         }
         .metric-water { order: 0; }
         .metric-feed { order: 0; }
@@ -5824,6 +5873,49 @@ HTML = """
         .metric-feed-bird { order: 0; }
         .metric-water-total { order: 0; }
         .metric-feed-total { order: 0; }
+        .metric-lighting {
+            text-align: left;
+        }
+        .metric-lighting-top .metric-val {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            margin-top: 0;
+            padding-top: 9px;
+        }
+        .metric-lighting-top .metric-val .lighting-top-text {
+            font-size: 12px;
+            font-weight: 700;
+            line-height: 1;
+        }
+        .lighting-top-icon {
+            font-size: 20px;
+            line-height: 1;
+            transition: opacity 120ms ease, filter 120ms ease;
+        }
+        .lighting-top-icon.is-on {
+            opacity: 1;
+            filter: drop-shadow(0 0 8px rgba(255, 214, 106, 0.75));
+        }
+        .lighting-top-icon.is-off {
+            opacity: 0.65;
+            filter: grayscale(1) brightness(0.75);
+        }
+        .metric-lighting.lighting-on {
+            border: 2px solid #35d07f;
+            box-shadow:
+                0 0 10px rgba(53,208,127,0.95),
+                0 0 20px rgba(53,208,127,0.65),
+                0 0 34px rgba(53,208,127,0.35);
+        }
+        .metric-lighting.lighting-off {
+            border: 2px solid #ff5b5b;
+            box-shadow:
+                0 0 10px rgba(255,91,91,0.95),
+                0 0 20px rgba(255,91,91,0.65),
+                0 0 34px rgba(255,91,91,0.35);
+        }
         .metric-grid-2 {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -6018,6 +6110,56 @@ HTML = """
             font-weight: bold;
             margin-bottom: 10px;
         }
+        .auger-mini-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 6px;
+            margin-top: 6px;
+        }
+        .auger-mini-grid.count-1 {
+            grid-template-columns: minmax(0, 1fr);
+        }
+        .auger-mini-grid.count-2 {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .auger-mini {
+            min-width: 0;
+            padding: 8px 8px 10px;
+            border-radius: 10px;
+            border: 2px solid #888;
+            background: #686868;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .auger-mini.state-green {
+            border-color: #42d685;
+            box-shadow: 0 0 8px rgba(66, 214, 133, 0.45);
+        }
+        .auger-mini.state-warn {
+            border-color: #ffd06a;
+            box-shadow: 0 0 8px rgba(255, 208, 106, 0.32);
+        }
+        .auger-mini.state-red {
+            border-color: #ff5b5b;
+            box-shadow: 0 0 8px rgba(255, 91, 91, 0.4);
+        }
+        .auger-mini-label {
+            font-size: 10px;
+            color: #d2d2d2;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .auger-mini-status {
+            font-size: 16px;
+            font-weight: 700;
+            line-height: 1.1;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
         .summary-grid {
             display: grid;
             grid-template-columns: minmax(0, 1.35fr) repeat(5, minmax(0, 0.93fr));
@@ -6122,8 +6264,9 @@ HTML = """
             .topline { gap: 8px; }
             .mini-val { font-size: 18px; }
             .big-pair { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; }
+            .big-triple { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
             .metric-grid { grid-template-columns: 1fr 1fr; }
-            .metric-columns { grid-template-columns: 1fr 1fr; gap: 6px; }
+            .metric-columns { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
             .metric-grid-2 { grid-template-columns: 1fr; }
             .metric-big .metric-label { font-size: 11px; }
             .metric-big .metric-val { font-size: 26px; }
@@ -6204,7 +6347,7 @@ HTML = """
                         </div>
                     </div>
 
-                    <div class="big-pair">
+                    <div class="big-triple">
                         <div id="shed-temp-tile-{{ s.shed_no }}" class="metric metric-big {% if s.temp_glow %}{{ s.temp_glow }}{% endif %}">
                             <div class="metric-label">Temp C</div>
                             <div id="shed-temp-{{ s.shed_no }}" class="metric-val">{{ s.temp_c }}</div>
@@ -6212,6 +6355,10 @@ HTML = """
                         <div id="shed-rh-tile-{{ s.shed_no }}" class="metric metric-big {% if s.rh_glow %}{{ s.rh_glow }}{% endif %}">
                             <div class="metric-label">RH %</div>
                             <div id="shed-rh-{{ s.shed_no }}" class="metric-val">{{ s.rh_pct }}</div>
+                        </div>
+                        <div id="shed-lighting-tile-{{ s.shed_no }}" class="metric metric-big metric-neutral metric-lighting metric-lighting-top {{ s.lighting_tile_class }}">
+                            <div class="metric-label">Lighting</div>
+                            <div class="metric-val"><span id="shed-lighting-icon-{{ s.shed_no }}" class="lighting-top-icon {% if s.lighting_on %}is-on{% else %}is-off{% endif %}">💡</span><span id="shed-lighting-status-{{ s.shed_no }}" class="lighting-top-text">{{ s.lighting_status_text }}</span></div>
                         </div>
                     </div>
 
@@ -6225,44 +6372,50 @@ HTML = """
                             <div id="shed-feed-{{ s.shed_no }}" class="metric-val">{{ s.feed_kg }}</div>
                         </div>
                     </div>
+                    {% if s.auger_tiles %}
+                    <div class="auger-mini-grid count-{{ s.auger_count }}">
+                        {% for a in s.auger_tiles %}
+                        <div id="shed-auger-tile-{{ s.shed_no }}-{{ a.key }}" class="auger-mini {{ a.glow }}">
+                            <div class="auger-mini-label">{{ a.label }}</div>
+                            <div id="shed-auger-status-{{ s.shed_no }}-{{ a.key }}" class="auger-mini-status">{{ a.status }}</div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
 
                     <div class="section">
                         <div class="metric-columns">
-                            <div class="metric-stack">
-                                <div class="metric metric-water metric-water-daily">
-                                    <div class="metric-label">Water L 7am-7am</div>
-                                    <div id="shed-water7-{{ s.shed_no }}" class="metric-val">{{ s.water_7to7 }}</div>
-                                </div>
-                                <div class="metric metric-water metric-water-bird">
-                                    <div class="metric-label">L/bird yesterday</div>
-                                    <div class="metric-val">{{ s.l_per_bird }}</div>
-                                </div>
-                                <div class="metric metric-water metric-water-total">
-                                    <div class="metric-label">Water Total L</div>
-                                    <div class="metric-val">{{ s.total_water_to_date }}</div>
-                                </div>
-                                <div class="metric metric-neutral metric-mortality">
-                                    <div class="metric-label">Mortality</div>
-                                    <div id="shed-mortality-{{ s.shed_no }}" class="metric-val">{{ s.mortality_display }}</div>
-                                </div>
+                            <div class="metric metric-water metric-water-daily">
+                                <div class="metric-label">Water L 7am-7am</div>
+                                <div id="shed-water7-{{ s.shed_no }}" class="metric-val">{{ s.water_7to7 }}</div>
                             </div>
-                            <div class="metric-stack">
-                                <div class="metric metric-feed metric-feed-daily">
-                                    <div class="metric-label">Feed KG 7am-7am</div>
-                                    <div id="shed-feed7-{{ s.shed_no }}" class="metric-val">{{ s.feed_7to7 }}</div>
-                                </div>
-                                <div class="metric metric-feed metric-feed-bird">
-                                    <div class="metric-label">KG/bird yesterday</div>
-                                    <div class="metric-val">{{ s.kg_per_bird }}</div>
-                                </div>
-                                <div class="metric metric-feed metric-feed-total">
-                                    <div class="metric-label">Feed Total KG</div>
-                                    <div class="metric-val">{{ s.total_feed_to_date }}</div>
-                                </div>
-                                <div class="metric metric-neutral metric-runout">
-                                    <div class="metric-label">Estimated Run Out</div>
-                                    <div class="metric-val">{{ s.runout_est }}</div>
-                                </div>
+                            <div class="metric metric-feed metric-feed-daily">
+                                <div class="metric-label">Feed KG 7am-7am</div>
+                                <div id="shed-feed7-{{ s.shed_no }}" class="metric-val">{{ s.feed_7to7 }}</div>
+                            </div>
+                            <div class="metric metric-neutral metric-runout">
+                                <div class="metric-label">Estimated Run Out</div>
+                                <div class="metric-val">{{ s.runout_est }}</div>
+                            </div>
+                            <div class="metric metric-water metric-water-bird">
+                                <div class="metric-label">L/bird yesterday</div>
+                                <div class="metric-val">{{ s.l_per_bird }}</div>
+                            </div>
+                            <div class="metric metric-feed metric-feed-bird">
+                                <div class="metric-label">KG/bird yesterday</div>
+                                <div class="metric-val">{{ s.kg_per_bird }}</div>
+                            </div>
+                            <div class="metric metric-neutral metric-mortality">
+                                <div class="metric-label">Mortality</div>
+                                <div id="shed-mortality-{{ s.shed_no }}" class="metric-val">{{ s.mortality_display }}</div>
+                            </div>
+                            <div class="metric metric-water metric-water-total">
+                                <div class="metric-label">Water Total L</div>
+                                <div class="metric-val">{{ s.total_water_to_date }}</div>
+                            </div>
+                            <div class="metric metric-feed metric-feed-total">
+                                <div class="metric-label">Feed Total KG</div>
+                                <div class="metric-val">{{ s.total_feed_to_date }}</div>
                             </div>
                         </div>
                     </div>
@@ -6580,6 +6733,13 @@ function renderShed(s) {
     setDashClass(`shed-feed-tile-${s.shed_no}`, [s.feed_glow], ['feed-green', 'feed-warn', 'feed-red']);
     setDashText(`shed-sync-badge-${s.shed_no}`, s.sync_pill_text);
     setDashClass(`shed-sync-badge-${s.shed_no}`, ['badge', s.sync_pill_class], ['sync-ok', 'sync-stale', 'sync-missing']);
+    setDashText(`shed-lighting-status-${s.shed_no}`, s.lighting_status_text || 'Off');
+    setDashClass(`shed-lighting-tile-${s.shed_no}`, ['metric', 'metric-neutral', 'metric-lighting', s.lighting_tile_class], ['lighting-on', 'lighting-off']);
+    setDashClass(`shed-lighting-icon-${s.shed_no}`, ['lighting-top-icon', s.lighting_on ? 'is-on' : 'is-off'], ['is-on', 'is-off']);
+    (s.auger_tiles || []).forEach((a) => {
+        setDashText(`shed-auger-status-${s.shed_no}-${a.key}`, a.status);
+        setDashClass(`shed-auger-tile-${s.shed_no}-${a.key}`, ['auger-mini', a.glow], ['state-green', 'state-warn', 'state-red']);
+    });
 
     const alloc = document.getElementById(`shed-alloc-${s.shed_no}`);
     if (alloc) {

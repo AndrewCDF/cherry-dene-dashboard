@@ -39,7 +39,7 @@ FLOW_DEBOUNCE_US = 1200
 status_led = Pin(STATUS_LED_PIN, Pin.OUT)
 sht_i2c = I2C(SHT_I2C_ID, sda=Pin(SHT_I2C_SDA_PIN), scl=Pin(SHT_I2C_SCL_PIN), freq=100000)
 flow_pin = Pin(FLOW_PIN, Pin.IN, Pin.PULL_UP)
-lighting_pin = Pin(LIGHTING_PIN, Pin.IN)
+lighting_pin = Pin(LIGHTING_PIN, Pin.IN, Pin.PULL_UP)
 cross_auger_pin = Pin(CROSS_AUGER_PIN, Pin.IN)
 auger_left_pin = Pin(AUGER_LEFT_PIN, Pin.IN)
 auger_right_pin = Pin(AUGER_RIGHT_PIN, Pin.IN)
@@ -249,6 +249,7 @@ def read_value(read_fn, alarm_prefix, alarms, default=None):
 def read_auger_inputs(alarms):
     payload = {}
     input_map = {
+        "lighting_on": lighting_pin,
         "cross_auger_on": cross_auger_pin,
         "auger_left_on": auger_left_pin,
         "auger_right_on": auger_right_pin,
