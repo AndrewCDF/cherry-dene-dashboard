@@ -5363,8 +5363,6 @@ def build_rows():
         auger_tiles = dashboard_auger_tiles(controller_meta)
         lighting_visible = True
         lighting_on = bool(controller_meta.get("lighting_on", False))
-        if int(shed_no) == 1:
-            lighting_on = True
 
         rows.append({
             "shed": shed,
