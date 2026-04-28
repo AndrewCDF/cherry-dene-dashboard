@@ -4074,6 +4074,18 @@ HTML = """
                 0 0 10px rgba(255,119,119,0.24),
                 0 0 18px rgba(255,119,119,0.14);
         }
+        .hero-age.lighting-on {
+            border-color: rgba(53,208,127,0.90);
+            box-shadow:
+                0 0 10px rgba(53,208,127,0.28),
+                0 0 18px rgba(53,208,127,0.16);
+        }
+        .hero-age.lighting-off {
+            border-color: rgba(255,119,119,0.90);
+            box-shadow:
+                0 0 10px rgba(255,119,119,0.24),
+                0 0 18px rgba(255,119,119,0.14);
+        }
         .hero-birds-label {
             color: var(--muted);
             font-size: 13px;
@@ -4772,7 +4784,7 @@ HTML = """
                                 <span class="hero-age-label">Bird Age</span>
                                 <span class="hero-age-val" id="birdAgeValue">{{ oldest_bird_age }}</span>
                             </div>
-                            <div class="hero-age {{ crop_class }}" id="lightingBox">
+                            <div class="hero-age {{ lighting_badge_class }}" id="lightingBox">
                                 <span class="hero-age-label">Lighting</span>
                                 <span id="lightingHeroIcon" class="hero-age-val hero-light-icon {{ lighting_badge_class }}">💡</span>
                             </div>
@@ -4986,6 +4998,11 @@ HTML = """
             if (lightingHeroIcon) {
                 lightingHeroIcon.classList.remove('lighting-on', 'lighting-off');
                 lightingHeroIcon.classList.add(data.lighting_badge_class || 'lighting-off');
+            }
+            const lightingBox = document.getElementById('lightingBox');
+            if (lightingBox) {
+                lightingBox.classList.remove('lighting-on', 'lighting-off');
+                lightingBox.classList.add(data.lighting_badge_class || 'lighting-off');
             }
 
             (data.auger_tiles || []).forEach(auger => {
@@ -5250,7 +5267,6 @@ SETTINGS_HTML = """
                     <a class="button-link" href="{{ url_for('allocation_view') }}">Shed Allocation</a>
                     <a class="button-link" href="{{ url_for('controller_alarms_view') }}">Alarms{% if alarm_count %} ({{ alarm_count }}){% endif %}</a>
                     <a class="button-link" href="{{ url_for('commissioning_view') }}">Commissioning</a>
-                    <a class="button-link" href="{{ url_for('controller_events_view') }}">Event Log</a>
                     <a class="button-link" href="{{ url_for('controller_config_view') }}">Controller Config</a>
                     <a class="button-link" href="{{ url_for('controller_health_view') }}">Controller Health</a>
                     <form class="action-form" method="post" action="{{ url_for('controller_reboot_view') }}" onsubmit="return confirm('Reboot this controller Pi now?');">

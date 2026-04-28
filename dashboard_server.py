@@ -7646,7 +7646,6 @@ OFFICE_SETTINGS_HTML = """
                 <div class="detail"><span class="label">Latest Backup</span><span>{{ latest_backup_name }}</span></div>
                 <div class="detail"><span class="label">Feed Stock</span><span>{{ feed_stock_balance }} KG available</span></div>
                 <div class="action-grid">
-                    <a class="action-link" href="{{ url_for('office_events_view') }}">Event Log</a>
                     <a class="action-link" href="{{ url_for('office_versions_view') }}">Versions</a>
                     <a class="action-link" href="{{ url_for('office_feed_stock_view') }}">Feed Stock</a>
                     <a class="action-link" href="{{ url_for('restore_office_backup_view') }}">Restore Backup</a>
