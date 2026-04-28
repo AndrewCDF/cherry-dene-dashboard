@@ -1609,6 +1609,9 @@ def clean_controller_meta(meta):
                 "label": str(rec.get("label", key.replace("_", " ").title())),
                 "on": bool(rec.get("on", False)),
                 "started_ts": rec.get("started_ts"),
+                "last_started_ts": rec.get("last_started_ts"),
+                "last_stopped_ts": rec.get("last_stopped_ts"),
+                "last_duration_s": rec.get("last_duration_s"),
                 "overrun": bool(rec.get("overrun", False)),
             }
 
@@ -1625,6 +1628,7 @@ def dashboard_auger_tiles(controller_meta):
     tiles = []
     augers = controller_meta.get("augers", {})
     auger_enabled = controller_meta.get("auger_enabled", {})
+    controller_alarms = controller_meta.get("controller_alarms", [])
     if not isinstance(augers, dict):
         return tiles
     has_enabled_map = isinstance(auger_enabled, dict) and any(
@@ -1640,8 +1644,32 @@ def dashboard_auger_tiles(controller_meta):
         label = str(rec.get("label") or key.replace("_", " ").title())
         is_on = bool(rec.get("on", False))
         overrun = bool(rec.get("overrun", False))
-        status = "Overrun" if overrun else ("On" if is_on else "Waiting")
-        glow = "state-red" if overrun else ("state-green" if is_on else "state-warn")
+        issue = overrun
+        if not issue and isinstance(controller_alarms, list):
+            label_lower = label.strip().lower()
+            i = 0
+            while i < len(controller_alarms):
+                alarm = controller_alarms[i]
+                if isinstance(alarm, dict):
+                    alarm_key = str(alarm.get("alarm_key", "") or "").strip().lower()
+                    message = str(alarm.get("message", "") or "").strip().lower()
+                    if (
+                        alarm_key.startswith(key)
+                        or key in alarm_key
+                        or (label_lower and label_lower in message)
+                    ):
+                        issue = True
+                        break
+                i += 1
+        if issue:
+            status = "Issue"
+            glow = "state-red"
+        elif is_on:
+            status = "On"
+            glow = "state-green"
+        else:
+            status = format_duration_compact(rec.get("last_duration_s"))
+            glow = "state-green"
         tiles.append({
             "key": key,
             "label": label,
