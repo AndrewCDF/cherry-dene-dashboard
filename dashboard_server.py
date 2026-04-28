@@ -1035,6 +1035,13 @@ def format_duration_compact(seconds):
     return "%dh %02dm" % (total // 3600, (total % 3600) // 60)
 
 
+def format_clock_compact(ts_value):
+    try:
+        return datetime.fromtimestamp(int(ts_value)).strftime("%H:%M")
+    except Exception:
+        return "--"
+
+
 def format_ts_label(ts_value):
     if ts_value in [None, ""]:
         return "--"
@@ -1624,7 +1631,9 @@ def clean_controller_meta(meta):
     return out
 
 
-def dashboard_auger_tiles(controller_meta):
+def dashboard_auger_tiles(controller_meta, now_ts=None):
+    if now_ts is None:
+        now_ts = int(time.time())
     tiles = []
     augers = controller_meta.get("augers", {})
     auger_enabled = controller_meta.get("auger_enabled", {})
@@ -1644,6 +1653,10 @@ def dashboard_auger_tiles(controller_meta):
         label = str(rec.get("label") or key.replace("_", " ").title())
         is_on = bool(rec.get("on", False))
         overrun = bool(rec.get("overrun", False))
+        started_ts = rec.get("started_ts")
+        last_started_ts = rec.get("last_started_ts")
+        last_stopped_ts = rec.get("last_stopped_ts")
+        last_duration_s = rec.get("last_duration_s")
         issue = overrun
         if not issue and isinstance(controller_alarms, list):
             label_lower = label.strip().lower()
@@ -1661,19 +1674,21 @@ def dashboard_auger_tiles(controller_meta):
                         issue = True
                         break
                 i += 1
-        if issue:
-            status = "Issue"
-            glow = "state-red"
-        elif is_on:
-            status = "On"
-            glow = "state-green"
+        if is_on:
+            timestamp_text = format_clock_compact(started_ts if started_ts not in [None, ""] else last_started_ts)
+            try:
+                runtime_text = format_duration_compact(max(0, int(now_ts) - int(started_ts)))
+            except Exception:
+                runtime_text = format_duration_compact(last_duration_s)
         else:
-            status = format_duration_compact(rec.get("last_duration_s"))
-            glow = "state-green"
+            timestamp_text = format_clock_compact(last_stopped_ts if last_stopped_ts not in [None, ""] else last_started_ts)
+            runtime_text = format_duration_compact(last_duration_s)
+        glow = "state-red" if issue else "state-green"
         tiles.append({
             "key": key,
             "label": label,
-            "status": status,
+            "timestamp": timestamp_text,
+            "runtime": runtime_text,
             "glow": glow,
         })
     return tiles
@@ -5388,7 +5403,7 @@ def build_rows():
         is_online = controller_online(controller_meta)
         tile_state = "online" if is_online and bool(live) else "offline"
         card_state = "online" if is_online and has_active_entry else "offline"
-        auger_tiles = dashboard_auger_tiles(controller_meta)
+        auger_tiles = dashboard_auger_tiles(controller_meta, now_ts=now_ts)
         lighting_visible = True
         lighting_on = bool(controller_meta.get("lighting_on", False))
 
@@ -6186,6 +6201,13 @@ HTML = """
             overflow-wrap: anywhere;
             word-break: break-word;
         }
+        .auger-mini-runtime {
+            font-size: 12px;
+            color: #d7d7d7;
+            line-height: 1.1;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
         .summary-grid {
             display: grid;
             grid-template-columns: minmax(0, 1.35fr) repeat(5, minmax(0, 0.93fr));
@@ -6403,7 +6425,8 @@ HTML = """
                         {% for a in s.auger_tiles %}
                         <div id="shed-auger-tile-{{ s.shed_no }}-{{ a.key }}" class="auger-mini {{ a.glow }}">
                             <div class="auger-mini-label">{{ a.label }}</div>
-                            <div id="shed-auger-status-{{ s.shed_no }}-{{ a.key }}" class="auger-mini-status">{{ a.status }}</div>
+                            <div id="shed-auger-status-{{ s.shed_no }}-{{ a.key }}" class="auger-mini-status">{{ a.timestamp }}</div>
+                            <div id="shed-auger-runtime-{{ s.shed_no }}-{{ a.key }}" class="auger-mini-runtime">{{ a.runtime }}</div>
                         </div>
                         {% endfor %}
                     </div>
@@ -6763,7 +6786,8 @@ function renderShed(s) {
     setDashClass(`shed-lighting-tile-${s.shed_no}`, ['metric', 'metric-neutral', 'metric-lighting', s.lighting_tile_class], ['lighting-on', 'lighting-off']);
     setDashClass(`shed-lighting-icon-${s.shed_no}`, ['lighting-top-icon', s.lighting_on ? 'is-on' : 'is-off'], ['is-on', 'is-off']);
     (s.auger_tiles || []).forEach((a) => {
-        setDashText(`shed-auger-status-${s.shed_no}-${a.key}`, a.status);
+        setDashText(`shed-auger-status-${s.shed_no}-${a.key}`, a.timestamp);
+        setDashText(`shed-auger-runtime-${s.shed_no}-${a.key}`, a.runtime);
         setDashClass(`shed-auger-tile-${s.shed_no}-${a.key}`, ['auger-mini', a.glow], ['state-green', 'state-warn', 'state-red']);
     });
 
