@@ -5217,6 +5217,7 @@ def build_overall_summary():
 
 def build_rows():
     ensure_data_dir()
+    now_ts = int(time.time())
 
     live_map = latest_live_by_shed()
     alarms_map = active_alarms_by_shed()
