@@ -8550,7 +8550,7 @@ DETAIL_HTML = """
                                 </td>
                                 <td>
                                     {% if r.can_move %}
-                                    <form class="form-inline" method="post" action="{{ url_for('shed_entry_move', shed_no=shed_no, dest_shed=r.dest_shed) }}">
+                                    <form class="form-inline" method="post" action="{{ url_for('shed_entry_move', shed_no=shed_no, dest_shed=r.dest_shed) }}" onsubmit="return confirm('Move birds from Shed {{ shed_no }} to Shed {{ r.dest_shed }}?');">
                                         <button class="move" type="submit">Move to Shed {{ r.dest_shed }}</button>
                                     </form>
                                     {% else %}
