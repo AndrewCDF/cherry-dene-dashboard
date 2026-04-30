@@ -6715,7 +6715,7 @@ ALLOCATION_HTML = """
                         <button type="submit">Save</button>
                         <button formaction="{{ url_for('start_entry_for_dest', dest_shed=row.dest_shed) }}" type="submit">Start</button>
                         {% if row.can_move %}
-                        <button class="secondary" formaction="{{ url_for('move_entry_for_dest', dest_shed=row.dest_shed) }}" type="submit">Move</button>
+                        <button class="secondary" formaction="{{ url_for('move_entry_for_dest', dest_shed=row.dest_shed) }}" type="submit" onclick="return confirm('Move birds from Shed {{ shed_no }} to Shed {{ row.dest_shed }}?');">Move</button>
                         {% else %}
                         <button class="secondary" type="button" disabled>Move</button>
                         {% endif %}
