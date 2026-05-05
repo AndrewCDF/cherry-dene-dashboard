@@ -4475,8 +4475,11 @@ HTML = """
         }
         .metric-sub-auger-last {
             margin-top: 4px;
-            font-size: 15px;
+            font-size: 12px;
             color: var(--muted);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
         .main-grid {
             display: grid;
