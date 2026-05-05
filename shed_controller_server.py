@@ -110,6 +110,8 @@ NUMBER_PAD_BODY = """
 (function () {
   const pad = document.getElementById('cdfNumberPad');
   if (!pad) return;
+  const HOME_PATH = '/';
+  const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000;
   const valueEl = document.getElementById('cdfNumberPadValue');
   const decimalBtn = document.getElementById('cdfNumberPadDecimal');
   const httpBtn = document.getElementById('cdfNumberPadHttp');
@@ -118,6 +120,18 @@ NUMBER_PAD_BODY = """
   let activeInput = null;
   let dragScroll = null;
   let suppressClickUntil = 0;
+  let inactivityTimer = null;
+
+  function restartInactivityTimer() {
+    if (inactivityTimer) {
+      clearTimeout(inactivityTimer);
+    }
+    inactivityTimer = setTimeout(function () {
+      if (window.location.pathname !== HOME_PATH) {
+        window.location.href = HOME_PATH;
+      }
+    }, INACTIVITY_TIMEOUT_MS);
+  }
 
   function isUrlPadInput(input) {
     return !!(input && input.matches && input.matches('input[data-cdf-urlpad]'));
@@ -150,6 +164,7 @@ NUMBER_PAD_BODY = """
     pad.classList.add('is-open');
     pad.setAttribute('aria-hidden', 'false');
     syncDisplay();
+    restartInactivityTimer();
   }
 
   function closePad() {
@@ -157,6 +172,7 @@ NUMBER_PAD_BODY = """
     pad.classList.remove('is-open');
     pad.setAttribute('aria-hidden', 'true');
     valueEl.textContent = '';
+    restartInactivityTimer();
   }
 
   function commitValue(nextValue) {
@@ -171,14 +187,16 @@ NUMBER_PAD_BODY = """
     const target = event.target;
     if (target && target.matches && target.matches('input[type="number"], input[data-cdf-urlpad]')) {
       openPad(target);
+      restartInactivityTimer();
     }
   });
 
   function isInteractiveTarget(target) {
-    return !!(target && target.closest && target.closest('input, textarea, select, button, .cdf-number-pad'));
+    return !!(target && target.closest && target.closest('input, textarea, select, .cdf-number-pad'));
   }
 
   document.addEventListener('touchstart', function (event) {
+    restartInactivityTimer();
     if (!event.touches || event.touches.length !== 1) return;
     const target = event.target;
     if (isInteractiveTarget(target)) return;
@@ -191,6 +209,7 @@ NUMBER_PAD_BODY = """
   }, { passive: true });
 
   document.addEventListener('touchmove', function (event) {
+    restartInactivityTimer();
     if (!dragScroll || !event.touches || event.touches.length !== 1) return;
     const touch = event.touches[0];
     const deltaY = touch.clientY - dragScroll.lastY;
@@ -208,9 +227,11 @@ NUMBER_PAD_BODY = """
 
   document.addEventListener('touchend', function () {
     dragScroll = null;
+    restartInactivityTimer();
   }, { passive: true });
 
   document.addEventListener('click', function (event) {
+    restartInactivityTimer();
     if (Date.now() < suppressClickUntil) {
       event.preventDefault();
       event.stopPropagation();
@@ -218,6 +239,7 @@ NUMBER_PAD_BODY = """
   }, true);
 
   document.addEventListener('pointerdown', function (event) {
+    restartInactivityTimer();
     const target = event.target;
     if (target && target.matches && target.matches('input[type="number"], input[data-cdf-urlpad]')) {
       openPad(target);
@@ -229,6 +251,7 @@ NUMBER_PAD_BODY = """
   });
 
   pad.addEventListener('click', function (event) {
+    restartInactivityTimer();
     const button = event.target.closest('button');
     if (!button || !activeInput) return;
     const action = button.getAttribute('data-action');
@@ -256,6 +279,12 @@ NUMBER_PAD_BODY = """
     }
     commitValue(current + key);
   });
+
+  document.addEventListener('keydown', restartInactivityTimer, true);
+  document.addEventListener('wheel', restartInactivityTimer, { passive: true });
+  window.addEventListener('scroll', restartInactivityTimer, { passive: true });
+  window.addEventListener('mousemove', restartInactivityTimer, { passive: true });
+  restartInactivityTimer();
 })();
 </script>
 """
@@ -2850,6 +2879,16 @@ def build_home_context():
     water_glow = "flow-red" if (water_lpm_f is None or water_lpm_f < water_low_lpm) else "flow-green"
     feed_glow = "feed-red" if (feed_kg_f is None or feed_kg_f < feed_low_kg) else "feed-green"
 
+    lighting_tile = None
+    if lighting_enabled(cfg):
+        lighting_tile = {
+            "key": "lighting",
+            "label": lighting_label_for(cfg),
+            "status": lighting_status_text(sensors),
+            "runtime": "",
+            "last_run": "",
+            "glow": lighting_glow_class(sensors),
+        }
     auger_tiles = []
     active_auger_keys = enabled_auger_keys(cfg)
     i = 0
@@ -2869,7 +2908,6 @@ def build_home_context():
             }
             auger_tiles.append(tile)
         i += 1
-
     alarm_rows = build_alarm_rows(state)
     controller_alerts = []
     i = 0
@@ -2946,6 +2984,7 @@ def build_home_context():
         "entry": entry,
         "auger_tiles": auger_tiles,
         "auger_count": len(auger_tiles),
+        "lighting_tile": lighting_tile,
         "controller_alerts": controller_alerts,
         "alarm_count": len(alarm_rows),
         "alarm_class": alarm_class,
@@ -4297,8 +4336,14 @@ HTML = """
         .metric.metric-mini .metric-sub {
             font-size: 13px;
         }
-        .auger-grid-shell {
+        .auger-row-shell {
             grid-column: 1 / span 3;
+            display: grid;
+            grid-template-columns: calc((100% - 70px) / 6) minmax(0, 1fr);
+            gap: 14px;
+            height: 100%;
+        }
+        .auger-grid-shell {
             display: grid;
             gap: 14px;
             height: 100%;
@@ -4317,6 +4362,12 @@ HTML = """
         }
         .auger-grid-shell .metric {
             min-width: 0;
+        }
+        .lighting-tile {
+            padding: 16px;
+        }
+        .lighting-tile .metric-val {
+            font-size: 40px;
         }
         .metric.flow-green {
             border-color: #35d07f;
@@ -4423,16 +4474,9 @@ HTML = """
             color: var(--muted);
         }
         .metric-sub-auger-last {
-            display: block;
-            width: 100%;
-            margin-top: 10px;
-            padding-top: 8px;
-            border-top: 1px solid rgba(255,255,255,0.16);
-            font-size: 24px;
-            line-height: 1.2;
-            color: var(--text);
-            font-weight: 700;
-            text-align: center;
+            margin-top: 4px;
+            font-size: 15px;
+            color: var(--muted);
         }
         .main-grid {
             display: grid;
@@ -4727,6 +4771,7 @@ HTML = """
             .metric-split-grid {
                 gap: 10px;
             }
+            .auger-row-shell,
             .auger-grid-shell,
             .auger-grid-shell.count-1,
             .auger-grid-shell.count-2,
@@ -4783,10 +4828,6 @@ HTML = """
                             <div class="hero-age {{ crop_class }}" id="ageBox">
                                 <span class="hero-age-label">Bird Age</span>
                                 <span class="hero-age-val" id="birdAgeValue">{{ oldest_bird_age }}</span>
-                            </div>
-                            <div class="hero-age {{ lighting_badge_class }}" id="lightingBox">
-                                <span class="hero-age-label">Lighting</span>
-                                <span id="lightingHeroIcon" class="hero-age-val hero-light-icon {{ lighting_badge_class }}">💡</span>
                             </div>
                             <div class="hero-datetime-inline">
                                 <div id="cropDateTime" class="hero-datetime {{ crop_class }}">{{ current_datetime }}</div>
@@ -4856,16 +4897,27 @@ HTML = """
                     <div class="metric-sub">Litres</div>
                 </div>
             </a>
-            {% if auger_tiles %}
-            <div class="auger-grid-shell count-{{ auger_count }}">
+            {% if lighting_tile or auger_tiles %}
+            <div class="{% if lighting_tile and auger_tiles %}auger-row-shell{% elif lighting_tile %}auger-row-shell{% else %}auger-grid-shell count-{{ auger_count }}{% endif %}">
+                {% if lighting_tile %}
+                <div id="auger-lighting" class="metric lighting-tile {{ lighting_tile.glow }}">
+                    <div class="metric-label">{{ lighting_tile.label }}</div>
+                    <div class="metric-val" data-lighting-status>{{ lighting_tile.status }}</div>
+                    <div class="metric-sub">&nbsp;</div>
+                </div>
+                {% endif %}
+                {% if auger_tiles %}
+                <div class="auger-grid-shell count-{{ auger_count }}">
                 {% for auger in auger_tiles %}
                 <div id="auger-{{ auger.key }}" class="metric {{ auger.glow }}">
                     <div class="metric-label">{{ auger.label }}</div>
-                    <div class="metric-val" style="font-size:30px;" data-auger-status>{{ auger.status }}</div>
+                    <div class="metric-val" data-auger-status>{{ auger.status }}</div>
                     <div class="metric-sub" data-auger-runtime>{% if auger.runtime %}{{ auger.runtime }}{% else %}&nbsp;{% endif %}</div>
                     <div class="metric-sub metric-sub-auger-last" data-auger-last-run>{{ auger.last_run }}</div>
                 </div>
                 {% endfor %}
+                </div>
+                {% endif %}
             </div>
             {% endif %}
             <a class="metric-link" href="{{ url_for('feed_history_view') }}">
@@ -4994,15 +5046,11 @@ HTML = """
                 }
             }
 
-            const lightingHeroIcon = document.getElementById('lightingHeroIcon');
-            if (lightingHeroIcon) {
-                lightingHeroIcon.classList.remove('lighting-on', 'lighting-off');
-                lightingHeroIcon.classList.add(data.lighting_badge_class || 'lighting-off');
-            }
-            const lightingBox = document.getElementById('lightingBox');
-            if (lightingBox) {
-                lightingBox.classList.remove('lighting-on', 'lighting-off');
-                lightingBox.classList.add(data.lighting_badge_class || 'lighting-off');
+            const lightingTile = document.getElementById('auger-lighting');
+            if (lightingTile) {
+                setGlowClass('auger-lighting', data.lighting_tile ? data.lighting_tile.glow : (data.lighting_on ? 'state-green' : 'state-warn'));
+                const lightingStatus = lightingTile.querySelector('[data-lighting-status]');
+                if (lightingStatus) lightingStatus.textContent = data.lighting_tile ? data.lighting_tile.status : (data.lighting_on ? 'On' : 'Off');
             }
 
             (data.auger_tiles || []).forEach(auger => {
