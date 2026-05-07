@@ -401,6 +401,7 @@ PICO_POST_UPDATE_RECOVERY_WAIT_SECONDS = 20
 PICO_REBOOT_SETTLE_SECONDS = 2.0
 PICO_RECONNECT_TIMEOUT_SECONDS = 20.0
 PICO_RECONNECT_PACKET_TIMEOUT_SECONDS = 4.0
+SERIAL_READER_HEARTBEAT_SECONDS = 5
 LOCAL_DASHBOARD_PULL_SECONDS = 1
 LOCAL_DASHBOARD_HEARTBEAT_SECONDS = 10
 LOCAL_BACKGROUND_SYNC_LOOP_SECONDS = 5
@@ -1406,6 +1407,11 @@ def default_sensor_state():
         "pico_packet_kind": "",
         "pico_checkpoint": "",
         "pico_checkpoint_ts": None,
+        "serial_reader_status": "",
+        "serial_reader_heartbeat_ts": None,
+        "serial_reader_error": "",
+        "serial_reader_error_ts": None,
+        "serial_reader_port": "",
         "last_sensor_ts": None,
         "last_serial_line": "",
         "raw": {},
@@ -2054,6 +2060,13 @@ def load_state():
     sensors["pico_checkpoint"] = str(sensors.get("pico_checkpoint") or "")
     if sensors.get("pico_checkpoint_ts") in [""]:
         sensors["pico_checkpoint_ts"] = None
+    sensors["serial_reader_status"] = str(sensors.get("serial_reader_status") or "")
+    sensors["serial_reader_error"] = str(sensors.get("serial_reader_error") or "")
+    sensors["serial_reader_port"] = str(sensors.get("serial_reader_port") or "")
+    if sensors.get("serial_reader_heartbeat_ts") in [""]:
+        sensors["serial_reader_heartbeat_ts"] = None
+    if sensors.get("serial_reader_error_ts") in [""]:
+        sensors["serial_reader_error_ts"] = None
     ensure_augers_state(sensors)
     evaluate_augers(sensors)
     state["sensors"] = sensors
@@ -3039,6 +3052,11 @@ def sensor_status_class(sensors):
 
 def sensor_status_text(sensors):
     if pico_frozen(sensors):
+        if serial_error_is_current(sensors):
+            return "Pico USB Error"
+        reader_age = serial_reader_age_seconds(sensors)
+        if reader_age is None or reader_age > max(STALE_SENSOR_SECONDS, SERIAL_READER_HEARTBEAT_SECONDS * 3):
+            return "Serial Reader Stalled"
         return "Pico Frozen"
     if sensors.get("pico_connected"):
         return "USB Connected"
@@ -3057,16 +3075,66 @@ def sensor_age_seconds(sensors, now_ts=None):
         return None
 
 
+def serial_reader_age_seconds(sensors, now_ts=None):
+    if now_ts is None:
+        now_ts = int(time.time())
+    heartbeat_ts = sensors.get("serial_reader_heartbeat_ts")
+    if heartbeat_ts in [None, ""]:
+        return None
+    try:
+        return max(0, int(now_ts) - int(heartbeat_ts))
+    except Exception:
+        return None
+
+
+def serial_error_is_current(sensors):
+    error_ts = sensors.get("serial_reader_error_ts")
+    last_sensor_ts = sensors.get("last_sensor_ts")
+    try:
+        error_ts = int(error_ts) if error_ts not in [None, ""] else None
+    except Exception:
+        error_ts = None
+    try:
+        last_sensor_ts = int(last_sensor_ts) if last_sensor_ts not in [None, ""] else None
+    except Exception:
+        last_sensor_ts = None
+    return error_ts is not None and (last_sensor_ts is None or error_ts >= last_sensor_ts)
+
+
 def pico_frozen(sensors, stale_after_s=STALE_SENSOR_SECONDS, now_ts=None):
     sensor_age = sensor_age_seconds(sensors, now_ts=now_ts)
     return sensor_age is not None and sensor_age > int(stale_after_s)
+
+
+def pico_freeze_diagnosis(sensors, now_ts=None):
+    if now_ts is None:
+        now_ts = int(time.time())
+    if not pico_frozen(sensors, now_ts=now_ts):
+        return ""
+
+    status = str(sensors.get("serial_reader_status") or "").strip()
+    error = str(sensors.get("serial_reader_error") or "").strip()
+    port = str(sensors.get("serial_reader_port") or "").strip()
+    reader_age = serial_reader_age_seconds(sensors, now_ts=now_ts)
+
+    if serial_error_is_current(sensors) and error:
+        return "Pi serial reader hit %s%s." % (error, (" on %s" % port) if port else "")
+    if reader_age is None:
+        return "Pi serial reader has not reported a heartbeat yet."
+    if reader_age > max(STALE_SENSOR_SECONDS, SERIAL_READER_HEARTBEAT_SECONDS * 3):
+        return "Pi serial reader heartbeat is stale for %s." % fmt_duration_short(reader_age)
+    if status:
+        return "Pi serial reader is alive: %s." % status
+    return ""
 
 
 def pico_warning_banner_text(sensors, now_ts=None):
     sensor_age = sensor_age_seconds(sensors, now_ts=now_ts)
     if sensor_age is None or sensor_age <= STALE_SENSOR_SECONDS:
         return ""
-    return "Pico frozen. No sensor update received for %s." % fmt_age_seconds(sensors.get("last_sensor_ts"))
+    diagnosis = pico_freeze_diagnosis(sensors, now_ts=now_ts)
+    suffix = " %s" % diagnosis if diagnosis else ""
+    return "Pico frozen. No sensor update received for %s.%s" % (fmt_age_seconds(sensors.get("last_sensor_ts")), suffix)
 
 
 def pico_trace_summary(sensors):
@@ -3084,7 +3152,34 @@ def pico_trace_summary(sensors):
     boot_count = sensors.get("pico_boot_count")
     if boot_count not in [None, ""]:
         parts.append("Boot %s" % boot_count)
+    reader_status = str(sensors.get("serial_reader_status") or "").strip()
+    if reader_status:
+        reader_age = fmt_age_seconds(sensors.get("serial_reader_heartbeat_ts"))
+        parts.append("Serial %s%s" % (reader_status, (" %s" % reader_age) if reader_age != "--" else ""))
+    reader_error = str(sensors.get("serial_reader_error") or "").strip()
+    if serial_error_is_current(sensors) and reader_error:
+        parts.append("Serial error %s" % reader_error)
     return " • ".join(parts)
+
+
+def pico_recovery_detail(state, reason):
+    sensors = state.get("sensors", default_sensor_state())
+    parts = [str(reason or "").strip()]
+    sensor_age = fmt_age_seconds(sensors.get("last_sensor_ts"))
+    if sensor_age != "--":
+        parts.append("Last sensor %s" % sensor_age)
+    trace = pico_trace_summary(sensors)
+    if trace:
+        parts.append(trace)
+    diagnosis = pico_freeze_diagnosis(sensors)
+    if diagnosis:
+        parts.append(diagnosis)
+    last_line = str(sensors.get("last_serial_line") or "").strip()
+    if last_line:
+        if len(last_line) > 240:
+            last_line = last_line[:237] + "..."
+        parts.append("Last serial line: %s" % last_line)
+    return " | ".join([part for part in parts if part])
 
 
 def pico_recovery_banner_text(state, now_ts=None):
@@ -3659,6 +3754,7 @@ def apply_sensor_packet(state, packet):
     sensors = state.get("sensors", default_sensor_state())
     now_ts = int(time.time())
     packet_kind = str(packet.get("packet_kind") or "full").strip().lower()
+    serial_port = str(packet.pop("_serial_port", "") or "").strip()
 
     if packet.get("boot_count") not in [None, ""]:
         try:
@@ -3691,6 +3787,13 @@ def apply_sensor_packet(state, packet):
     sensors["pico_connected"] = True
     sensors["last_sensor_ts"] = now_ts
     sensors["last_serial_line"] = json.dumps(packet)
+    mark_serial_reader_state(
+        sensors,
+        status="Receiving Pico packets",
+        port=serial_port or None,
+        clear_error=True,
+        now_ts=now_ts,
+    )
 
     if packet_kind == "checkpoint":
         reconcile_alarm_history(state, now_ts=now_ts)
@@ -3776,58 +3879,130 @@ def apply_sensor_packet(state, packet):
     reconcile_alarm_history(state, now_ts=now_ts)
 
 
-def serial_error_update(message):
+def mark_serial_reader_state(sensors, status=None, port=None, error=None, clear_error=False, now_ts=None):
+    now_ts = int(time.time()) if now_ts is None else int(now_ts)
+    if status is not None:
+        sensors["serial_reader_status"] = str(status or "")
+    if port is not None:
+        sensors["serial_reader_port"] = str(port or "")
+    sensors["serial_reader_heartbeat_ts"] = now_ts
+    if error is not None:
+        sensors["serial_reader_error"] = str(error or "")
+        sensors["serial_reader_error_ts"] = now_ts if error else None
+    elif clear_error:
+        sensors["serial_reader_error"] = ""
+        sensors["serial_reader_error_ts"] = None
+
+
+def serial_reader_status_update(status, port=None, error=None, clear_error=False):
+    def mutator(state):
+        sensors = state.get("sensors", default_sensor_state())
+        mark_serial_reader_state(
+            sensors,
+            status=status,
+            port=port,
+            error=error,
+            clear_error=clear_error,
+        )
+        state["sensors"] = sensors
+        reconcile_alarm_history(state)
+    mutate_state(mutator)
+
+
+def serial_error_update(message, reader_status=None, serial_error=None, port=None):
     def mutator(state):
         sensors = state.get("sensors", default_sensor_state())
         sensors["pico_connected"] = False
         sensors["device_status"] = message
+        error_detail = serial_error if serial_error is not None else message
+        mark_serial_reader_state(
+            sensors,
+            status=reader_status or message,
+            port=port,
+            error=error_detail,
+        )
         state["sensors"] = sensors
         reconcile_alarm_history(state)
     mutate_state(mutator)
 
 
 def serial_reader_loop():
+    last_reader_heartbeat_ts = 0
+    serial_reader_status_update("Serial reader starting", clear_error=True)
     while not SERIAL_STOP.is_set():
-        cfg = load_config()
-
-        if not cfg.get("serial_enabled"):
-            serial_error_update("Serial disabled")
-            SERIAL_STOP.wait(2.0)
-            continue
-
-        if serial is None:
-            serial_error_update("pyserial not installed")
-            SERIAL_STOP.wait(5.0)
-            continue
-
-        port = detect_serial_port()
-        if not port:
-            serial_error_update("Pico offline: no Pico serial device found")
-            SERIAL_STOP.wait(3.0)
-            continue
-
+        conn = None
+        port = ""
         try:
-            conn = serial.Serial(
-                port=port,
-                baudrate=cfg["serial_baudrate"],
-                timeout=cfg["serial_timeout"],
-            )
-        except Exception as exc:
-            serial_error_update("Pico offline: %s" % exc)
-            SERIAL_STOP.wait(3.0)
-            continue
+            cfg = load_config()
 
-        mutate_state(lambda state: apply_sensor_packet(state, {"status": "Pico connected on %s" % port}))
+            if not cfg.get("serial_enabled"):
+                serial_error_update("Serial disabled", reader_status="Serial disabled", serial_error="")
+                SERIAL_STOP.wait(2.0)
+                continue
 
-        try:
+            if serial is None:
+                serial_error_update("pyserial not installed", reader_status="pyserial not installed")
+                SERIAL_STOP.wait(5.0)
+                continue
+
+            port = detect_serial_port()
+            if not port:
+                serial_error_update(
+                    "Pico offline: no Pico serial device found",
+                    reader_status="No Pico serial device found",
+                    serial_error="No Pico serial device found",
+                )
+                SERIAL_STOP.wait(3.0)
+                continue
+
+            try:
+                conn = serial.Serial(
+                    port=port,
+                    baudrate=cfg["serial_baudrate"],
+                    timeout=cfg["serial_timeout"],
+                )
+            except Exception as exc:
+                serial_error_update(
+                    "Pico offline: %s" % exc,
+                    reader_status="Serial open failed",
+                    serial_error=str(exc),
+                    port=port,
+                )
+                SERIAL_STOP.wait(3.0)
+                continue
+
+            serial_reader_status_update("Listening on %s" % port, port=port, clear_error=True)
+            mutate_state(lambda state: apply_sensor_packet(state, {"status": "Pico connected on %s" % port, "_serial_port": port}))
+
             while not SERIAL_STOP.is_set():
-                raw = conn.readline()
+                try:
+                    raw = conn.readline()
+                except Exception as exc:
+                    serial_error_update(
+                        "Pico serial read failed: %s" % exc,
+                        reader_status="Serial read failed",
+                        serial_error=str(exc),
+                        port=port,
+                    )
+                    record_controller_event(
+                        "pico_serial_read_failed",
+                        "Pico serial read failed",
+                        str(exc),
+                        push_to_office=False,
+                    )
+                    break
+
                 if not raw:
+                    now_ts = int(time.time())
+                    if now_ts - last_reader_heartbeat_ts >= SERIAL_READER_HEARTBEAT_SECONDS:
+                        last_reader_heartbeat_ts = now_ts
+                        serial_reader_status_update("Waiting for Pico serial data", port=port)
                     continue
 
                 try:
                     line = raw.decode("utf-8", errors="ignore").strip()
-                except Exception:
+                except Exception as exc:
+                    serial_reader_status_update("Serial decode failed", port=port, error=str(exc))
                     continue
 
                 if not line:
@@ -3839,14 +4014,33 @@ def serial_reader_loop():
                     mutate_state(lambda state: _record_raw_serial_line(state, line))
                     continue
 
+                if not isinstance(packet, dict):
+                    mutate_state(lambda state: _record_raw_serial_line(state, line))
+                    continue
+                packet["_serial_port"] = port
                 state = mutate_state(lambda s: apply_sensor_packet(s, packet))
                 if packet.get("packet_kind") != "checkpoint" and load_config().get("sync_on_sensor_update"):
                     auto_sync_if_changed(state, pull_back=False)
+        except Exception as exc:
+            serial_error_update(
+                "Pico serial loop error: %s" % exc,
+                reader_status="Serial loop error",
+                serial_error=str(exc),
+                port=port,
+            )
+            record_controller_event(
+                "pico_serial_loop_error",
+                "Pico serial loop error",
+                str(exc),
+                push_to_office=False,
+            )
+            SERIAL_STOP.wait(3.0)
         finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
 
 def _record_raw_serial_line(state, line):
@@ -3855,6 +4049,7 @@ def _record_raw_serial_line(state, line):
     sensors["device_status"] = "Non-JSON serial data received"
     sensors["pico_connected"] = True
     sensors["last_sensor_ts"] = int(time.time())
+    mark_serial_reader_state(sensors, status="Receiving non-JSON serial data", clear_error=True)
     evaluate_augers(sensors)
     state["sensors"] = sensors
     reconcile_alarm_history(state)
@@ -3886,7 +4081,7 @@ def auger_monitor_loop():
             record_controller_event(
                 "pico_post_update_recovery",
                 "Attempting post-update Pico reset",
-                "No fresh Pico packet arrived after controller restart",
+                pico_recovery_detail(state, "No fresh Pico packet arrived after controller restart"),
                 push_to_office=False,
             )
             reset_status = soft_reset_pico()
@@ -3915,7 +4110,7 @@ def auger_monitor_loop():
             record_controller_event(
                 "pico_auto_recovery",
                 "Attempting automatic Pico reset",
-                "No sensor update received for %s" % fmt_age_seconds(state.get("sensors", {}).get("last_sensor_ts")),
+                pico_recovery_detail(state, "No sensor update received"),
                 push_to_office=False,
             )
             reset_status = soft_reset_pico()
