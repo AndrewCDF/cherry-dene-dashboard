@@ -1432,161 +1432,6 @@ def default_sensor_state():
     }
 
 
-def default_feed_tracking_state():
-    return {
-        "last_feed_kg": None,
-        "last_feed_ts": None,
-        "pending_delivery_kg": 0.0,
-        "current_day_key": None,
-        "current_day_burn_kg": 0.0,
-        "recent_daily_burn_kg": [],
-        "avg_daily_burn_kg": None,
-        "last_delivery_ts": None,
-        "last_delivery_kg": None,
-    }
-
-
-def clean_feed_tracking_state(data):
-    if not isinstance(data, dict):
-        data = {}
-
-    out = default_feed_tracking_state()
-    out.update(data)
-
-    try:
-        out["last_feed_kg"] = float(out.get("last_feed_kg")) if out.get("last_feed_kg") not in [None, ""] else None
-    except Exception:
-        out["last_feed_kg"] = None
-    try:
-        out["last_feed_ts"] = int(out.get("last_feed_ts")) if out.get("last_feed_ts") not in [None, ""] else None
-    except Exception:
-        out["last_feed_ts"] = None
-    try:
-        out["pending_delivery_kg"] = float(out.get("pending_delivery_kg") or 0.0)
-    except Exception:
-        out["pending_delivery_kg"] = 0.0
-    out["current_day_key"] = str(out.get("current_day_key") or "") or None
-    try:
-        out["current_day_burn_kg"] = float(out.get("current_day_burn_kg") or 0.0)
-    except Exception:
-        out["current_day_burn_kg"] = 0.0
-    try:
-        out["avg_daily_burn_kg"] = float(out.get("avg_daily_burn_kg")) if out.get("avg_daily_burn_kg") not in [None, ""] else None
-    except Exception:
-        out["avg_daily_burn_kg"] = None
-    try:
-        out["last_delivery_ts"] = int(out.get("last_delivery_ts")) if out.get("last_delivery_ts") not in [None, ""] else None
-    except Exception:
-        out["last_delivery_ts"] = None
-    try:
-        out["last_delivery_kg"] = float(out.get("last_delivery_kg")) if out.get("last_delivery_kg") not in [None, ""] else None
-    except Exception:
-        out["last_delivery_kg"] = None
-
-    cleaned_days = []
-    rows = out.get("recent_daily_burn_kg", [])
-    if isinstance(rows, list):
-        i = 0
-        while i < len(rows):
-            rec = rows[i]
-            if isinstance(rec, dict):
-                key = str(rec.get("day_key") or "").strip()
-                try:
-                    burn = float(rec.get("burn_kg") or 0.0)
-                except Exception:
-                    burn = 0.0
-                if key:
-                    cleaned_days.append({
-                        "day_key": key,
-                        "burn_kg": round(max(0.0, burn), 3),
-                    })
-            i += 1
-    out["recent_daily_burn_kg"] = cleaned_days[-7:]
-    return out
-
-
-def feed_tracking_day_key(ts):
-    dt_obj = datetime.fromtimestamp(int(ts)) - timedelta(hours=7)
-    return dt_obj.strftime("%Y-%m-%d")
-
-
-def update_feed_tracking(state, feed_kg, now_ts):
-    try:
-        feed_kg = float(feed_kg)
-    except Exception:
-        return None
-
-    tracker = clean_feed_tracking_state(state.get("feed_tracking", {}))
-    active_crop = total_birds_from_entries(state.get("entries", {})) > 0
-    day_key = feed_tracking_day_key(now_ts)
-    detected_delivery_kg = None
-
-    if tracker["current_day_key"] is None:
-        tracker["current_day_key"] = day_key
-    elif tracker["current_day_key"] != day_key:
-        tracker["recent_daily_burn_kg"].append({
-            "day_key": tracker["current_day_key"],
-            "burn_kg": round(max(0.0, tracker.get("current_day_burn_kg") or 0.0), 3),
-        })
-        tracker["recent_daily_burn_kg"] = tracker["recent_daily_burn_kg"][-7:]
-        tracker["current_day_key"] = day_key
-        tracker["current_day_burn_kg"] = 0.0
-
-    last_feed_kg = tracker.get("last_feed_kg")
-    if last_feed_kg is not None:
-        delta = feed_kg - float(last_feed_kg)
-        noise_threshold_kg = 5.0
-        delivery_threshold_kg = 150.0
-
-        if delta <= -noise_threshold_kg:
-            if active_crop:
-                tracker["current_day_burn_kg"] = round(
-                    max(0.0, float(tracker.get("current_day_burn_kg") or 0.0) + (-delta)),
-                    3,
-                )
-            if tracker.get("pending_delivery_kg", 0.0) >= delivery_threshold_kg:
-                detected_delivery_kg = round(float(tracker.get("pending_delivery_kg") or 0.0), 1)
-                tracker["last_delivery_ts"] = int(now_ts)
-                tracker["last_delivery_kg"] = detected_delivery_kg
-            tracker["pending_delivery_kg"] = 0.0
-        elif delta >= noise_threshold_kg:
-            if active_crop:
-                tracker["pending_delivery_kg"] = round(float(tracker.get("pending_delivery_kg") or 0.0) + delta, 3)
-            else:
-                tracker["pending_delivery_kg"] = 0.0
-        else:
-            if active_crop and tracker.get("pending_delivery_kg", 0.0) >= delivery_threshold_kg:
-                detected_delivery_kg = round(float(tracker.get("pending_delivery_kg") or 0.0), 1)
-                tracker["last_delivery_ts"] = int(now_ts)
-                tracker["last_delivery_kg"] = detected_delivery_kg
-            tracker["pending_delivery_kg"] = 0.0
-
-    tracker["last_feed_kg"] = round(feed_kg, 3)
-    tracker["last_feed_ts"] = int(now_ts)
-
-    burn_values = []
-    recent_days = tracker.get("recent_daily_burn_kg", [])
-    i = 0
-    while i < len(recent_days):
-        try:
-            burn = float(recent_days[i].get("burn_kg") or 0.0)
-            if burn > 0:
-                burn_values.append(burn)
-        except Exception:
-            pass
-        i += 1
-    try:
-        current_day_burn = float(tracker.get("current_day_burn_kg") or 0.0)
-        if current_day_burn > 0:
-            burn_values.append(current_day_burn)
-    except Exception:
-        pass
-    tracker["avg_daily_burn_kg"] = average_last_n(burn_values, 3)
-
-    state["feed_tracking"] = tracker
-    return detected_delivery_kg
-
-
 def normalize_bool(value):
     if isinstance(value, bool):
         return value
@@ -1942,7 +1787,6 @@ def load_state():
         "shed_no": load_config()["shed_no"],
         "entries": {},
         "sensors": default_sensor_state(),
-        "feed_tracking": default_feed_tracking_state(),
         "dashboard_summary": {
             "water_7to7": None,
             "feed_7to7": None,
@@ -1986,7 +1830,7 @@ def load_state():
         state["entries"] = {}
     if not isinstance(state.get("sensors"), dict):
         state["sensors"] = default_sensor_state()
-    state["feed_tracking"] = clean_feed_tracking_state(state.get("feed_tracking", {}))
+    state.pop("feed_tracking", None)
     if not isinstance(state.get("dashboard_summary"), dict):
         state["dashboard_summary"] = {
             "water_7to7": None,
@@ -2381,9 +2225,6 @@ def sync_payload(state):
         "lighting_enabled": lighting_enabled(cfg),
         "lighting_label": lighting_label_for(cfg),
         "lighting_last_changed_ts": sensors.get("lighting_last_changed_ts"),
-        "feed_daily_burn_kg": state.get("feed_tracking", {}).get("avg_daily_burn_kg"),
-        "last_feed_delivery_ts": state.get("feed_tracking", {}).get("last_delivery_ts"),
-        "last_feed_delivery_kg": state.get("feed_tracking", {}).get("last_delivery_kg"),
         "last_sensor_ts": sensors.get("last_sensor_ts"),
         "device_status": sensors.get("device_status"),
         "pico_connected": sensors.get("pico_connected"),
@@ -3918,8 +3759,7 @@ def apply_sensor_packet(state, packet):
         state["last_log_ts"] = now_ts
         state["last_log_status"] = "Log failed: %s" % exc
     update_water_from_pulses(sensors, now_ts)
-    feed_published = update_feed_from_raw(sensors, now_ts=now_ts)
-    detected_delivery_kg = update_feed_tracking(state, sensors.get("feed_kg"), now_ts) if feed_published else None
+    update_feed_from_raw(sensors, now_ts=now_ts)
     evaluate_augers(sensors, now_ts=now_ts)
     state["sensors"] = sensors
     if bool(state.get("pending_pico_update_recovery")):
@@ -3927,14 +3767,6 @@ def apply_sensor_packet(state, packet):
         state["pending_pico_update_recovery_set_ts"] = None
         state["last_pico_recovery_status"] = "Pico returned after update"
         state["last_pico_recovery_result_ts"] = now_ts
-    if detected_delivery_kg is not None:
-        record_controller_event(
-            "feed_delivery_auto",
-            "Feed delivery auto-detected",
-            "Detected %.1f KG feed increase" % detected_delivery_kg,
-            push_to_office=True,
-        )
-
     calib = state.get("water_calibration", {})
     if isinstance(calib, dict) and calib.get("active"):
         calib["latest_total_pulses"] = sensors.get("flow_total_pulses")
