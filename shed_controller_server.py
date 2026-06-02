@@ -394,6 +394,7 @@ WATER_ALARM_BASELINE_SECONDS = 60 * 60
 WATER_ALARM_MIN_DROP_RATIO = 0.5
 WATER_ALARM_HISTORY_KEEP_SECONDS = 2 * 60 * 60
 WATER_ALARM_SNAPSHOT_SECONDS = 30
+FEED_DISPLAY_AVERAGE_SECONDS = 60
 BACKUP_KEEP_COUNT = 6
 PICO_AUTO_RECOVERY_FREEZE_SECONDS = 90
 PICO_AUTO_RECOVERY_COOLDOWN_SECONDS = 10 * 60
@@ -1424,6 +1425,10 @@ def default_sensor_state():
         "flow_rate_samples": [],
         "water_history_samples": [],
         "feed_raw_units": None,
+        "feed_raw_samples": [],
+        "feed_average_raw_units": None,
+        "feed_kg_live": None,
+        "feed_kg_updated_ts": None,
     }
 
 
@@ -2050,6 +2055,10 @@ def load_state():
         sensors["alarms"] = []
     if not isinstance(sensors.get("water_history_samples"), list):
         sensors["water_history_samples"] = []
+    if not isinstance(sensors.get("feed_raw_samples"), list):
+        sensors["feed_raw_samples"] = []
+    if sensors.get("feed_kg_updated_ts") in [""]:
+        sensors["feed_kg_updated_ts"] = None
     sensors["controller_alarms"] = normalize_controller_alarms(sensors.get("controller_alarms", []))
     try:
         sensors["pico_boot_count"] = int(sensors.get("pico_boot_count")) if sensors.get("pico_boot_count") not in [None, ""] else None
@@ -3712,7 +3721,8 @@ def update_water_from_pulses(sensors, now_ts):
     sensors["flow_prev_ts"] = now_ts
 
 
-def update_feed_from_raw(sensors):
+def update_feed_from_raw(sensors, now_ts=None):
+    now_ts = int(time.time()) if now_ts is None else int(now_ts)
     raw = sensors.get("raw", {})
     try:
         feed_raw = raw.get("feed_raw_units")
@@ -3725,6 +3735,31 @@ def update_feed_from_raw(sensors):
         return
 
     sensors["feed_raw_units"] = feed_raw
+    samples = sensors.get("feed_raw_samples")
+    if not isinstance(samples, list):
+        samples = []
+    samples.append({
+        "ts": now_ts,
+        "raw": feed_raw,
+    })
+    cutoff_ts = now_ts - FEED_DISPLAY_AVERAGE_SECONDS
+    kept_samples = []
+    i = 0
+    while i < len(samples):
+        sample = samples[i]
+        i += 1
+        try:
+            sample_ts = int(sample.get("ts"))
+            sample_raw = float(sample.get("raw"))
+        except Exception:
+            continue
+        if sample_ts < cutoff_ts:
+            continue
+        kept_samples.append({
+            "ts": sample_ts,
+            "raw": sample_raw,
+        })
+    sensors["feed_raw_samples"] = kept_samples
 
     cfg = load_config()
     tare = cfg.get("feed_tare_raw")
@@ -3732,22 +3767,62 @@ def update_feed_from_raw(sensors):
     capacity = cfg.get("feed_capacity_kg")
 
     if tare in [None, ""] or scale in [None, ""]:
-        return
+        sensors["feed_kg_live"] = None
+        sensors["feed_kg"] = None
+        sensors["feed_kg_updated_ts"] = None
+        return False
 
     try:
         tare = float(tare)
         scale = float(scale)
         capacity = float(capacity) if capacity not in [None, ""] else None
     except Exception:
-        return
+        sensors["feed_kg_live"] = None
+        sensors["feed_kg"] = None
+        sensors["feed_kg_updated_ts"] = None
+        return False
 
     if scale <= 0:
-        return
+        sensors["feed_kg_live"] = None
+        sensors["feed_kg"] = None
+        sensors["feed_kg_updated_ts"] = None
+        return False
 
-    feed_kg = max(0.0, (feed_raw - tare) * scale)
+    feed_kg_live = max(0.0, (feed_raw - tare) * scale)
+    if capacity is not None and capacity > 0:
+        feed_kg_live = min(feed_kg_live, capacity)
+    sensors["feed_kg_live"] = round(feed_kg_live, 1)
+
+    last_update_ts = sensors.get("feed_kg_updated_ts")
+    try:
+        last_update_ts = int(last_update_ts) if last_update_ts not in [None, ""] else None
+    except Exception:
+        last_update_ts = None
+    if sensors.get("feed_kg") not in [None, ""] and last_update_ts is None:
+        sensors["feed_kg_updated_ts"] = now_ts
+        return False
+    if sensors.get("feed_kg") not in [None, ""] and (now_ts - last_update_ts) < FEED_DISPLAY_AVERAGE_SECONDS:
+        return False
+
+    averaged_raw = feed_raw
+    if kept_samples:
+        averaged_raw = sum(sample["raw"] for sample in kept_samples) / float(len(kept_samples))
+    feed_kg = max(0.0, (averaged_raw - tare) * scale)
     if capacity is not None and capacity > 0:
         feed_kg = min(feed_kg, capacity)
+    sensors["feed_average_raw_units"] = round(averaged_raw, 1)
     sensors["feed_kg"] = round(feed_kg, 1)
+    sensors["feed_kg_updated_ts"] = now_ts
+    return True
+
+
+def reset_feed_average_state(sensors, clear_published=True):
+    sensors["feed_raw_samples"] = []
+    sensors["feed_average_raw_units"] = None
+    sensors["feed_kg_live"] = None
+    sensors["feed_kg_updated_ts"] = None
+    if clear_published:
+        sensors["feed_kg"] = None
 
 
 def apply_sensor_packet(state, packet):
@@ -3779,6 +3854,8 @@ def apply_sensor_packet(state, packet):
 
     for key in key_map:
         if key in packet:
+            if key == "feed_kg" and packet.get(key) is None:
+                continue
             sensors[key_map[key]] = packet.get(key)
 
     if isinstance(packet.get("alarms"), list) and packet_kind != "checkpoint":
@@ -3841,8 +3918,8 @@ def apply_sensor_packet(state, packet):
         state["last_log_ts"] = now_ts
         state["last_log_status"] = "Log failed: %s" % exc
     update_water_from_pulses(sensors, now_ts)
-    update_feed_from_raw(sensors)
-    detected_delivery_kg = update_feed_tracking(state, sensors.get("feed_kg"), now_ts)
+    feed_published = update_feed_from_raw(sensors, now_ts=now_ts)
+    detected_delivery_kg = update_feed_tracking(state, sensors.get("feed_kg"), now_ts) if feed_published else None
     evaluate_augers(sensors, now_ts=now_ts)
     state["sensors"] = sensors
     if bool(state.get("pending_pico_update_recovery")):
@@ -6764,8 +6841,10 @@ FEED_SETTINGS_HTML = """
         <div class="panel">
             <h1>Shed {{ shed_no }} Feed Settings</h1>
             <div class="sub">Low-feed warning plus feed bin calibration using tare, bin capacity, and a known weight.</div>
-            <div class="current">Current: {{ current_feed_kg }} KG</div>
-            <div class="detail"><span>Current raw feed units</span><span>{{ current_feed_raw }}</span></div>
+            <div class="current">Current: <span id="currentFeedKg">{{ current_feed_kg }}</span> KG</div>
+            <div class="detail"><span>Live raw feed units</span><span id="currentFeedRaw">{{ current_feed_raw }}</span></div>
+            <div class="detail"><span>Published minute average raw</span><span id="feedAverageRaw">{{ feed_average_raw }}</span></div>
+            <div class="detail"><span>KG updated</span><span id="feedKgUpdated">{{ feed_kg_updated_age }}</span></div>
             <div class="detail"><span>Low feed threshold</span><span>{{ feed_low_kg }} KG</span></div>
             <div class="detail"><span>Feed bin capacity</span><span>{{ feed_capacity_kg }} KG</span></div>
             <div class="detail"><span>Tare raw</span><span>{{ feed_tare_raw }}</span></div>
@@ -6789,7 +6868,7 @@ FEED_SETTINGS_HTML = """
         <div class="panel">
             <div class="sub">Tare</div>
             <form method="post" action="{{ url_for('set_feed_tare') }}">
-                <button type="submit" {% if not feed_raw_available %}disabled{% endif %}>Set Tare From Current Empty Bin Reading</button>
+                <button id="setFeedTareButton" type="submit" {% if not feed_raw_available %}disabled{% endif %}>Set Tare From Current Empty Bin Reading</button>
             </form>
             <div class="hint">Empty the bin, then press this to store the current raw reading as tare.</div>
         </div>
@@ -6798,7 +6877,7 @@ FEED_SETTINGS_HTML = """
             <form method="post" action="{{ url_for('save_feed_known_weight') }}">
                 <label for="known_weight_kg">Known weight placed in bin KG</label>
                 <input id="known_weight_kg" type="number" name="known_weight_kg" step="0.1" inputmode="decimal" enterkeyhint="done" value="">
-                <button type="submit" {% if not feed_calibration_ready %}disabled{% endif %}>Calibrate From Current Raw Reading</button>
+                <button id="calibrateFeedButton" type="submit" {% if not feed_calibration_ready %}disabled{% endif %}>Calibrate From Current Raw Reading</button>
             </form>
             <div class="hint">
                 Put a known weight into the bin after tare has been set.
@@ -6806,6 +6885,31 @@ FEED_SETTINGS_HTML = """
             </div>
         </div>
     </div>
+    <script>
+        function setFeedText(id, value) {
+            const el = document.getElementById(id);
+            if (el) el.textContent = value;
+        }
+
+        async function refreshFeedState() {
+            try {
+                const resp = await fetch('/api/settings/feed-state', { cache: 'no-store' });
+                if (!resp.ok) return;
+                const data = await resp.json();
+                setFeedText('currentFeedKg', data.current_feed_kg);
+                setFeedText('currentFeedRaw', data.current_feed_raw);
+                setFeedText('feedAverageRaw', data.feed_average_raw);
+                setFeedText('feedKgUpdated', data.feed_kg_updated_age);
+                const tareButton = document.getElementById('setFeedTareButton');
+                const calibrateButton = document.getElementById('calibrateFeedButton');
+                if (tareButton) tareButton.disabled = !data.feed_raw_available;
+                if (calibrateButton) calibrateButton.disabled = !data.feed_calibration_ready;
+            } catch (err) {
+            }
+        }
+
+        setInterval(refreshFeedState, 1000);
+    </script>
 </body>
 </html>
 """
@@ -8024,26 +8128,38 @@ def finish_water_calibration():
     return redirect(url_for("water_settings_view"))
 
 
-@app.route("/settings/feed")
-def feed_settings_view():
-    cfg = load_config()
-    state = load_state()
+def build_feed_settings_context(cfg, state):
     sensors = state.get("sensors", default_sensor_state())
     feed_raw = sensors.get("feed_raw_units")
     feed_raw_available = feed_raw not in [None, ""]
     feed_calibration_ready = feed_raw_available and cfg.get("feed_tare_raw") not in [None, ""]
-    return render_template_string(
-        FEED_SETTINGS_HTML,
-        shed_no=cfg["shed_no"],
-        current_feed_kg=fmt_value(sensors.get("feed_kg"), "f0"),
-        current_feed_raw=fmt_value(feed_raw, "f1"),
-        feed_low_kg=fmt_value(cfg.get("feed_low_kg", 2000.0), "f0"),
-        feed_capacity_kg=fmt_value(cfg.get("feed_capacity_kg", 16000.0), "f0"),
-        feed_tare_raw=fmt_value(cfg.get("feed_tare_raw"), "f1"),
-        feed_kg_per_raw_unit=fmt_value(cfg.get("feed_kg_per_raw_unit"), "f4"),
-        feed_raw_available=feed_raw_available,
-        feed_calibration_ready=feed_calibration_ready,
-    )
+    return {
+        "shed_no": cfg["shed_no"],
+        "current_feed_kg": fmt_value(sensors.get("feed_kg"), "f0"),
+        "current_feed_raw": fmt_value(feed_raw, "f1"),
+        "feed_average_raw": fmt_value(sensors.get("feed_average_raw_units"), "f1"),
+        "feed_kg_updated_age": fmt_age_seconds(sensors.get("feed_kg_updated_ts")),
+        "feed_low_kg": fmt_value(cfg.get("feed_low_kg", 2000.0), "f0"),
+        "feed_capacity_kg": fmt_value(cfg.get("feed_capacity_kg", 16000.0), "f0"),
+        "feed_tare_raw": fmt_value(cfg.get("feed_tare_raw"), "f1"),
+        "feed_kg_per_raw_unit": fmt_value(cfg.get("feed_kg_per_raw_unit"), "f4"),
+        "feed_raw_available": feed_raw_available,
+        "feed_calibration_ready": feed_calibration_ready,
+    }
+
+
+@app.route("/settings/feed")
+def feed_settings_view():
+    cfg = load_config()
+    state = load_state()
+    return render_template_string(FEED_SETTINGS_HTML, **build_feed_settings_context(cfg, state))
+
+
+@app.route("/api/settings/feed-state")
+def feed_settings_state_api():
+    cfg = load_config()
+    state = load_state()
+    return jsonify(build_feed_settings_context(cfg, state))
 
 
 @app.route("/settings/feed/save", methods=["POST"])
@@ -8083,6 +8199,7 @@ def set_feed_tare():
     cfg = load_config()
     cfg["feed_tare_raw"] = feed_raw
     save_config(cfg)
+    mutate_state(lambda s: reset_feed_average_state(s.get("sensors", default_sensor_state())))
     return redirect(url_for("feed_settings_view"))
 
 
@@ -8112,7 +8229,12 @@ def save_feed_known_weight():
     cfg["feed_kg_per_raw_unit"] = known_weight_kg / raw_delta
     save_config(cfg)
 
-    mutate_state(lambda s: update_feed_from_raw(s.get("sensors", default_sensor_state())))
+    def reset_and_publish(s):
+        sensors = s.get("sensors", default_sensor_state())
+        reset_feed_average_state(sensors)
+        update_feed_from_raw(sensors)
+
+    mutate_state(reset_and_publish)
     return redirect(url_for("feed_settings_view"))
 
 
