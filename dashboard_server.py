@@ -1619,7 +1619,7 @@ def clean_controller_meta(meta):
     return out
 
 
-def dashboard_auger_tiles(controller_meta, now_ts=None):
+def dashboard_auger_tiles(controller_meta, now_ts=None, force_red=False):
     if now_ts is None:
         now_ts = int(time.time())
     tiles = []
@@ -1645,7 +1645,7 @@ def dashboard_auger_tiles(controller_meta, now_ts=None):
         last_started_ts = rec.get("last_started_ts")
         last_stopped_ts = rec.get("last_stopped_ts")
         last_duration_s = rec.get("last_duration_s")
-        issue = overrun
+        issue = bool(force_red) or overrun
         if not issue and isinstance(controller_alarms, list):
             label_lower = label.strip().lower()
             i = 0
@@ -2836,7 +2836,7 @@ def fmt_crop_code(crop_id, epoch=None):
 
 
 def custom_day_key(dt_obj):
-    if dt_obj.hour < 7:
+    if dt_obj.hour < 6:
         dt_obj = dt_obj - timedelta(days=1)
     return dt_obj.strftime("%Y-%m-%d")
 
@@ -3209,7 +3209,6 @@ def aggregate_history_rows_by_hours(rows, bucket_hours=6):
         bucket_hours = max(1, int(bucket_hours))
     except Exception:
         bucket_hours = 6
-    bucket_seconds = int(bucket_hours) * 3600
     grouped = {}
     order = []
 
@@ -3221,7 +3220,14 @@ def aggregate_history_rows_by_hours(rows, bucket_hours=6):
         except Exception:
             i += 1
             continue
-        bucket_epoch = epoch - (epoch % bucket_seconds)
+        dt_obj = datetime.fromtimestamp(epoch)
+        bucket_dt = dt_obj.replace(
+            hour=(dt_obj.hour // bucket_hours) * bucket_hours,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        bucket_epoch = int(bucket_dt.timestamp())
         bucket = grouped.get(bucket_epoch)
         if not isinstance(bucket, dict):
             try:
@@ -4838,6 +4844,8 @@ def build_rows():
         entries = ensure_shed_entry_bucket(state, shed)
         active_entries = active_entries_for_tile(entries)
         has_active_entry = has_any_active_entry(entries)
+        is_online = controller_online(controller_meta)
+        operational_display_active = is_online and has_active_entry
 
         try:
             active_crop_id = int(crop.get("crop_id"))
@@ -4927,6 +4935,9 @@ def build_rows():
         feed_kg = live.get("feed_kg")
         updated_ts = live.get("ts")
         water_lpm = live.get("water_lpm")
+        if not operational_display_active:
+            temp_c = None
+            rh_pct = None
 
         env_limits = environment_limits_for_shed(shed_no, office_env_limits_map, controller_meta)
         temp_glow = range_glow_class(
@@ -4993,10 +5004,13 @@ def build_rows():
             sync_pill_class = "sync-stale"
             sync_pill_text = "SHED SYNC STALE • %ss" % sync_age
 
-        is_online = controller_online(controller_meta)
         tile_state = "online" if is_online and bool(live) else "offline"
         card_state = "online" if is_online and has_active_entry else "offline"
-        auger_tiles = dashboard_auger_tiles(controller_meta, now_ts=now_ts)
+        auger_tiles = dashboard_auger_tiles(
+            controller_meta,
+            now_ts=now_ts,
+            force_red=not operational_display_active,
+        )
         lighting_visible = True
         lighting_on = bool(controller_meta.get("lighting_on", False))
 
@@ -6027,11 +6041,11 @@ HTML = """
                     <div class="section">
                         <div class="metric-columns">
                             <div class="metric metric-water metric-water-daily">
-                                <div class="metric-label">Water L 7am-7am</div>
+                                <div class="metric-label">Water L 6am-6am</div>
                                 <div id="shed-water7-{{ s.shed_no }}" class="metric-val">{{ s.water_7to7 }}</div>
                             </div>
                             <div class="metric metric-feed metric-feed-daily">
-                                <div class="metric-label">Feed KG 7am-7am</div>
+                                <div class="metric-label">Feed KG 6am-6am</div>
                                 <div id="shed-feed7-{{ s.shed_no }}" class="metric-val">{{ s.feed_7to7 }}</div>
                             </div>
                             <div class="metric metric-neutral metric-runout">
@@ -6105,7 +6119,7 @@ HTML = """
                     <div class="section">
                         <div class="metric-grid-2">
                             <div class="metric">
-                                <div class="metric-label">Water L 7am-7am</div>
+                                <div class="metric-label">Water L 6am-6am</div>
                                 <div id="borehole-daily" class="metric-val">{{ borehole.daily_water }}</div>
                             </div>
                             <div class="metric">
@@ -8384,7 +8398,7 @@ BOREHOLE_DETAIL_HTML = """
 
             <a class="navcard" href="{{ url_for('borehole_period_view', period='daily') }}">
                 <div class="navtitle">Daily</div>
-                <div class="navsub">Completed 7am-7am daily list and zoomable water chart.</div>
+                <div class="navsub">Completed 6am-6am daily list and zoomable water chart.</div>
             </a>
         </div>
     </div>
@@ -11505,7 +11519,7 @@ def borehole_period_view(period):
         rows = get_borehole_daily_history(max_days=40)
         rows = add_running_water_totals(rows)
         period_title = "Daily"
-        period_sub = "Bore Hole completed 7am-7am daily list with running totals and zoomable water chart."
+        period_sub = "Bore Hole completed 6am-6am daily list with running totals and zoomable water chart."
         first_col = "Day"
 
     labels = []
@@ -11625,7 +11639,7 @@ def shed_crop_period_view(shed_no, crop_id, period):
                 crop_start_epoch = None
         rows = add_running_totals(rows)
         period_title = "%s Daily" % fmt_crop_code(crop_id, crop_start_epoch)
-        period_sub = "Historic crop %s completed 7am-7am daily list with running totals and separate zoomable feed and water charts." % fmt_crop_code(crop_id, crop_start_epoch)
+        period_sub = "Historic crop %s completed 6am-6am daily list with running totals and separate zoomable feed and water charts." % fmt_crop_code(crop_id, crop_start_epoch)
         first_col = "Day"
 
     labels = []

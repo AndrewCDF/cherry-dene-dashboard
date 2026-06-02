@@ -689,7 +689,7 @@ def get_events(limit=200):
 
 
 def custom_day_key(dt_obj):
-    if dt_obj.hour < 7:
+    if dt_obj.hour < 6:
         dt_obj = dt_obj - timedelta(days=1)
     return dt_obj.strftime("%Y-%m-%d")
 
@@ -1176,7 +1176,7 @@ HOME_HTML = """
       </a>
       <a class="metric-link" href="{{ url_for('water_history_view') }}">
         <div class="metric">
-          <div class="metric-label">Water Yesterday 7am-7am</div>
+          <div class="metric-label">Water Yesterday 6am-6am</div>
           <div id="water7to7Value" class="metric-val">{{ water_7to7 }}</div>
           <div class="metric-sub">Litres</div>
         </div>

@@ -394,7 +394,8 @@ WATER_ALARM_BASELINE_SECONDS = 60 * 60
 WATER_ALARM_MIN_DROP_RATIO = 0.5
 WATER_ALARM_HISTORY_KEEP_SECONDS = 2 * 60 * 60
 WATER_ALARM_SNAPSHOT_SECONDS = 30
-FEED_DISPLAY_AVERAGE_SECONDS = 60
+FEED_DISPLAY_AVERAGE_SECONDS = 15 * 60
+FEED_DIAGNOSTIC_NOISE_SECONDS = 60
 FEED_DIAGNOSTIC_HISTORY_SECONDS = 24 * 60 * 60
 FEED_REFILL_RISE_KG = 8.0
 FEED_REFILL_SETTLING_SECONDS = 5 * 60
@@ -3654,10 +3655,13 @@ def update_water_from_pulses(sensors, now_ts):
 def update_feed_diagnostics(sensors, kept_samples, scale=None, now_ts=None):
     now_ts = int(time.time()) if now_ts is None else int(now_ts)
     raw_values = []
+    cutoff_ts = now_ts - FEED_DIAGNOSTIC_NOISE_SECONDS
     i = 0
     while i < len(kept_samples):
         try:
-            raw_values.append(float(kept_samples[i].get("raw")))
+            sample_ts = int(kept_samples[i].get("ts"))
+            if sample_ts >= cutoff_ts:
+                raw_values.append(float(kept_samples[i].get("raw")))
         except Exception:
             pass
         i += 1
@@ -5176,7 +5180,7 @@ HTML = """
             </a>
             <a class="metric-link" href="{{ url_for('water_history_view') }}">
                 <div class="metric">
-                    <div class="metric-label">Water Yesterday 7am-7am</div>
+                    <div class="metric-label">Water Yesterday 6am-6am</div>
                     <div class="metric-val" id="water7to7Value">{{ water_7to7 }}</div>
                     <div class="metric-sub">Litres</div>
                 </div>
@@ -5206,7 +5210,7 @@ HTML = """
             {% endif %}
             <a class="metric-link" href="{{ url_for('feed_history_view') }}">
                 <div class="metric">
-                    <div class="metric-label">Feed Yesterday 7am-7am</div>
+                    <div class="metric-label">Feed Yesterday 6am-6am</div>
                     <div class="metric-val" id="feed7to7Value">{{ feed_7to7 }}</div>
                     <div class="metric-sub">KG</div>
                 </div>
@@ -6859,7 +6863,7 @@ FEED_SETTINGS_HTML = """
             <div class="current">Current: <span id="currentFeedKg">{{ current_feed_kg }}</span> KG</div>
             <div class="detail"><span>Live calculated KG</span><span id="feedLiveKg">{{ feed_live_kg }}</span></div>
             <div class="detail"><span>Live raw feed units</span><span id="currentFeedRaw">{{ current_feed_raw }}</span></div>
-            <div class="detail"><span>Published minute average raw</span><span id="feedAverageRaw">{{ feed_average_raw }}</span></div>
+            <div class="detail"><span>Published 15 minute average raw</span><span id="feedAverageRaw">{{ feed_average_raw }}</span></div>
             <div class="detail"><span>KG updated</span><span id="feedKgUpdated">{{ feed_kg_updated_age }}</span></div>
             <div class="detail"><span>Low feed threshold</span><span>{{ feed_low_kg }} KG</span></div>
             <div class="detail"><span>Feed bin capacity</span><span>{{ feed_capacity_kg }} KG</span></div>
@@ -6871,7 +6875,7 @@ FEED_SETTINGS_HTML = """
             <div class="detail"><span>Signal state</span><span id="feedStabilityLabel">{{ feed_stability_label }}</span></div>
             <div class="detail"><span>60 second noise range</span><span><span id="feedNoiseKg">{{ feed_noise_kg }}</span> KG</span></div>
             <div class="detail"><span>60 second raw range</span><span id="feedNoiseRaw">{{ feed_noise_raw_units }}</span></div>
-            <div class="detail"><span>Last minute movement</span><span><span id="feedMinuteChange">{{ feed_minute_change_kg }}</span> KG</span></div>
+            <div class="detail"><span>Last 15 minute movement</span><span><span id="feedMinuteChange">{{ feed_minute_change_kg }}</span> KG</span></div>
             <div class="detail"><span>Refill recording state</span><span id="feedRefillStatus">{{ feed_refill_status }}</span></div>
         </div>
         <div class="panel">
@@ -6960,7 +6964,7 @@ FEED_SETTINGS_HTML = """
             if (!Array.isArray(rows) || rows.length < 2) {
                 ctx.fillStyle = '#d2d2d2';
                 ctx.font = '16px Arial';
-                ctx.fillText('Waiting for minute readings', 14, 28);
+                ctx.fillText('Waiting for 15 minute readings', 14, 28);
                 return;
             }
             const values = rows.map((row) => Number(row.kg)).filter((value) => Number.isFinite(value));
