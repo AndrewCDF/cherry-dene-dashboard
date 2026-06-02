@@ -395,6 +395,10 @@ WATER_ALARM_MIN_DROP_RATIO = 0.5
 WATER_ALARM_HISTORY_KEEP_SECONDS = 2 * 60 * 60
 WATER_ALARM_SNAPSHOT_SECONDS = 30
 FEED_DISPLAY_AVERAGE_SECONDS = 60
+FEED_DIAGNOSTIC_HISTORY_SECONDS = 24 * 60 * 60
+FEED_REFILL_RISE_KG = 8.0
+FEED_REFILL_SETTLING_SECONDS = 5 * 60
+FEED_STABLE_NOISE_KG = 2.0
 BACKUP_KEEP_COUNT = 6
 PICO_AUTO_RECOVERY_FREEZE_SECONDS = 90
 PICO_AUTO_RECOVERY_COOLDOWN_SECONDS = 10 * 60
@@ -1080,6 +1084,78 @@ def save_config(cfg):
     write_json_file_atomic(path, cfg)
 
 
+def feed_calibration_history_path():
+    ensure_data_dir()
+    return os.path.join(DATA_DIR, "feed_calibration_history.json")
+
+
+def load_feed_calibration_history():
+    rows = read_json_file(feed_calibration_history_path(), [])
+    return rows if isinstance(rows, list) else []
+
+
+def save_feed_calibration_history(rows):
+    write_json_file_atomic(feed_calibration_history_path(), rows[-50:] if isinstance(rows, list) else [])
+
+
+def feed_calibration_snapshot(cfg):
+    return {
+        "feed_tare_raw": cfg.get("feed_tare_raw"),
+        "feed_kg_per_raw_unit": cfg.get("feed_kg_per_raw_unit"),
+    }
+
+
+def append_feed_calibration_history(action, previous, updated, detail="", undoable=True):
+    rows = load_feed_calibration_history()
+    rows.append({
+        "ts": int(time.time()),
+        "action": str(action or "calibration"),
+        "previous": previous if isinstance(previous, dict) else {},
+        "updated": updated if isinstance(updated, dict) else {},
+        "detail": str(detail or "").strip(),
+        "undoable": bool(undoable),
+        "undone_ts": None,
+    })
+    save_feed_calibration_history(rows)
+
+
+def feed_calibration_undo_row():
+    rows = load_feed_calibration_history()
+    if not rows:
+        return None
+    row = rows[-1]
+    if not isinstance(row, dict) or not bool(row.get("undoable", False)) or row.get("undone_ts") not in [None, ""]:
+        return None
+    return row
+
+
+def feed_calibration_history_rows():
+    rows = list(reversed(load_feed_calibration_history()))
+    out = []
+    i = 0
+    while i < len(rows):
+        rec = rows[i]
+        i += 1
+        if not isinstance(rec, dict):
+            continue
+        try:
+            ts_label = datetime.fromtimestamp(int(rec.get("ts"))).strftime("%d %b %Y %H:%M")
+        except Exception:
+            ts_label = "--"
+        previous = rec.get("previous", {}) if isinstance(rec.get("previous"), dict) else {}
+        updated = rec.get("updated", {}) if isinstance(rec.get("updated"), dict) else {}
+        out.append({
+            "ts_label": ts_label,
+            "action_label": str(rec.get("action") or "calibration").replace("_", " ").title(),
+            "detail": str(rec.get("detail") or "").strip(),
+            "previous_tare": fmt_value(previous.get("feed_tare_raw"), "f1"),
+            "updated_tare": fmt_value(updated.get("feed_tare_raw"), "f1"),
+            "previous_scale": fmt_value(previous.get("feed_kg_per_raw_unit"), "f6"),
+            "updated_scale": fmt_value(updated.get("feed_kg_per_raw_unit"), "f6"),
+        })
+    return out
+
+
 def backups_dir():
     ensure_data_dir()
     return os.path.join(DATA_DIR, "backups")
@@ -1142,6 +1218,7 @@ def create_backup_zip(label="auto"):
         os.path.join(DATA_DIR, "sensor_live.ndjson"),
         os.path.join(DATA_DIR, "auger_runs.ndjson"),
         os.path.join(DATA_DIR, "alarm_history.ndjson"),
+        os.path.join(DATA_DIR, "feed_calibration_history.json"),
     ]
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         i = 0
@@ -1429,6 +1506,12 @@ def default_sensor_state():
         "feed_average_raw_units": None,
         "feed_kg_live": None,
         "feed_kg_updated_ts": None,
+        "feed_minute_change_kg": None,
+        "feed_noise_raw_units": None,
+        "feed_noise_kg": None,
+        "feed_stability_label": "Waiting for samples",
+        "feed_refill_settling_until_ts": None,
+        "feed_published_samples": [],
     }
 
 
@@ -1901,8 +1984,12 @@ def load_state():
         sensors["water_history_samples"] = []
     if not isinstance(sensors.get("feed_raw_samples"), list):
         sensors["feed_raw_samples"] = []
+    if not isinstance(sensors.get("feed_published_samples"), list):
+        sensors["feed_published_samples"] = []
     if sensors.get("feed_kg_updated_ts") in [""]:
         sensors["feed_kg_updated_ts"] = None
+    if sensors.get("feed_refill_settling_until_ts") in [""]:
+        sensors["feed_refill_settling_until_ts"] = None
     sensors["controller_alarms"] = normalize_controller_alarms(sensors.get("controller_alarms", []))
     try:
         sensors["pico_boot_count"] = int(sensors.get("pico_boot_count")) if sensors.get("pico_boot_count") not in [None, ""] else None
@@ -2221,6 +2308,7 @@ def sync_payload(state):
         "water_total_litres": water_total_litres,
         "feed_kg": sensors.get("feed_kg"),
         "feed_kg_updated_ts": sensors.get("feed_kg_updated_ts"),
+        "feed_noise_kg": sensors.get("feed_noise_kg"),
         "feed_low_kg": cfg.get("feed_low_kg"),
         "lighting_on": sensors.get("lighting_on"),
         "lighting_enabled": lighting_enabled(cfg),
@@ -3563,6 +3651,75 @@ def update_water_from_pulses(sensors, now_ts):
     sensors["flow_prev_ts"] = now_ts
 
 
+def update_feed_diagnostics(sensors, kept_samples, scale=None, now_ts=None):
+    now_ts = int(time.time()) if now_ts is None else int(now_ts)
+    raw_values = []
+    i = 0
+    while i < len(kept_samples):
+        try:
+            raw_values.append(float(kept_samples[i].get("raw")))
+        except Exception:
+            pass
+        i += 1
+
+    if len(raw_values) < 2:
+        sensors["feed_noise_raw_units"] = None
+        sensors["feed_noise_kg"] = None
+        sensors["feed_stability_label"] = "Waiting for samples"
+    else:
+        noise_raw = max(raw_values) - min(raw_values)
+        sensors["feed_noise_raw_units"] = round(noise_raw, 1)
+        try:
+            noise_kg = abs(float(scale)) * noise_raw
+        except Exception:
+            noise_kg = None
+        sensors["feed_noise_kg"] = round(noise_kg, 1) if noise_kg is not None else None
+        if noise_kg is None:
+            sensors["feed_stability_label"] = "Raw signal active"
+        elif noise_kg <= FEED_STABLE_NOISE_KG:
+            sensors["feed_stability_label"] = "Stable"
+        else:
+            sensors["feed_stability_label"] = "Moving"
+
+    try:
+        settling_until_ts = int(sensors.get("feed_refill_settling_until_ts"))
+    except Exception:
+        settling_until_ts = None
+    if settling_until_ts is not None and now_ts >= settling_until_ts:
+        sensors["feed_refill_settling_until_ts"] = None
+
+
+def append_feed_published_sample(sensors, feed_kg, averaged_raw, now_ts):
+    samples = sensors.get("feed_published_samples")
+    if not isinstance(samples, list):
+        samples = []
+    kept = []
+    cutoff_ts = int(now_ts) - FEED_DIAGNOSTIC_HISTORY_SECONDS
+    i = 0
+    while i < len(samples):
+        sample = samples[i]
+        i += 1
+        try:
+            sample_ts = int(sample.get("ts"))
+            sample_kg = float(sample.get("kg"))
+            sample_raw = float(sample.get("raw"))
+        except Exception:
+            continue
+        if sample_ts < cutoff_ts:
+            continue
+        kept.append({
+            "ts": sample_ts,
+            "kg": round(sample_kg, 1),
+            "raw": round(sample_raw, 1),
+        })
+    kept.append({
+        "ts": int(now_ts),
+        "kg": round(float(feed_kg), 1),
+        "raw": round(float(averaged_raw), 1),
+    })
+    sensors["feed_published_samples"] = kept[-1440:]
+
+
 def update_feed_from_raw(sensors, now_ts=None):
     now_ts = int(time.time()) if now_ts is None else int(now_ts)
     raw = sensors.get("raw", {})
@@ -3609,6 +3766,7 @@ def update_feed_from_raw(sensors, now_ts=None):
     capacity = cfg.get("feed_capacity_kg")
 
     if tare in [None, ""] or scale in [None, ""]:
+        update_feed_diagnostics(sensors, kept_samples, now_ts=now_ts)
         sensors["feed_kg_live"] = None
         sensors["feed_kg"] = None
         sensors["feed_kg_updated_ts"] = None
@@ -3619,12 +3777,14 @@ def update_feed_from_raw(sensors, now_ts=None):
         scale = float(scale)
         capacity = float(capacity) if capacity not in [None, ""] else None
     except Exception:
+        update_feed_diagnostics(sensors, kept_samples, now_ts=now_ts)
         sensors["feed_kg_live"] = None
         sensors["feed_kg"] = None
         sensors["feed_kg_updated_ts"] = None
         return False
 
     if scale <= 0:
+        update_feed_diagnostics(sensors, kept_samples, now_ts=now_ts)
         sensors["feed_kg_live"] = None
         sensors["feed_kg"] = None
         sensors["feed_kg_updated_ts"] = None
@@ -3634,6 +3794,7 @@ def update_feed_from_raw(sensors, now_ts=None):
     if capacity is not None and capacity > 0:
         feed_kg_live = min(feed_kg_live, capacity)
     sensors["feed_kg_live"] = round(feed_kg_live, 1)
+    update_feed_diagnostics(sensors, kept_samples, scale=scale, now_ts=now_ts)
 
     last_update_ts = sensors.get("feed_kg_updated_ts")
     try:
@@ -3652,9 +3813,18 @@ def update_feed_from_raw(sensors, now_ts=None):
     feed_kg = max(0.0, (averaged_raw - tare) * scale)
     if capacity is not None and capacity > 0:
         feed_kg = min(feed_kg, capacity)
+    previous_feed_kg = sensors.get("feed_kg")
+    try:
+        previous_feed_kg = float(previous_feed_kg)
+    except Exception:
+        previous_feed_kg = None
     sensors["feed_average_raw_units"] = round(averaged_raw, 1)
     sensors["feed_kg"] = round(feed_kg, 1)
     sensors["feed_kg_updated_ts"] = now_ts
+    sensors["feed_minute_change_kg"] = round(feed_kg - previous_feed_kg, 1) if previous_feed_kg is not None else None
+    if previous_feed_kg is not None and feed_kg >= previous_feed_kg + FEED_REFILL_RISE_KG:
+        sensors["feed_refill_settling_until_ts"] = now_ts + FEED_REFILL_SETTLING_SECONDS
+    append_feed_published_sample(sensors, feed_kg, averaged_raw, now_ts)
     return True
 
 
@@ -3663,6 +3833,12 @@ def reset_feed_average_state(sensors, clear_published=True):
     sensors["feed_average_raw_units"] = None
     sensors["feed_kg_live"] = None
     sensors["feed_kg_updated_ts"] = None
+    sensors["feed_minute_change_kg"] = None
+    sensors["feed_noise_raw_units"] = None
+    sensors["feed_noise_kg"] = None
+    sensors["feed_stability_label"] = "Waiting for samples"
+    sensors["feed_refill_settling_until_ts"] = None
+    sensors["feed_published_samples"] = []
     if clear_published:
         sensors["feed_kg"] = None
 
@@ -6666,6 +6842,12 @@ FEED_SETTINGS_HTML = """
         input[type="number"] { width:100%; min-height:72px; border-radius:16px; border:1px solid var(--line); background:#686868; color:var(--text); font-size:30px; padding:12px 16px; box-sizing:border-box; }
         button { min-height:72px; border-radius:16px; border:1px solid #8a8a8a; background:linear-gradient(180deg, #7d7d7d, #696969); color:var(--text); font-size:22px; font-weight:700; padding:0 18px; cursor:pointer; margin-top:14px; width:100%; }
         .hint { color:var(--muted); font-size:16px; margin-top:12px; }
+        .chart-box { width:100%; height:220px; border:1px solid var(--line); border-radius:12px; background:#686868; overflow:hidden; }
+        canvas { width:100%; height:100%; display:block; }
+        .table-wrap { overflow:auto; border:1px solid var(--line); border-radius:12px; }
+        table { width:100%; border-collapse:collapse; font-size:15px; table-layout:fixed; }
+        th, td { padding:10px 8px; border-bottom:1px solid #818181; text-align:left; vertical-align:top; overflow-wrap:anywhere; }
+        .compact { min-height:52px; font-size:18px; }
     </style>
 </head>
 <body>
@@ -6675,6 +6857,7 @@ FEED_SETTINGS_HTML = """
             <h1>Shed {{ shed_no }} Feed Settings</h1>
             <div class="sub">Low-feed warning plus feed bin calibration using tare, bin capacity, and a known weight.</div>
             <div class="current">Current: <span id="currentFeedKg">{{ current_feed_kg }}</span> KG</div>
+            <div class="detail"><span>Live calculated KG</span><span id="feedLiveKg">{{ feed_live_kg }}</span></div>
             <div class="detail"><span>Live raw feed units</span><span id="currentFeedRaw">{{ current_feed_raw }}</span></div>
             <div class="detail"><span>Published minute average raw</span><span id="feedAverageRaw">{{ feed_average_raw }}</span></div>
             <div class="detail"><span>KG updated</span><span id="feedKgUpdated">{{ feed_kg_updated_age }}</span></div>
@@ -6682,6 +6865,18 @@ FEED_SETTINGS_HTML = """
             <div class="detail"><span>Feed bin capacity</span><span>{{ feed_capacity_kg }} KG</span></div>
             <div class="detail"><span>Tare raw</span><span>{{ feed_tare_raw }}</span></div>
             <div class="detail"><span>KG per raw unit</span><span>{{ feed_kg_per_raw_unit }}</span></div>
+        </div>
+        <div class="panel">
+            <div class="sub">Weighing Diagnostics</div>
+            <div class="detail"><span>Signal state</span><span id="feedStabilityLabel">{{ feed_stability_label }}</span></div>
+            <div class="detail"><span>60 second noise range</span><span><span id="feedNoiseKg">{{ feed_noise_kg }}</span> KG</span></div>
+            <div class="detail"><span>60 second raw range</span><span id="feedNoiseRaw">{{ feed_noise_raw_units }}</span></div>
+            <div class="detail"><span>Last minute movement</span><span><span id="feedMinuteChange">{{ feed_minute_change_kg }}</span> KG</span></div>
+            <div class="detail"><span>Refill recording state</span><span id="feedRefillStatus">{{ feed_refill_status }}</span></div>
+        </div>
+        <div class="panel">
+            <div class="sub">Published KG - Last 24 Hours</div>
+            <div class="chart-box"><canvas id="feedTraceChart"></canvas></div>
         </div>
         <div class="panel">
             <form method="post" action="{{ url_for('save_feed_settings') }}">
@@ -6717,11 +6912,75 @@ FEED_SETTINGS_HTML = """
                 {% if not feed_calibration_ready %}A live raw feed reading and tare value are required before calibration can be saved.{% endif %}
             </div>
         </div>
+        <div class="panel">
+            <div class="sub">Calibration History</div>
+            <form method="post" action="{{ url_for('undo_feed_calibration') }}">
+                <button class="compact" type="submit" {% if not feed_calibration_can_undo %}disabled{% endif %}>Undo Last Calibration Change</button>
+            </form>
+            {% if feed_calibration_rows %}
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>Time</th><th>Action</th><th>Tare Raw</th><th>KG / Raw Unit</th><th>Detail</th></tr></thead>
+                    <tbody>
+                        {% for row in feed_calibration_rows %}
+                        <tr>
+                            <td>{{ row.ts_label }}</td>
+                            <td>{{ row.action_label }}</td>
+                            <td>{{ row.previous_tare }} to {{ row.updated_tare }}</td>
+                            <td>{{ row.previous_scale }} to {{ row.updated_scale }}</td>
+                            <td>{{ row.detail or "--" }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% endif %}
+        </div>
     </div>
     <script>
         function setFeedText(id, value) {
             const el = document.getElementById(id);
             if (el) el.textContent = value;
+        }
+
+        function drawFeedTrace(rows) {
+            const canvas = document.getElementById('feedTraceChart');
+            if (!canvas) return;
+            const box = canvas.getBoundingClientRect();
+            const ratio = window.devicePixelRatio || 1;
+            canvas.width = Math.max(1, Math.round(box.width * ratio));
+            canvas.height = Math.max(1, Math.round(box.height * ratio));
+            const ctx = canvas.getContext('2d');
+            ctx.scale(ratio, ratio);
+            const width = box.width;
+            const height = box.height;
+            ctx.clearRect(0, 0, width, height);
+            ctx.fillStyle = '#686868';
+            ctx.fillRect(0, 0, width, height);
+            if (!Array.isArray(rows) || rows.length < 2) {
+                ctx.fillStyle = '#d2d2d2';
+                ctx.font = '16px Arial';
+                ctx.fillText('Waiting for minute readings', 14, 28);
+                return;
+            }
+            const values = rows.map((row) => Number(row.kg)).filter((value) => Number.isFinite(value));
+            if (values.length < 2) return;
+            let min = Math.min(...values);
+            let max = Math.max(...values);
+            if (max <= min) { max += 1; min -= 1; }
+            const pad = 16;
+            ctx.strokeStyle = '#35d07f';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            rows.forEach((row, index) => {
+                const value = Number(row.kg);
+                if (!Number.isFinite(value)) return;
+                const x = pad + (index / Math.max(1, rows.length - 1)) * (width - pad * 2);
+                const y = height - pad - ((value - min) / (max - min)) * (height - pad * 2);
+                if (index === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            });
+            ctx.stroke();
         }
 
         async function refreshFeedState() {
@@ -6730,9 +6989,16 @@ FEED_SETTINGS_HTML = """
                 if (!resp.ok) return;
                 const data = await resp.json();
                 setFeedText('currentFeedKg', data.current_feed_kg);
+                setFeedText('feedLiveKg', data.feed_live_kg);
                 setFeedText('currentFeedRaw', data.current_feed_raw);
                 setFeedText('feedAverageRaw', data.feed_average_raw);
                 setFeedText('feedKgUpdated', data.feed_kg_updated_age);
+                setFeedText('feedStabilityLabel', data.feed_stability_label);
+                setFeedText('feedNoiseKg', data.feed_noise_kg);
+                setFeedText('feedNoiseRaw', data.feed_noise_raw_units);
+                setFeedText('feedMinuteChange', data.feed_minute_change_kg);
+                setFeedText('feedRefillStatus', data.feed_refill_status);
+                drawFeedTrace(data.feed_trace_rows);
                 const tareButton = document.getElementById('setFeedTareButton');
                 const calibrateButton = document.getElementById('calibrateFeedButton');
                 if (tareButton) tareButton.disabled = !data.feed_raw_available;
@@ -6741,6 +7007,7 @@ FEED_SETTINGS_HTML = """
             }
         }
 
+        refreshFeedState();
         setInterval(refreshFeedState, 1000);
     </script>
 </body>
@@ -7966,18 +8233,48 @@ def build_feed_settings_context(cfg, state):
     feed_raw = sensors.get("feed_raw_units")
     feed_raw_available = feed_raw not in [None, ""]
     feed_calibration_ready = feed_raw_available and cfg.get("feed_tare_raw") not in [None, ""]
+    try:
+        settling_remaining_s = max(0, int(sensors.get("feed_refill_settling_until_ts")) - int(time.time()))
+    except Exception:
+        settling_remaining_s = 0
+    trace_rows = []
+    samples = sensors.get("feed_published_samples", [])
+    if isinstance(samples, list):
+        i = 0
+        while i < len(samples):
+            sample = samples[i]
+            i += 1
+            try:
+                sample_ts = int(sample.get("ts"))
+                sample_kg = float(sample.get("kg"))
+            except Exception:
+                continue
+            trace_rows.append({
+                "ts": sample_ts,
+                "label": datetime.fromtimestamp(sample_ts).strftime("%H:%M"),
+                "kg": round(sample_kg, 1),
+            })
     return {
         "shed_no": cfg["shed_no"],
         "current_feed_kg": fmt_value(sensors.get("feed_kg"), "f0"),
+        "feed_live_kg": fmt_value(sensors.get("feed_kg_live"), "f1"),
         "current_feed_raw": fmt_value(feed_raw, "f1"),
         "feed_average_raw": fmt_value(sensors.get("feed_average_raw_units"), "f1"),
         "feed_kg_updated_age": fmt_age_seconds(sensors.get("feed_kg_updated_ts")),
+        "feed_minute_change_kg": fmt_value(sensors.get("feed_minute_change_kg"), "f1"),
+        "feed_noise_raw_units": fmt_value(sensors.get("feed_noise_raw_units"), "f1"),
+        "feed_noise_kg": fmt_value(sensors.get("feed_noise_kg"), "f1"),
+        "feed_stability_label": str(sensors.get("feed_stability_label") or "Waiting for samples"),
+        "feed_refill_status": ("Settling for %s" % fmt_duration_short(settling_remaining_s)) if settling_remaining_s > 0 else "Ready",
+        "feed_trace_rows": trace_rows,
         "feed_low_kg": fmt_value(cfg.get("feed_low_kg", 2000.0), "f0"),
         "feed_capacity_kg": fmt_value(cfg.get("feed_capacity_kg", 16000.0), "f0"),
         "feed_tare_raw": fmt_value(cfg.get("feed_tare_raw"), "f1"),
         "feed_kg_per_raw_unit": fmt_value(cfg.get("feed_kg_per_raw_unit"), "f4"),
         "feed_raw_available": feed_raw_available,
         "feed_calibration_ready": feed_calibration_ready,
+        "feed_calibration_rows": feed_calibration_history_rows(),
+        "feed_calibration_can_undo": feed_calibration_undo_row() is not None,
     }
 
 
@@ -8030,8 +8327,15 @@ def set_feed_tare():
     except Exception:
         return redirect(url_for("feed_settings_view"))
     cfg = load_config()
+    previous = feed_calibration_snapshot(cfg)
     cfg["feed_tare_raw"] = feed_raw
     save_config(cfg)
+    append_feed_calibration_history(
+        "tare_saved",
+        previous,
+        feed_calibration_snapshot(cfg),
+        detail="Tare set from raw %.1f" % feed_raw,
+    )
     mutate_state(lambda s: reset_feed_average_state(s.get("sensors", default_sensor_state())))
     return redirect(url_for("feed_settings_view"))
 
@@ -8059,8 +8363,54 @@ def save_feed_known_weight():
     if raw_delta <= 0:
         return redirect(url_for("feed_settings_view"))
 
+    previous = feed_calibration_snapshot(cfg)
     cfg["feed_kg_per_raw_unit"] = known_weight_kg / raw_delta
     save_config(cfg)
+    append_feed_calibration_history(
+        "known_weight_saved",
+        previous,
+        feed_calibration_snapshot(cfg),
+        detail="%.1f KG from raw delta %.1f" % (known_weight_kg, raw_delta),
+    )
+
+    def reset_and_publish(s):
+        sensors = s.get("sensors", default_sensor_state())
+        reset_feed_average_state(sensors)
+        update_feed_from_raw(sensors)
+
+    mutate_state(reset_and_publish)
+    return redirect(url_for("feed_settings_view"))
+
+
+@app.route("/settings/feed/calibration/undo", methods=["POST"])
+def undo_feed_calibration():
+    rows = load_feed_calibration_history()
+    if not rows:
+        return redirect(url_for("feed_settings_view"))
+    target = rows[-1]
+    if not isinstance(target, dict) or not bool(target.get("undoable", False)) or target.get("undone_ts") not in [None, ""]:
+        return redirect(url_for("feed_settings_view"))
+    previous = target.get("previous", {})
+    if not isinstance(previous, dict):
+        return redirect(url_for("feed_settings_view"))
+
+    cfg = load_config()
+    current = feed_calibration_snapshot(cfg)
+    cfg["feed_tare_raw"] = previous.get("feed_tare_raw")
+    cfg["feed_kg_per_raw_unit"] = previous.get("feed_kg_per_raw_unit")
+    save_config(cfg)
+    target["undone_ts"] = int(time.time())
+    rows[-1] = target
+    rows.append({
+        "ts": int(time.time()),
+        "action": "undo",
+        "previous": current,
+        "updated": feed_calibration_snapshot(cfg),
+        "detail": "Reverted %s" % str(target.get("action") or "calibration").replace("_", " "),
+        "undoable": False,
+        "undone_ts": None,
+    })
+    save_feed_calibration_history(rows)
 
     def reset_and_publish(s):
         sensors = s.get("sensors", default_sensor_state())

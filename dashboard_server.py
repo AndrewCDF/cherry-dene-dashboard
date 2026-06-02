@@ -194,6 +194,8 @@ OFFICE_AUTO_BACKUP_INTERVAL_SECONDS = 3600
 OFFICE_AUTO_BACKUP_CHECK_SECONDS = 60
 FEED_RECORDING_MIN_DROP_KG = 1.0
 FEED_RECORDING_REFILL_RISE_KG = 8.0
+FEED_RECORDING_NOISE_FACTOR = 2.0
+FEED_REFILL_SETTLING_SECONDS = 5 * 60
 _office_backup_lock = threading.Lock()
 
 
@@ -1547,6 +1549,7 @@ def clean_controller_meta(meta):
         "water_total_litres": meta.get("water_total_litres"),
         "feed_kg": meta.get("feed_kg"),
         "feed_kg_updated_ts": meta.get("feed_kg_updated_ts"),
+        "feed_noise_kg": meta.get("feed_noise_kg"),
         "feed_low_kg": meta.get("feed_low_kg"),
         "feed_amber_buffer_kg": meta.get("feed_amber_buffer_kg"),
         "lighting_on": meta.get("lighting_on"),
@@ -1803,17 +1806,34 @@ def update_shed_hourly_metrics_from_meta(shed_no, meta):
                 feed_hour_kg = float(row.get("feed_hour_kg") or 0.0)
             except Exception:
                 feed_hour_kg = 0.0
+            try:
+                settling_until_ts = int(latest_feed_row.get("feed_settling_until_ts"))
+            except Exception:
+                settling_until_ts = None
+            try:
+                noise_kg = max(0.0, float(meta.get("feed_noise_kg") or 0.0))
+            except Exception:
+                noise_kg = 0.0
+            min_drop_kg = max(FEED_RECORDING_MIN_DROP_KG, noise_kg * FEED_RECORDING_NOISE_FACTOR)
 
             if feed_kg >= low_feed_kg + FEED_RECORDING_REFILL_RISE_KG:
+                settling_until_ts = feed_sample_ts + FEED_REFILL_SETTLING_SECONDS
                 low_feed_kg = feed_kg
-            elif feed_kg <= low_feed_kg - FEED_RECORDING_MIN_DROP_KG:
+            elif settling_until_ts is not None and feed_sample_ts < settling_until_ts:
+                low_feed_kg = feed_kg
+            elif feed_kg <= low_feed_kg - min_drop_kg:
+                settling_until_ts = None
                 feed_hour_kg += low_feed_kg - feed_kg
                 low_feed_kg = feed_kg
+            elif settling_until_ts is not None and feed_sample_ts >= settling_until_ts:
+                settling_until_ts = None
 
             row["feed_hour_kg"] = round(max(0.0, feed_hour_kg), 3)
             row["feed_low_kg"] = round(low_feed_kg, 3)
             row["feed_last_kg"] = round(feed_kg, 3)
             row["feed_sample_ts"] = int(feed_sample_ts)
+            row["feed_recording_min_drop_kg"] = round(min_drop_kg, 3)
+            row["feed_settling_until_ts"] = settling_until_ts
             row["ts"] = int(time.time())
             row["source"] = "controller_sync"
             row["out_of_crop"] = bool(out_of_crop)
