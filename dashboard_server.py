@@ -192,6 +192,8 @@ SHED_NUMBERS = [1, 2, 3, 4, 6, 7, 8, 9, 10]
 OFFICE_BACKUP_KEEP_COUNT = 6
 OFFICE_AUTO_BACKUP_INTERVAL_SECONDS = 3600
 OFFICE_AUTO_BACKUP_CHECK_SECONDS = 60
+FEED_RECORDING_MIN_DROP_KG = 1.0
+FEED_RECORDING_REFILL_RISE_KG = 8.0
 _office_backup_lock = threading.Lock()
 
 
@@ -1544,6 +1546,7 @@ def clean_controller_meta(meta):
         "water_amber_buffer_lpm": meta.get("water_amber_buffer_lpm"),
         "water_total_litres": meta.get("water_total_litres"),
         "feed_kg": meta.get("feed_kg"),
+        "feed_kg_updated_ts": meta.get("feed_kg_updated_ts"),
         "feed_low_kg": meta.get("feed_low_kg"),
         "feed_amber_buffer_kg": meta.get("feed_amber_buffer_kg"),
         "lighting_on": meta.get("lighting_on"),
@@ -1699,78 +1702,121 @@ def save_live_snapshot_for_shed(shed_no, meta):
     save_live_latest_map(live_map)
 
 
-def update_shed_hourly_water_from_meta(shed_no, meta):
+def update_shed_hourly_metrics_from_meta(shed_no, meta):
     if not isinstance(meta, dict):
         return False
 
     try:
         sensor_ts = int(meta.get("last_sensor_ts"))
+    except Exception:
+        return False
+    try:
         water_total_litres = float(meta.get("water_total_litres"))
     except Exception:
+        water_total_litres = None
+    try:
+        feed_kg = float(meta.get("feed_kg"))
+    except Exception:
+        feed_kg = None
+    try:
+        feed_sample_ts = int(meta.get("feed_kg_updated_ts"))
+    except Exception:
+        feed_sample_ts = sensor_ts
+    if water_total_litres is None and feed_kg is None:
         return False
 
     shed_name = shed_name_from_number(shed_no)
     crop_id = get_active_crop_id_for_shed(shed_name)
     out_of_crop = crop_id in [None, ""]
-
-    hour_epoch = (sensor_ts // 3600) * 3600
     rows = read_all_json_lines("hourly.ndjson")
-    updated = False
 
-    i = 0
-    while i < len(rows):
-        row = rows[i]
+    def matches_crop(row):
+        if row.get("shed") != shed_name:
+            return False
+        if out_of_crop:
+            return row.get("crop_id") in [None, ""]
         try:
-            same_hour = (
-                row.get("shed") == shed_name
-                and int(row.get("hour_epoch")) == int(hour_epoch)
-            )
+            return int(row.get("crop_id")) == int(crop_id)
         except Exception:
-            same_hour = (
-                row.get("shed") == shed_name
-                and row.get("crop_id") in [None, ""]
-                and int(row.get("hour_epoch")) == int(hour_epoch)
-            )
+            return False
 
-        if same_hour:
-            if out_of_crop:
-                if row.get("crop_id") not in [None, ""]:
-                    same_hour = False
-            else:
-                try:
-                    same_hour = int(row.get("crop_id")) == int(crop_id)
-                except Exception:
-                    same_hour = False
-
-        if same_hour:
+    def hour_row(hour_epoch):
+        i = 0
+        while i < len(rows):
+            row = rows[i]
             try:
-                start_total_litres = float(row.get("start_total_litres"))
+                same_hour = int(row.get("hour_epoch")) == int(hour_epoch)
             except Exception:
-                start_total_litres = water_total_litres
-            if water_total_litres < start_total_litres:
-                start_total_litres = water_total_litres
-            row["start_total_litres"] = start_total_litres
-            row["water_total_litres"] = water_total_litres
-            row["water_hour_liters"] = round(max(0.0, water_total_litres - start_total_litres), 3)
-            row["ts"] = int(time.time())
-            row["source"] = "controller_sync"
-            row["out_of_crop"] = bool(out_of_crop)
-            updated = True
-            break
-        i += 1
-
-    if not updated:
-        rows.append({
+                same_hour = False
+            if same_hour and matches_crop(row):
+                return row
+            i += 1
+        row = {
             "ts": int(time.time()),
             "shed": shed_name,
             "crop_id": None if out_of_crop else int(crop_id),
             "hour_epoch": int(hour_epoch),
-            "start_total_litres": water_total_litres,
-            "water_total_litres": water_total_litres,
-            "water_hour_liters": 0.0,
             "out_of_crop": bool(out_of_crop),
             "source": "controller_sync",
-        })
+        }
+        rows.append(row)
+        return row
+
+    if water_total_litres is not None:
+        row = hour_row((sensor_ts // 3600) * 3600)
+        try:
+            start_total_litres = float(row.get("start_total_litres"))
+        except Exception:
+            start_total_litres = water_total_litres
+        if water_total_litres < start_total_litres:
+            start_total_litres = water_total_litres
+        row["start_total_litres"] = start_total_litres
+        row["water_total_litres"] = water_total_litres
+        row["water_hour_liters"] = round(max(0.0, water_total_litres - start_total_litres), 3)
+        row["ts"] = int(time.time())
+        row["source"] = "controller_sync"
+        row["out_of_crop"] = bool(out_of_crop)
+
+    if feed_kg is not None:
+        latest_feed_row = None
+        latest_feed_ts = None
+        i = 0
+        while i < len(rows):
+            candidate = rows[i]
+            if matches_crop(candidate):
+                try:
+                    candidate_ts = int(candidate.get("feed_sample_ts"))
+                except Exception:
+                    candidate_ts = None
+                if candidate_ts is not None and (latest_feed_ts is None or candidate_ts > latest_feed_ts):
+                    latest_feed_ts = candidate_ts
+                    latest_feed_row = candidate
+            i += 1
+
+        if latest_feed_ts is None or feed_sample_ts > latest_feed_ts:
+            row = hour_row((feed_sample_ts // 3600) * 3600)
+            try:
+                low_feed_kg = float(latest_feed_row.get("feed_low_kg"))
+            except Exception:
+                low_feed_kg = feed_kg
+            try:
+                feed_hour_kg = float(row.get("feed_hour_kg") or 0.0)
+            except Exception:
+                feed_hour_kg = 0.0
+
+            if feed_kg >= low_feed_kg + FEED_RECORDING_REFILL_RISE_KG:
+                low_feed_kg = feed_kg
+            elif feed_kg <= low_feed_kg - FEED_RECORDING_MIN_DROP_KG:
+                feed_hour_kg += low_feed_kg - feed_kg
+                low_feed_kg = feed_kg
+
+            row["feed_hour_kg"] = round(max(0.0, feed_hour_kg), 3)
+            row["feed_low_kg"] = round(low_feed_kg, 3)
+            row["feed_last_kg"] = round(feed_kg, 3)
+            row["feed_sample_ts"] = int(feed_sample_ts)
+            row["ts"] = int(time.time())
+            row["source"] = "controller_sync"
+            row["out_of_crop"] = bool(out_of_crop)
 
     write_named_json_lines_atomic("hourly.ndjson", rows)
     return True
@@ -6734,7 +6780,7 @@ MANUAL_FEED_ENTRY_HTML = """
     <div class="wrap">
         <div class="topbar">{{ render_page_nav() }}</div>
         <h1>Manual Feed Entry</h1>
-        <div class="sub">Record feed allocated to an active shed. The amount is added to that shed's hourly and 7am-to-7am daily feed figures whether the feed went through the silo or was fed on the floor.</div>
+        <div class="sub">Normal silo feeding is recorded automatically from the weigh cells. Use this only for extra feed that the weigh cells will not see, such as floor-fed feed or feed moved between sheds.</div>
         {% if status_msg %}
         <div class="status auto-dismiss {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
         {% endif %}
@@ -9571,7 +9617,7 @@ METRIC_PERIOD_HTML = """
 
         <div class="card" style="margin-bottom:14px;">
             <h2>Record Feed For {{ shed_name }}</h2>
-            <div class="sub" style="margin-bottom:14px;">Enter feed allocated to this shed. It is added to the daily feed record whether it went through the silo or was fed on the floor.</div>
+            <div class="sub" style="margin-bottom:14px;">Normal silo feeding is recorded automatically from the weigh cells. Use this only for extra feed that the weigh cells will not see, such as floor-fed feed or feed moved between sheds.</div>
             <div class="action-card">
                 <form class="action-row" method="post" action="{{ url_for('office_feed_stock_allocate_view') }}">
                     <input type="hidden" name="shed_no" value="{{ shed_no }}">
@@ -11274,7 +11320,7 @@ def shed_sync_post(shed_no):
     if isinstance(incoming_controller_meta, dict):
         save_controller_meta_for_shed(shed_no, incoming_controller_meta)
         save_live_snapshot_for_shed(shed_no, incoming_controller_meta)
-        update_shed_hourly_water_from_meta(shed_no, incoming_controller_meta)
+        update_shed_hourly_metrics_from_meta(shed_no, incoming_controller_meta)
         log_event("controller", "controller_meta", "Controller telemetry updated", shed_no=shed_no)
 
     return jsonify({

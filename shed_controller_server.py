@@ -2220,6 +2220,7 @@ def sync_payload(state):
         "water_low_lpm": cfg.get("water_low_lpm"),
         "water_total_litres": water_total_litres,
         "feed_kg": sensors.get("feed_kg"),
+        "feed_kg_updated_ts": sensors.get("feed_kg_updated_ts"),
         "feed_low_kg": cfg.get("feed_low_kg"),
         "lighting_on": sensors.get("lighting_on"),
         "lighting_enabled": lighting_enabled(cfg),
