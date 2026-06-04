@@ -397,6 +397,7 @@ WATER_ALARM_SNAPSHOT_SECONDS = 30
 FEED_DISPLAY_AVERAGE_SECONDS = 15 * 60
 FEED_DIAGNOSTIC_NOISE_SECONDS = 60
 FEED_DIAGNOSTIC_HISTORY_SECONDS = 24 * 60 * 60
+FEED_RAW_DISPLAY_SMOOTH_SECONDS = 10
 FEED_REFILL_RISE_KG = 8.0
 FEED_REFILL_SETTLING_SECONDS = 5 * 60
 FEED_STABLE_NOISE_KG = 2.0
@@ -1503,6 +1504,8 @@ def default_sensor_state():
         "flow_rate_samples": [],
         "water_history_samples": [],
         "feed_raw_units": None,
+        "feed_raw_display_units": None,
+        "feed_raw_display_samples": [],
         "feed_raw_samples": [],
         "feed_average_raw_units": None,
         "feed_kg_live": None,
@@ -1983,6 +1986,10 @@ def load_state():
         sensors["alarms"] = []
     if not isinstance(sensors.get("water_history_samples"), list):
         sensors["water_history_samples"] = []
+    if not isinstance(sensors.get("feed_raw_display_samples"), list):
+        sensors["feed_raw_display_samples"] = []
+    if sensors.get("feed_raw_display_units") in [""] and sensors.get("feed_raw_units") not in [None, ""]:
+        sensors["feed_raw_display_units"] = sensors.get("feed_raw_units")
     if not isinstance(sensors.get("feed_raw_samples"), list):
         sensors["feed_raw_samples"] = []
     if not isinstance(sensors.get("feed_published_samples"), list):
@@ -3724,6 +3731,52 @@ def append_feed_published_sample(sensors, feed_kg, averaged_raw, now_ts):
     sensors["feed_published_samples"] = kept[-1440:]
 
 
+def update_feed_raw_display_smoothing(sensors, feed_raw, now_ts=None):
+    now_ts = int(time.time()) if now_ts is None else int(now_ts)
+    samples = sensors.get("feed_raw_display_samples")
+    if not isinstance(samples, list):
+        samples = []
+    samples.append({
+        "ts": now_ts,
+        "raw": float(feed_raw),
+    })
+
+    cutoff_ts = now_ts - FEED_RAW_DISPLAY_SMOOTH_SECONDS
+    kept_samples = []
+    raw_values = []
+    i = 0
+    while i < len(samples):
+        sample = samples[i]
+        i += 1
+        try:
+            sample_ts = int(sample.get("ts"))
+            sample_raw = float(sample.get("raw"))
+        except Exception:
+            continue
+        if sample_ts < cutoff_ts:
+            continue
+        kept_samples.append({
+            "ts": sample_ts,
+            "raw": sample_raw,
+        })
+        raw_values.append(sample_raw)
+
+    sensors["feed_raw_display_samples"] = kept_samples
+    sensors["feed_raw_display_units"] = round(
+        sum(raw_values) / float(len(raw_values)) if raw_values else float(feed_raw),
+        1,
+    )
+
+
+def feed_raw_display_units(sensors):
+    if not isinstance(sensors, dict):
+        return None
+    value = sensors.get("feed_raw_display_units")
+    if value not in [None, ""]:
+        return value
+    return sensors.get("feed_raw_units")
+
+
 def update_feed_from_raw(sensors, now_ts=None):
     now_ts = int(time.time()) if now_ts is None else int(now_ts)
     raw = sensors.get("raw", {})
@@ -3738,6 +3791,7 @@ def update_feed_from_raw(sensors, now_ts=None):
         return
 
     sensors["feed_raw_units"] = feed_raw
+    update_feed_raw_display_smoothing(sensors, feed_raw, now_ts=now_ts)
     samples = sensors.get("feed_raw_samples")
     if not isinstance(samples, list):
         samples = []
@@ -3833,6 +3887,8 @@ def update_feed_from_raw(sensors, now_ts=None):
 
 
 def reset_feed_average_state(sensors, clear_published=True):
+    sensors["feed_raw_display_samples"] = []
+    sensors["feed_raw_display_units"] = sensors.get("feed_raw_units")
     sensors["feed_raw_samples"] = []
     sensors["feed_average_raw_units"] = None
     sensors["feed_kg_live"] = None
@@ -6142,7 +6198,7 @@ COMMISSIONING_HTML = """
                 <div class="detail"><span class="label">Water L/PM</span><span>{{ water_lpm }}</span></div>
                 <div class="detail"><span class="label">Flow Total Pulses</span><span>{{ flow_total_pulses }}</span></div>
                 <div class="detail"><span class="label">Feed KG</span><span>{{ feed_kg }}</span></div>
-                <div class="detail"><span class="label">Feed Raw</span><span>{{ feed_raw_units }}</span></div>
+                <div class="detail"><span class="label">Feed Raw Smoothed</span><span>{{ feed_raw_units }}</span></div>
                 <div class="detail"><span class="label">Lighting</span><span>{{ lighting_status }}</span></div>
                 <div class="detail"><span class="label">Pico Trace</span><span>{{ pico_trace_summary or "--" }}</span></div>
                 <div class="detail"><span class="label">Auto Recovery</span><span>{{ pico_recovery_status or "--" }}</span></div>
@@ -6862,7 +6918,7 @@ FEED_SETTINGS_HTML = """
             <div class="sub">Low-feed warning plus feed bin calibration using tare, bin capacity, and a known weight.</div>
             <div class="current">Current: <span id="currentFeedKg">{{ current_feed_kg }}</span> KG</div>
             <div class="detail"><span>Live calculated KG</span><span id="feedLiveKg">{{ feed_live_kg }}</span></div>
-            <div class="detail"><span>Live raw feed units</span><span id="currentFeedRaw">{{ current_feed_raw }}</span></div>
+            <div class="detail"><span>Smoothed raw feed units</span><span id="currentFeedRaw">{{ current_feed_raw }}</span></div>
             <div class="detail"><span>Published 15 minute average raw</span><span id="feedAverageRaw">{{ feed_average_raw }}</span></div>
             <div class="detail"><span>KG updated</span><span id="feedKgUpdated">{{ feed_kg_updated_age }}</span></div>
             <div class="detail"><span>Low feed threshold</span><span>{{ feed_low_kg }} KG</span></div>
@@ -7796,7 +7852,7 @@ def commissioning_view():
         water_lpm=fmt_value(sensors.get("water_lpm"), "f2"),
         flow_total_pulses=fmt_value(sensors.get("flow_total_pulses"), "i"),
         feed_kg=fmt_value(sensors.get("feed_kg"), "f0"),
-        feed_raw_units=fmt_value(sensors.get("feed_raw_units"), "f2"),
+        feed_raw_units=fmt_value(feed_raw_display_units(sensors), "f2"),
         lighting_status=lighting_status_text(sensors),
         raw_json=json.dumps(sensors.get("raw", {}), indent=2, sort_keys=True),
         last_serial_line=sensors.get("last_serial_line", ""),
@@ -8235,6 +8291,7 @@ def finish_water_calibration():
 def build_feed_settings_context(cfg, state):
     sensors = state.get("sensors", default_sensor_state())
     feed_raw = sensors.get("feed_raw_units")
+    feed_raw_display = feed_raw_display_units(sensors)
     feed_raw_available = feed_raw not in [None, ""]
     feed_calibration_ready = feed_raw_available and cfg.get("feed_tare_raw") not in [None, ""]
     try:
@@ -8262,7 +8319,7 @@ def build_feed_settings_context(cfg, state):
         "shed_no": cfg["shed_no"],
         "current_feed_kg": fmt_value(sensors.get("feed_kg"), "f0"),
         "feed_live_kg": fmt_value(sensors.get("feed_kg_live"), "f1"),
-        "current_feed_raw": fmt_value(feed_raw, "f1"),
+        "current_feed_raw": fmt_value(feed_raw_display, "f1"),
         "feed_average_raw": fmt_value(sensors.get("feed_average_raw_units"), "f1"),
         "feed_kg_updated_age": fmt_age_seconds(sensors.get("feed_kg_updated_ts")),
         "feed_minute_change_kg": fmt_value(sensors.get("feed_minute_change_kg"), "f1"),
