@@ -10264,9 +10264,396 @@ setupPagedTable('boreholeTableLoadMore', 'boreholeTableInfo');
 """
 
 
+TV_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Cherry Dene TV Dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { box-sizing: border-box; }
+        html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+        body {
+            background: #4f5552;
+            color: #f2f2f2;
+            font-family: Arial, sans-serif;
+        }
+        .tv {
+            width: 100vw;
+            height: 100vh;
+            display: grid;
+            grid-template-rows: 54px 1fr;
+            gap: 8px;
+            padding: 10px;
+        }
+        .top {
+            display: grid;
+            grid-template-columns: 1fr auto 1fr;
+            align-items: center;
+            gap: 12px;
+            min-width: 0;
+        }
+        .brand {
+            font-size: 28px;
+            font-weight: 800;
+            line-height: 1;
+            color: #f6f6f6;
+        }
+        .summary {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            min-width: 0;
+        }
+        .pill {
+            border: 2px solid #838b87;
+            background: #626966;
+            border-radius: 8px;
+            padding: 6px 12px;
+            min-width: 118px;
+            text-align: center;
+        }
+        .pill-label {
+            display: block;
+            color: #d8dedb;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+        .pill-value {
+            display: block;
+            font-size: 18px;
+            font-weight: 800;
+            line-height: 1.1;
+            margin-top: 2px;
+        }
+        .clock {
+            text-align: right;
+            font-size: 22px;
+            font-weight: 800;
+            color: #f6f6f6;
+        }
+        .grid {
+            min-height: 0;
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            grid-auto-rows: minmax(0, 1fr);
+            gap: 8px;
+        }
+        .tile {
+            min-width: 0;
+            min-height: 0;
+            display: grid;
+            grid-template-rows: auto 1fr auto;
+            gap: 6px;
+            border: 3px solid #838b87;
+            border-radius: 8px;
+            background: #646b68;
+            padding: 8px;
+            overflow: hidden;
+        }
+        .tile.online {
+            border-color: #35d07f;
+            box-shadow: 0 0 12px rgba(53, 208, 127, 0.65);
+        }
+        .tile.offline, .tile.alarm, .tile.nodata {
+            border-color: #ff5b5b;
+            box-shadow: 0 0 12px rgba(255, 91, 91, 0.65);
+        }
+        .head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 8px;
+            min-width: 0;
+        }
+        .shed-name {
+            font-size: clamp(19px, 1.55vw, 28px);
+            font-weight: 900;
+            line-height: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .state {
+            border-radius: 6px;
+            padding: 4px 7px;
+            font-size: 10px;
+            font-weight: 900;
+            background: #777f7b;
+            color: #fff;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+        .state.online { background: #237b4c; }
+        .state.offline, .state.alarm, .state.nodata { background: #9b2d32; }
+        .metrics {
+            min-height: 0;
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 6px;
+        }
+        .metric {
+            min-width: 0;
+            min-height: 0;
+            border: 2px solid #818984;
+            border-radius: 7px;
+            background: #59615d;
+            padding: 6px;
+            overflow: hidden;
+        }
+        .metric.env-green, .metric.feed-green, .metric.flow-green, .metric.state-green {
+            border-color: #35d07f;
+            background: #244d3a;
+        }
+        .metric.env-warn, .metric.feed-warn, .metric.flow-warn, .metric.state-warn {
+            border-color: #ffd46a;
+            background: #5b5130;
+        }
+        .metric.env-red, .metric.feed-red, .metric.flow-red, .metric.state-red {
+            border-color: #ff5b5b;
+            background: #5c3334;
+        }
+        .metric-label {
+            color: #d8dedb;
+            font-size: clamp(9px, 0.8vw, 13px);
+            font-weight: 800;
+            text-transform: uppercase;
+            line-height: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .metric-value {
+            margin-top: 5px;
+            font-size: clamp(20px, 2.05vw, 36px);
+            font-weight: 900;
+            line-height: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .footer {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 6px;
+            min-width: 0;
+        }
+        .mini {
+            min-width: 0;
+            background: #565e5a;
+            border: 1px solid #79827d;
+            border-radius: 6px;
+            padding: 5px 6px;
+            overflow: hidden;
+        }
+        .mini-label {
+            color: #d8dedb;
+            font-size: 9px;
+            font-weight: 800;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+        .mini-value {
+            margin-top: 2px;
+            font-size: clamp(13px, 1.1vw, 18px);
+            font-weight: 900;
+            line-height: 1.05;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .alarm-strip {
+            grid-column: 1 / -1;
+            background: #8e282d;
+            border-radius: 6px;
+            padding: 5px 7px;
+            font-size: 12px;
+            font-weight: 800;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .borehole .metrics {
+            grid-template-columns: 1fr 1fr;
+        }
+        @media (max-width: 1200px) {
+            .tv { grid-template-rows: 46px 1fr; padding: 7px; gap: 6px; }
+            .grid { gap: 6px; }
+            .tile { padding: 6px; gap: 5px; }
+            .brand { font-size: 22px; }
+            .clock { font-size: 18px; }
+            .pill { min-width: 96px; padding: 5px 8px; }
+            .pill-value { font-size: 15px; }
+        }
+    </style>
+</head>
+<body>
+<main class="tv">
+    <header class="top">
+        <div class="brand">Cherry Dene</div>
+        <div class="summary">
+            <div class="pill"><span class="pill-label">Birds</span><span id="overall-birds" class="pill-value">{{ overall.birds_remaining }}</span></div>
+            <div class="pill"><span class="pill-label">Feed</span><span id="overall-feed" class="pill-value">{{ overall.feed }}</span></div>
+            <div class="pill"><span class="pill-label">Water</span><span id="overall-water" class="pill-value">{{ overall.water }}</span></div>
+        </div>
+        <div id="clock" class="clock">--</div>
+    </header>
+    <section class="grid">
+        {% for s in sheds %}
+        <article id="tv-shed-{{ s.shed_no }}" class="tile {% if s.alarm_active %}alarm{% elif s.card_state == 'online' %}online{% else %}offline{% endif %} {% if not s.has_data %}nodata{% endif %}">
+            <div class="head">
+                <div class="shed-name">{{ s.shed }}</div>
+                <div id="tv-shed-state-{{ s.shed_no }}" class="state {% if s.alarm_active %}alarm{% elif s.card_state == 'online' %}online{% else %}offline{% endif %}">{% if s.alarm_active %}Alarm{% elif s.card_state == 'online' %}Online{% elif s.has_active_entry %}Active{% else %}No Data{% endif %}</div>
+            </div>
+            <div class="metrics">
+                <div id="tv-temp-tile-{{ s.shed_no }}" class="metric {{ s.temp_glow }}"><div class="metric-label">Temp C</div><div id="tv-temp-{{ s.shed_no }}" class="metric-value">{{ s.temp_c }}</div></div>
+                <div id="tv-rh-tile-{{ s.shed_no }}" class="metric {{ s.rh_glow }}"><div class="metric-label">RH %</div><div id="tv-rh-{{ s.shed_no }}" class="metric-value">{{ s.rh_pct }}</div></div>
+                <div id="tv-water-tile-{{ s.shed_no }}" class="metric {{ s.water_glow }}"><div class="metric-label">Water L/min</div><div id="tv-water-{{ s.shed_no }}" class="metric-value">{{ s.water_lpm }}</div></div>
+                <div id="tv-feed-tile-{{ s.shed_no }}" class="metric {{ s.feed_glow }}"><div class="metric-label">Feed KG</div><div id="tv-feed-{{ s.shed_no }}" class="metric-value">{{ s.feed_kg }}</div></div>
+            </div>
+            <div class="footer">
+                <div class="mini"><div class="mini-label">Birds</div><div id="tv-birds-{{ s.shed_no }}" class="mini-value">{{ s.birds_remaining }}</div></div>
+                <div class="mini"><div class="mini-label">Age</div><div id="tv-age-{{ s.shed_no }}" class="mini-value">{{ s.bird_age }}</div></div>
+                <div class="mini"><div class="mini-label">Mortality</div><div id="tv-mortality-{{ s.shed_no }}" class="mini-value">{{ s.mortality_display }}</div></div>
+                <div id="tv-alarm-{{ s.shed_no }}" class="alarm-strip" {% if not s.alarm_active %}style="display:none"{% endif %}>{{ s.alarm_msg }}</div>
+            </div>
+        </article>
+        {% endfor %}
+        <article id="tv-borehole" class="tile borehole {% if borehole.alarm_active %}alarm{% else %}{{ borehole.water_glow }}{% endif %} {% if not borehole.has_data %}nodata{% endif %}">
+            <div class="head">
+                <div class="shed-name">Bore Hole</div>
+                <div id="tv-borehole-state" class="state {% if borehole.alarm_active %}alarm{% elif borehole.tile_state == 'online' %}online{% else %}offline{% endif %}">{% if borehole.alarm_active %}Alarm{% elif borehole.tile_state == 'online' %}Online{% else %}Offline{% endif %}</div>
+            </div>
+            <div class="metrics">
+                <div id="tv-borehole-water-tile" class="metric {{ borehole.water_glow }}"><div class="metric-label">Water L/min</div><div id="tv-borehole-water" class="metric-value">{{ borehole.water_lpm }}</div></div>
+                <div class="metric flow-green"><div class="metric-label">Yesterday L</div><div id="tv-borehole-daily" class="metric-value">{{ borehole.daily_water }}</div></div>
+                <div class="metric flow-green"><div class="metric-label">7 Day L</div><div id="tv-borehole-weekly" class="metric-value">{{ borehole.weekly_water }}</div></div>
+                <div class="metric"><div class="metric-label">Sync</div><div id="tv-borehole-sync" class="metric-value">{{ borehole.sync_pill_text }}</div></div>
+            </div>
+            <div class="footer">
+                <div class="mini"><div class="mini-label">Updated</div><div id="tv-borehole-updated" class="mini-value">{{ borehole.updated }}</div></div>
+                <div class="mini"><div class="mini-label">Status</div><div id="tv-borehole-status" class="mini-value">{{ borehole.sync_pill_text }}</div></div>
+                <div class="mini"><div class="mini-label">Alarm</div><div id="tv-borehole-alarm-mini" class="mini-value">{{ borehole.alarm_key or "--" }}</div></div>
+                <div id="tv-borehole-alarm" class="alarm-strip" {% if not borehole.alarm_active %}style="display:none"{% endif %}>{{ borehole.alarm_msg }}</div>
+            </div>
+        </article>
+    </section>
+</main>
+<script>
+const glowSets = {
+    env: ['env-green', 'env-warn', 'env-red'],
+    flow: ['flow-green', 'flow-warn', 'flow-red'],
+    feed: ['feed-green', 'feed-warn', 'feed-red'],
+    tile: ['online', 'offline', 'alarm', 'nodata', 'flow-green', 'flow-red'],
+    state: ['online', 'offline', 'alarm', 'nodata']
+};
+function setText(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value || '--';
+}
+function setClasses(id, add, allowed) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    allowed.forEach((name) => el.classList.remove(name));
+    add.forEach((name) => { if (name) el.classList.add(name); });
+}
+function statusText(s) {
+    if (s.alarm_active) return 'Alarm';
+    if (s.card_state === 'online') return 'Online';
+    if (s.has_active_entry) return 'Active';
+    return 'No Data';
+}
+function statusClass(s) {
+    if (s.alarm_active) return 'alarm';
+    if (s.card_state === 'online') return 'online';
+    if (s.has_active_entry) return 'offline';
+    return 'nodata';
+}
+function renderShed(s) {
+    const tileCls = s.alarm_active ? 'alarm' : (s.card_state === 'online' ? 'online' : 'offline');
+    setClasses(`tv-shed-${s.shed_no}`, [tileCls, s.has_data ? '' : 'nodata'], glowSets.tile);
+    setText(`tv-shed-state-${s.shed_no}`, statusText(s));
+    setClasses(`tv-shed-state-${s.shed_no}`, [statusClass(s)], glowSets.state);
+    setText(`tv-temp-${s.shed_no}`, s.temp_c);
+    setText(`tv-rh-${s.shed_no}`, s.rh_pct);
+    setText(`tv-water-${s.shed_no}`, s.water_lpm);
+    setText(`tv-feed-${s.shed_no}`, s.feed_kg);
+    setText(`tv-birds-${s.shed_no}`, s.birds_remaining);
+    setText(`tv-age-${s.shed_no}`, s.bird_age);
+    setText(`tv-mortality-${s.shed_no}`, s.mortality_display || s.mortality_total);
+    setClasses(`tv-temp-tile-${s.shed_no}`, [s.temp_glow], glowSets.env);
+    setClasses(`tv-rh-tile-${s.shed_no}`, [s.rh_glow], glowSets.env);
+    setClasses(`tv-water-tile-${s.shed_no}`, [s.water_glow], glowSets.flow);
+    setClasses(`tv-feed-tile-${s.shed_no}`, [s.feed_glow], glowSets.feed);
+    const alarm = document.getElementById(`tv-alarm-${s.shed_no}`);
+    if (alarm) {
+        alarm.textContent = s.alarm_msg || s.alarm_key || '';
+        alarm.style.display = s.alarm_active ? '' : 'none';
+    }
+}
+function renderBorehole(b) {
+    const tileCls = b.alarm_active ? 'alarm' : (b.water_glow || 'offline');
+    setClasses('tv-borehole', [tileCls, b.has_data ? '' : 'nodata'], glowSets.tile);
+    const stateCls = b.alarm_active ? 'alarm' : (b.tile_state === 'online' ? 'online' : 'offline');
+    setText('tv-borehole-state', b.alarm_active ? 'Alarm' : (b.tile_state === 'online' ? 'Online' : 'Offline'));
+    setClasses('tv-borehole-state', [stateCls], glowSets.state);
+    setText('tv-borehole-water', b.water_lpm);
+    setText('tv-borehole-daily', b.daily_water);
+    setText('tv-borehole-weekly', b.weekly_water);
+    setText('tv-borehole-sync', b.sync_pill_text);
+    setText('tv-borehole-status', b.sync_pill_text);
+    setText('tv-borehole-updated', b.updated);
+    setText('tv-borehole-alarm-mini', b.alarm_key || '--');
+    setClasses('tv-borehole-water-tile', [b.water_glow], ['flow-green', 'flow-red']);
+    const alarm = document.getElementById('tv-borehole-alarm');
+    if (alarm) {
+        alarm.textContent = b.alarm_msg || b.alarm_key || '';
+        alarm.style.display = b.alarm_active ? '' : 'none';
+    }
+}
+function renderOverall(o) {
+    setText('overall-birds', o.birds_remaining);
+    setText('overall-feed', o.feed);
+    setText('overall-water', o.water);
+}
+function updateClock() {
+    const now = new Date();
+    const date = now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+    const time = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    setText('clock', `${date} ${time}`);
+}
+async function poll() {
+    try {
+        const resp = await fetch('/api/overview', { cache: 'no-store' });
+        if (!resp.ok) return;
+        const payload = await resp.json();
+        (payload.sheds || []).forEach(renderShed);
+        if (payload.borehole) renderBorehole(payload.borehole);
+        if (payload.overall) renderOverall(payload.overall);
+    } catch (err) {
+    }
+}
+updateClock();
+poll();
+setInterval(updateClock, 1000);
+setInterval(poll, 5000);
+setInterval(() => window.location.reload(), 30 * 60 * 1000);
+</script>
+</body>
+</html>
+"""
+
+
 @app.route("/")
 def dashboard():
     return render_template_string(HTML, **build_dashboard_context())
+
+
+@app.route("/tv")
+def tv_dashboard():
+    return render_template_string(TV_HTML, **build_dashboard_context())
 
 
 @app.route("/events")
