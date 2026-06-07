@@ -394,12 +394,14 @@ WATER_ALARM_BASELINE_SECONDS = 60 * 60
 WATER_ALARM_MIN_DROP_RATIO = 0.5
 WATER_ALARM_HISTORY_KEEP_SECONDS = 2 * 60 * 60
 WATER_ALARM_SNAPSHOT_SECONDS = 30
-FEED_DISPLAY_AVERAGE_SECONDS = 15 * 60
+FEED_DISPLAY_AVERAGE_SECONDS = 60
 FEED_DIAGNOSTIC_NOISE_SECONDS = 60
 FEED_DIAGNOSTIC_HISTORY_SECONDS = 24 * 60 * 60
 FEED_RAW_DISPLAY_SMOOTH_SECONDS = 10
 FEED_REFILL_RISE_KG = 8.0
 FEED_REFILL_SETTLING_SECONDS = 5 * 60
+FEED_MOVEMENT_MIN_DROP_KG = 1.0
+FEED_MOVEMENT_NOISE_FACTOR = 2.0
 FEED_STABLE_NOISE_KG = 2.0
 BACKUP_KEEP_COUNT = 6
 PICO_AUTO_RECOVERY_FREEZE_SECONDS = 90
@@ -1516,7 +1518,78 @@ def default_sensor_state():
         "feed_stability_label": "Waiting for samples",
         "feed_refill_settling_until_ts": None,
         "feed_published_samples": [],
+        "feed_movement": {},
     }
+
+
+def clean_feed_movement_state(rec):
+    rec = rec if isinstance(rec, dict) else {}
+
+    def float_or_none(key):
+        try:
+            return float(rec.get(key)) if rec.get(key) not in [None, ""] else None
+        except Exception:
+            return None
+
+    def int_or_none(key):
+        try:
+            return int(rec.get(key)) if rec.get(key) not in [None, ""] else None
+        except Exception:
+            return None
+
+    out = {
+        "baseline_kg": float_or_none("baseline_kg"),
+        "low_kg": float_or_none("low_kg"),
+        "last_feed_kg": float_or_none("last_feed_kg"),
+        "last_sample_ts": int_or_none("last_sample_ts"),
+        "updated_ts": int_or_none("updated_ts"),
+        "out_of_crop_feed_out_kg": float_or_none("out_of_crop_feed_out_kg") or 0.0,
+        "out_of_crop_feed_in_kg": float_or_none("out_of_crop_feed_in_kg") or 0.0,
+        "in_crop_feed_out_kg": float_or_none("in_crop_feed_out_kg") or 0.0,
+        "in_crop_feed_in_kg": float_or_none("in_crop_feed_in_kg") or 0.0,
+        "last_crop_state": str(rec.get("last_crop_state") or "").strip(),
+        "last_crop_id": int_or_none("last_crop_id"),
+        "last_movement": str(rec.get("last_movement") or "").strip(),
+    }
+    for key in ["out_of_crop_feed_out_kg", "out_of_crop_feed_in_kg", "in_crop_feed_out_kg", "in_crop_feed_in_kg"]:
+        out[key] = round(max(0.0, float(out.get(key) or 0.0)), 3)
+    events = rec.get("events", [])
+    if not isinstance(events, list):
+        events = []
+    clean_events = []
+    i = 0
+    while i < len(events):
+        event = events[i]
+        i += 1
+        if not isinstance(event, dict):
+            continue
+        try:
+            event_ts = int(event.get("ts"))
+            event_kg = round(float(event.get("kg")), 3)
+        except Exception:
+            continue
+        if event_kg < 0.5:
+            continue
+        try:
+            crop_id = int(event.get("crop_id")) if event.get("crop_id") not in [None, ""] else None
+        except Exception:
+            crop_id = None
+        try:
+            feed_kg_after = round(float(event.get("feed_kg_after")), 3) if event.get("feed_kg_after") not in [None, ""] else None
+        except Exception:
+            feed_kg_after = None
+        clean_events.append({
+            "id": str(event.get("id") or "%d-%d" % (event_ts, i)),
+            "ts": event_ts,
+            "movement": str(event.get("movement") or "").strip(),
+            "kg": event_kg,
+            "crop_state": str(event.get("crop_state") or "").strip(),
+            "crop_id": crop_id,
+            "feed_kg_after": feed_kg_after,
+        })
+    clean_events.sort(key=lambda row: int(row.get("ts") or 0))
+    out["events"] = clean_events[-500:]
+    return out
 
 
 def normalize_bool(value):
@@ -1994,6 +2067,7 @@ def load_state():
         sensors["feed_raw_samples"] = []
     if not isinstance(sensors.get("feed_published_samples"), list):
         sensors["feed_published_samples"] = []
+    sensors["feed_movement"] = clean_feed_movement_state(sensors.get("feed_movement", {}))
     if sensors.get("feed_kg_updated_ts") in [""]:
         sensors["feed_kg_updated_ts"] = None
     if sensors.get("feed_refill_settling_until_ts") in [""]:
@@ -2317,6 +2391,7 @@ def sync_payload(state):
         "feed_kg": sensors.get("feed_kg"),
         "feed_kg_updated_ts": sensors.get("feed_kg_updated_ts"),
         "feed_noise_kg": sensors.get("feed_noise_kg"),
+        "feed_movement": clean_feed_movement_state(sensors.get("feed_movement", {})),
         "feed_low_kg": cfg.get("feed_low_kg"),
         "lighting_on": sensors.get("lighting_on"),
         "lighting_enabled": lighting_enabled(cfg),
@@ -2753,6 +2828,53 @@ def fmt_crop_code(crop_id, epoch=None):
         return "CDF-%04d" % crop_no
     except Exception:
         return "--"
+
+
+def feed_movement_display_context(sensors, entries):
+    movement = clean_feed_movement_state((sensors or {}).get("feed_movement", {}))
+    active_crop_id = active_crop_id_from_entries(entries if isinstance(entries, dict) else {})
+    active_crop_epoch = active_crop_epoch_from_entries(entries if isinstance(entries, dict) else {}, active_crop_id)
+    in_crop = active_crop_id not in [None, ""]
+    out_feed_out = float(movement.get("out_of_crop_feed_out_kg") or 0.0)
+    in_feed_out = float(movement.get("in_crop_feed_out_kg") or 0.0)
+    out_feed_in = float(movement.get("out_of_crop_feed_in_kg") or 0.0)
+    in_feed_in = float(movement.get("in_crop_feed_in_kg") or 0.0)
+    total = out_feed_out + in_feed_out + out_feed_in + in_feed_in
+    event_rows = []
+    events = list(movement.get("events", []))
+    events.sort(key=lambda row: int(row.get("ts") or 0), reverse=True)
+    i = 0
+    while i < len(events) and i < 100:
+        event = events[i]
+        i += 1
+        movement_kind = str(event.get("movement") or "")
+        crop_state = str(event.get("crop_state") or "")
+        event_rows.append({
+            "ts_label": fmt_ts(event.get("ts")),
+            "movement_label": "Feed Out" if movement_kind == "feed_out" else ("Bin Fill-Up" if movement_kind == "bin_fill" else "--"),
+            "kg_label": fmt_value(event.get("kg"), "f1"),
+            "crop_state_label": "In Crop" if crop_state == "in_crop" else "Out Of Crop",
+            "crop_state_class": "in-crop" if crop_state == "in_crop" else "out-crop",
+            "crop_label": fmt_crop_code(event.get("crop_id")) if event.get("crop_id") not in [None, ""] else "--",
+            "feed_kg_after_label": fmt_value(event.get("feed_kg_after"), "f0"),
+        })
+    return {
+        "state_label": "In Crop" if in_crop else "Out Of Crop",
+        "state_class": "in-crop" if in_crop else "out-crop",
+        "crop_code": fmt_crop_code(active_crop_id, active_crop_epoch),
+        "out_of_crop_feed_out": fmt_value(out_feed_out if out_feed_out >= 0.5 else None, "f1"),
+        "in_crop_feed_out": fmt_value(in_feed_out if in_feed_out >= 0.5 else None, "f1"),
+        "out_of_crop_feed_in": fmt_value(out_feed_in if out_feed_in >= 0.5 else None, "f1"),
+        "in_crop_feed_in": fmt_value(in_feed_in if in_feed_in >= 0.5 else None, "f1"),
+        "last_feed_kg": fmt_value(movement.get("last_feed_kg"), "f0"),
+        "updated_age": fmt_age_seconds(movement.get("last_sample_ts") or movement.get("updated_ts")),
+        "last_movement_label": {
+            "feed_out": "Feed out",
+            "bin_fill": "Bin fill-up",
+        }.get(str(movement.get("last_movement") or ""), "--"),
+        "event_rows": event_rows,
+        "has_activity": total >= 0.5,
+    }
 
 
 def build_home_context():
@@ -3731,6 +3853,90 @@ def append_feed_published_sample(sensors, feed_kg, averaged_raw, now_ts):
     sensors["feed_published_samples"] = kept[-1440:]
 
 
+def update_feed_movement_state(sensors, feed_kg, sample_ts, entries=None):
+    movement = clean_feed_movement_state(sensors.get("feed_movement", {}))
+    try:
+        feed_kg = float(feed_kg)
+        sample_ts = int(sample_ts)
+    except Exception:
+        sensors["feed_movement"] = movement
+        return False
+
+    last_sample_ts = movement.get("last_sample_ts")
+    if last_sample_ts is not None and sample_ts <= last_sample_ts:
+        sensors["feed_movement"] = movement
+        return False
+
+    if movement.get("baseline_kg") is None:
+        movement["baseline_kg"] = feed_kg
+    if movement.get("low_kg") is None:
+        movement["low_kg"] = feed_kg
+
+    try:
+        noise_kg = max(0.0, float(sensors.get("feed_noise_kg") or 0.0))
+    except Exception:
+        noise_kg = 0.0
+    min_drop_kg = max(FEED_MOVEMENT_MIN_DROP_KG, noise_kg * FEED_MOVEMENT_NOISE_FACTOR)
+
+    active_crop_id = active_crop_id_from_entries(entries if isinstance(entries, dict) else {})
+    in_crop = active_crop_id not in [None, ""]
+    state_prefix = "in_crop" if in_crop else "out_of_crop"
+    feed_out_key = "%s_feed_out_kg" % state_prefix
+    feed_in_key = "%s_feed_in_kg" % state_prefix
+
+    baseline_kg = float(movement.get("baseline_kg") or feed_kg)
+    low_kg = float(movement.get("low_kg") or feed_kg)
+    last_movement = movement.get("last_movement") or ""
+    movement_kind = ""
+    movement_kg = 0.0
+
+    if feed_kg >= baseline_kg + FEED_REFILL_RISE_KG:
+        fill_kg = max(0.0, feed_kg - low_kg)
+        if fill_kg >= min_drop_kg:
+            movement[feed_in_key] = round(float(movement.get(feed_in_key) or 0.0) + fill_kg, 3)
+            last_movement = "bin_fill"
+            movement_kind = "bin_fill"
+            movement_kg = fill_kg
+        baseline_kg = feed_kg
+        low_kg = feed_kg
+    elif feed_kg <= low_kg - min_drop_kg:
+        movement_kg = low_kg - feed_kg
+        movement[feed_out_key] = round(float(movement.get(feed_out_key) or 0.0) + movement_kg, 3)
+        last_movement = "feed_out"
+        movement_kind = "feed_out"
+        low_kg = feed_kg
+    elif feed_kg > low_kg + min_drop_kg:
+        low_kg = feed_kg
+
+    if movement_kind and movement_kg >= min_drop_kg:
+        events = movement.get("events", [])
+        if not isinstance(events, list):
+            events = []
+        events.append({
+            "id": "%s-%s" % (sample_ts, movement_kind),
+            "ts": int(sample_ts),
+            "movement": movement_kind,
+            "kg": round(float(movement_kg), 3),
+            "crop_state": "in_crop" if in_crop else "out_of_crop",
+            "crop_id": None if active_crop_id in [None, ""] else int(active_crop_id),
+            "feed_kg_after": round(feed_kg, 3),
+        })
+        movement["events"] = events[-500:]
+
+    movement.update({
+        "baseline_kg": round(baseline_kg, 3),
+        "low_kg": round(low_kg, 3),
+        "last_feed_kg": round(feed_kg, 3),
+        "last_sample_ts": sample_ts,
+        "updated_ts": int(time.time()),
+        "last_crop_state": "in_crop" if in_crop else "out_of_crop",
+        "last_crop_id": None if active_crop_id in [None, ""] else int(active_crop_id),
+        "last_movement": last_movement,
+    })
+    sensors["feed_movement"] = clean_feed_movement_state(movement)
+    return True
+
+
 def update_feed_raw_display_smoothing(sensors, feed_raw, now_ts=None):
     now_ts = int(time.time()) if now_ts is None else int(now_ts)
     samples = sensors.get("feed_raw_display_samples")
@@ -3777,7 +3983,7 @@ def feed_raw_display_units(sensors):
     return sensors.get("feed_raw_units")
 
 
-def update_feed_from_raw(sensors, now_ts=None):
+def update_feed_from_raw(sensors, now_ts=None, entries=None):
     now_ts = int(time.time()) if now_ts is None else int(now_ts)
     raw = sensors.get("raw", {})
     try:
@@ -3882,6 +4088,7 @@ def update_feed_from_raw(sensors, now_ts=None):
     sensors["feed_minute_change_kg"] = round(feed_kg - previous_feed_kg, 1) if previous_feed_kg is not None else None
     if previous_feed_kg is not None and feed_kg >= previous_feed_kg + FEED_REFILL_RISE_KG:
         sensors["feed_refill_settling_until_ts"] = now_ts + FEED_REFILL_SETTLING_SECONDS
+    update_feed_movement_state(sensors, feed_kg, now_ts, entries=entries)
     append_feed_published_sample(sensors, feed_kg, averaged_raw, now_ts)
     return True
 
@@ -3996,7 +4203,7 @@ def apply_sensor_packet(state, packet):
         state["last_log_ts"] = now_ts
         state["last_log_status"] = "Log failed: %s" % exc
     update_water_from_pulses(sensors, now_ts)
-    update_feed_from_raw(sensors, now_ts=now_ts)
+    update_feed_from_raw(sensors, now_ts=now_ts, entries=state.get("entries", {}))
     evaluate_augers(sensors, now_ts=now_ts)
     state["sensors"] = sensors
     if bool(state.get("pending_pico_update_recovery")):
@@ -6902,6 +7109,9 @@ FEED_SETTINGS_HTML = """
         input[type="number"] { width:100%; min-height:72px; border-radius:16px; border:1px solid var(--line); background:#686868; color:var(--text); font-size:30px; padding:12px 16px; box-sizing:border-box; }
         button { min-height:72px; border-radius:16px; border:1px solid #8a8a8a; background:linear-gradient(180deg, #7d7d7d, #696969); color:var(--text); font-size:22px; font-weight:700; padding:0 18px; cursor:pointer; margin-top:14px; width:100%; }
         .hint { color:var(--muted); font-size:16px; margin-top:12px; }
+        .state-pill { display:inline-flex; align-items:center; justify-content:center; min-height:34px; padding:7px 12px; border-radius:999px; border:1px solid var(--line); background:#686868; font-weight:700; font-size:15px; }
+        .state-pill.in-crop { border-color:#35d07f; color:#e4ffed; }
+        .state-pill.out-crop { border-color:#d4aa4f; color:#fff1ca; }
         .chart-box { width:100%; height:220px; border:1px solid var(--line); border-radius:12px; background:#686868; overflow:hidden; }
         canvas { width:100%; height:100%; display:block; }
         .table-wrap { overflow:auto; border:1px solid var(--line); border-radius:12px; }
@@ -6919,7 +7129,7 @@ FEED_SETTINGS_HTML = """
             <div class="current">Current: <span id="currentFeedKg">{{ current_feed_kg }}</span> KG</div>
             <div class="detail"><span>Live calculated KG</span><span id="feedLiveKg">{{ feed_live_kg }}</span></div>
             <div class="detail"><span>Smoothed raw feed units</span><span id="currentFeedRaw">{{ current_feed_raw }}</span></div>
-            <div class="detail"><span>Published 15 minute average raw</span><span id="feedAverageRaw">{{ feed_average_raw }}</span></div>
+            <div class="detail"><span>Published 60 second average raw</span><span id="feedAverageRaw">{{ feed_average_raw }}</span></div>
             <div class="detail"><span>KG updated</span><span id="feedKgUpdated">{{ feed_kg_updated_age }}</span></div>
             <div class="detail"><span>Low feed threshold</span><span>{{ feed_low_kg }} KG</span></div>
             <div class="detail"><span>Feed bin capacity</span><span>{{ feed_capacity_kg }} KG</span></div>
@@ -6931,8 +7141,37 @@ FEED_SETTINGS_HTML = """
             <div class="detail"><span>Signal state</span><span id="feedStabilityLabel">{{ feed_stability_label }}</span></div>
             <div class="detail"><span>60 second noise range</span><span><span id="feedNoiseKg">{{ feed_noise_kg }}</span> KG</span></div>
             <div class="detail"><span>60 second raw range</span><span id="feedNoiseRaw">{{ feed_noise_raw_units }}</span></div>
-            <div class="detail"><span>Last 15 minute movement</span><span><span id="feedMinuteChange">{{ feed_minute_change_kg }}</span> KG</span></div>
+            <div class="detail"><span>Last 60 second movement</span><span><span id="feedMinuteChange">{{ feed_minute_change_kg }}</span> KG</span></div>
             <div class="detail"><span>Refill recording state</span><span id="feedRefillStatus">{{ feed_refill_status }}</span></div>
+        </div>
+        <div class="panel">
+            <div class="sub">Feed Movement Tracker</div>
+            <div class="detail"><span>State</span><span><span id="feedMovementState" class="state-pill {{ feed_movement.state_class }}">{{ feed_movement.state_label }}</span></span></div>
+            <div class="detail"><span>Crop</span><span id="feedMovementCrop">{{ feed_movement.crop_code }}</span></div>
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>Time</th><th>Movement</th><th>KG</th><th>Crop State</th><th>Crop</th><th>Feed KG After</th></tr></thead>
+                    <tbody id="feedMovementRows">
+                        {% for row in feed_movement.event_rows %}
+                        <tr>
+                            <td>{{ row.ts_label }}</td>
+                            <td>{{ row.movement_label }}</td>
+                            <td>{{ row.kg_label }}</td>
+                            <td><span class="state-pill {{ row.crop_state_class }}">{{ row.crop_state_label }}</span></td>
+                            <td>{{ row.crop_label }}</td>
+                            <td>{{ row.feed_kg_after_label }}</td>
+                        </tr>
+                        {% endfor %}
+                        {% if not feed_movement.event_rows %}
+                        <tr><td colspan="6">No feed movement lines recorded yet.</td></tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
+            <div class="detail"><span>Last feed KG</span><span id="feedMovementLastFeed">{{ feed_movement.last_feed_kg }}</span></div>
+            <div class="detail"><span>Last movement</span><span id="feedMovementLastMovement">{{ feed_movement.last_movement_label }}</span></div>
+            <div class="detail"><span>Updated</span><span id="feedMovementUpdated">{{ feed_movement.updated_age }}</span></div>
+            <div class="hint">These figures are local controller activity. Add out-of-crop feed to a crop from the office dashboard feed page.</div>
         </div>
         <div class="panel">
             <div class="sub">Published KG - Last 24 Hours</div>
@@ -7003,6 +7242,38 @@ FEED_SETTINGS_HTML = """
             if (el) el.textContent = value;
         }
 
+        function updateMovement(data) {
+            const movement = data.feed_movement || {};
+            setFeedText('feedMovementCrop', movement.crop_code || '--');
+            setFeedText('feedMovementLastFeed', movement.last_feed_kg || '--');
+            setFeedText('feedMovementLastMovement', movement.last_movement_label || '--');
+            setFeedText('feedMovementUpdated', movement.updated_age || '--');
+            const rowsEl = document.getElementById('feedMovementRows');
+            if (rowsEl) {
+                const rows = Array.isArray(movement.event_rows) ? movement.event_rows : [];
+                if (!rows.length) {
+                    rowsEl.innerHTML = '<tr><td colspan="6">No feed movement lines recorded yet.</td></tr>';
+                } else {
+                    rowsEl.innerHTML = rows.map((row) => (
+                        '<tr>' +
+                        '<td>' + (row.ts_label || '--') + '</td>' +
+                        '<td>' + (row.movement_label || '--') + '</td>' +
+                        '<td>' + (row.kg_label || '--') + '</td>' +
+                        '<td><span class="state-pill ' + (row.crop_state_class || '') + '">' + (row.crop_state_label || '--') + '</span></td>' +
+                        '<td>' + (row.crop_label || '--') + '</td>' +
+                        '<td>' + (row.feed_kg_after_label || '--') + '</td>' +
+                        '</tr>'
+                    )).join('');
+                }
+            }
+            const stateEl = document.getElementById('feedMovementState');
+            if (stateEl) {
+                stateEl.textContent = movement.state_label || '--';
+                stateEl.classList.remove('in-crop', 'out-crop');
+                if (movement.state_class) stateEl.classList.add(movement.state_class);
+            }
+        }
+
         function drawFeedTrace(rows) {
             const canvas = document.getElementById('feedTraceChart');
             if (!canvas) return;
@@ -7020,7 +7291,7 @@ FEED_SETTINGS_HTML = """
             if (!Array.isArray(rows) || rows.length < 2) {
                 ctx.fillStyle = '#d2d2d2';
                 ctx.font = '16px Arial';
-                ctx.fillText('Waiting for 15 minute readings', 14, 28);
+                ctx.fillText('Waiting for 60 second readings', 14, 28);
                 return;
             }
             const values = rows.map((row) => Number(row.kg)).filter((value) => Number.isFinite(value));
@@ -7058,6 +7329,7 @@ FEED_SETTINGS_HTML = """
                 setFeedText('feedNoiseRaw', data.feed_noise_raw_units);
                 setFeedText('feedMinuteChange', data.feed_minute_change_kg);
                 setFeedText('feedRefillStatus', data.feed_refill_status);
+                updateMovement(data);
                 drawFeedTrace(data.feed_trace_rows);
                 const tareButton = document.getElementById('setFeedTareButton');
                 const calibrateButton = document.getElementById('calibrateFeedButton');
@@ -8290,6 +8562,7 @@ def finish_water_calibration():
 
 def build_feed_settings_context(cfg, state):
     sensors = state.get("sensors", default_sensor_state())
+    feed_movement = feed_movement_display_context(sensors, state.get("entries", {}))
     feed_raw = sensors.get("feed_raw_units")
     feed_raw_display = feed_raw_display_units(sensors)
     feed_raw_available = feed_raw not in [None, ""]
@@ -8327,6 +8600,7 @@ def build_feed_settings_context(cfg, state):
         "feed_noise_kg": fmt_value(sensors.get("feed_noise_kg"), "f1"),
         "feed_stability_label": str(sensors.get("feed_stability_label") or "Waiting for samples"),
         "feed_refill_status": ("Settling for %s" % fmt_duration_short(settling_remaining_s)) if settling_remaining_s > 0 else "Ready",
+        "feed_movement": feed_movement,
         "feed_trace_rows": trace_rows,
         "feed_low_kg": fmt_value(cfg.get("feed_low_kg", 2000.0), "f0"),
         "feed_capacity_kg": fmt_value(cfg.get("feed_capacity_kg", 16000.0), "f0"),

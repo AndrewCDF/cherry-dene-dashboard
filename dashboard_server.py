@@ -11,6 +11,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 import zipfile
 from datetime import datetime, timedelta
 from email.message import EmailMessage
@@ -196,6 +197,7 @@ FEED_RECORDING_MIN_DROP_KG = 1.0
 FEED_RECORDING_REFILL_RISE_KG = 8.0
 FEED_RECORDING_NOISE_FACTOR = 2.0
 FEED_REFILL_SETTLING_SECONDS = 5 * 60
+FEED_MOVEMENT_APPLY_MIN_KG = 0.5
 _office_backup_lock = threading.Lock()
 
 
@@ -1731,13 +1733,14 @@ def update_shed_hourly_metrics_from_meta(shed_no, meta):
     shed_name = shed_name_from_number(shed_no)
     crop_id = get_active_crop_id_for_shed(shed_name)
     out_of_crop = crop_id in [None, ""]
+    update_feed_movement_activity_from_meta(shed_no, meta)
+    if out_of_crop:
+        return False
     rows = read_all_json_lines("hourly.ndjson")
 
     def matches_crop(row):
         if row.get("shed") != shed_name:
             return False
-        if out_of_crop:
-            return row.get("crop_id") in [None, ""]
         try:
             return int(row.get("crop_id")) == int(crop_id)
         except Exception:
@@ -1757,9 +1760,9 @@ def update_shed_hourly_metrics_from_meta(shed_no, meta):
         row = {
             "ts": int(time.time()),
             "shed": shed_name,
-            "crop_id": None if out_of_crop else int(crop_id),
+            "crop_id": int(crop_id),
             "hour_epoch": int(hour_epoch),
-            "out_of_crop": bool(out_of_crop),
+            "out_of_crop": False,
             "source": "controller_sync",
         }
         rows.append(row)
@@ -1778,7 +1781,7 @@ def update_shed_hourly_metrics_from_meta(shed_no, meta):
         row["water_hour_liters"] = round(max(0.0, water_total_litres - start_total_litres), 3)
         row["ts"] = int(time.time())
         row["source"] = "controller_sync"
-        row["out_of_crop"] = bool(out_of_crop)
+        row["out_of_crop"] = False
 
     if feed_kg is not None:
         latest_feed_row = None
@@ -1836,7 +1839,7 @@ def update_shed_hourly_metrics_from_meta(shed_no, meta):
             row["feed_settling_until_ts"] = settling_until_ts
             row["ts"] = int(time.time())
             row["source"] = "controller_sync"
-            row["out_of_crop"] = bool(out_of_crop)
+            row["out_of_crop"] = False
 
     write_named_json_lines_atomic("hourly.ndjson", rows)
     return True
@@ -2256,12 +2259,50 @@ def move_mortality_history_between_sheds(from_shed_name, to_shed_name, dest_shed
 
 
 FEED_STOCK_KIND_LABELS = {
+    "bin_fill": "Bin Fill-Up",
     "crop_carryover_credit": "Crop End Carryover (Legacy)",
     "manual_add": "Manual Add",
     "manual_remove": "Manual Remove",
     "shed_allocation": "Manual Shed Feed Entry",
     "shed_return": "Shed Feed Return (Legacy)",
 }
+EDITABLE_FEED_STOCK_KINDS = ["bin_fill", "shed_allocation"]
+
+
+def feed_stock_record_id(rec, index):
+    if isinstance(rec, dict):
+        tx_id = str(rec.get("tx_id") or "").strip()
+        if tx_id:
+            return tx_id
+    return "legacy-%d" % int(index)
+
+
+def new_feed_stock_tx_id():
+    return "feed-%s" % uuid.uuid4().hex
+
+
+def feed_stock_display_kind(kind):
+    kind = str(kind or "manual_add")
+    if kind in ["manual_add", "bin_fill"]:
+        return "bin_fill"
+    if kind == "shed_allocation":
+        return "shed_allocation"
+    return kind
+
+
+def feed_stock_delta_for_kind(kind, kg):
+    try:
+        kg = abs(round(float(kg), 3))
+    except Exception:
+        return None
+    if kg <= 0:
+        return None
+    display_kind = feed_stock_display_kind(kind)
+    if display_kind == "shed_allocation":
+        return -kg
+    if display_kind == "bin_fill":
+        return kg
+    return None
 
 
 def feed_stock_transactions():
@@ -2297,9 +2338,12 @@ def feed_stock_transactions():
             source_crop_id = int(rec.get("source_crop_id")) if rec.get("source_crop_id") not in [None, ""] else None
         except Exception:
             source_crop_id = None
+        tx_id = feed_stock_record_id(rec, i)
         out.append({
+            "tx_id": tx_id,
             "ts": ts,
             "kind": str(rec.get("kind") or "manual_add"),
+            "display_kind": feed_stock_display_kind(rec.get("kind")),
             "delta_kg": delta_kg,
             "shed_no": shed_no,
             "crop_id": crop_id,
@@ -2323,6 +2367,7 @@ def append_feed_stock_transaction(kind, delta_kg, note="", shed_no=None, crop_id
     except Exception:
         tx_ts = int(time.time())
     append_named_json_line("feed_stock.ndjson", {
+        "tx_id": new_feed_stock_tx_id(),
         "ts": tx_ts,
         "kind": str(kind or "manual_add"),
         "delta_kg": delta_kg,
@@ -2332,6 +2377,379 @@ def append_feed_stock_transaction(kind, delta_kg, note="", shed_no=None, crop_id
         "note": str(note or "").strip(),
     })
     return True
+
+
+def rewrite_feed_stock_transaction(tx_id, new_rec=None):
+    tx_id = str(tx_id or "").strip()
+    if not tx_id:
+        return False
+    rows = read_all_json_lines("feed_stock.ndjson")
+    changed = False
+    out = []
+    i = 0
+    while i < len(rows):
+        rec = rows[i]
+        if isinstance(rec, dict):
+            rec_id = feed_stock_record_id(rec, i)
+            if rec.get("tx_id") in [None, ""]:
+                rec = dict(rec)
+                rec["tx_id"] = rec_id
+            if rec_id == tx_id:
+                changed = True
+                if isinstance(new_rec, dict):
+                    out.append(new_rec)
+                i += 1
+                continue
+            out.append(rec)
+        i += 1
+    if changed:
+        write_named_json_lines_atomic("feed_stock.ndjson", out)
+    return changed
+
+
+def feed_movement_activity_path():
+    ensure_data_dir()
+    return os.path.join(DATA_DIR, "feed_movement_activity.json")
+
+
+def legacy_pre_crop_feed_activity_path():
+    ensure_data_dir()
+    return os.path.join(DATA_DIR, "pre_crop_feed_activity.json")
+
+
+def load_feed_movement_activity():
+    data = read_json_file(feed_movement_activity_path(), None)
+    if data is None:
+        data = read_json_file(legacy_pre_crop_feed_activity_path(), {})
+    return data if isinstance(data, dict) else {}
+
+
+def save_feed_movement_activity(data):
+    write_json_file_atomic(feed_movement_activity_path(), data if isinstance(data, dict) else {})
+
+
+def clean_feed_movement_activity_rec(rec):
+    rec = rec if isinstance(rec, dict) else {}
+
+    def float_or_none(key):
+        try:
+            return float(rec.get(key)) if rec.get(key) not in [None, ""] else None
+        except Exception:
+            return None
+
+    def int_or_none(key):
+        try:
+            return int(rec.get(key)) if rec.get(key) not in [None, ""] else None
+        except Exception:
+            return None
+
+    out_of_crop_feed_out_kg = float_or_none("out_of_crop_feed_out_kg")
+    if out_of_crop_feed_out_kg is None:
+        out_of_crop_feed_out_kg = float_or_none("activity_kg")
+    if out_of_crop_feed_out_kg is None:
+        out_of_crop_feed_out_kg = 0.0
+    out_of_crop_feed_in_kg = float_or_none("out_of_crop_feed_in_kg")
+    if out_of_crop_feed_in_kg is None:
+        out_of_crop_feed_in_kg = 0.0
+    in_crop_feed_out_kg = float_or_none("in_crop_feed_out_kg")
+    if in_crop_feed_out_kg is None:
+        in_crop_feed_out_kg = 0.0
+    in_crop_feed_in_kg = float_or_none("in_crop_feed_in_kg")
+    if in_crop_feed_in_kg is None:
+        in_crop_feed_in_kg = 0.0
+    events = rec.get("events", [])
+    if not isinstance(events, list):
+        events = []
+    clean_events = []
+    i = 0
+    while i < len(events):
+        event = events[i]
+        i += 1
+        if not isinstance(event, dict):
+            continue
+        try:
+            event_ts = int(event.get("ts"))
+            event_kg = round(float(event.get("kg")), 3)
+        except Exception:
+            continue
+        if event_kg < FEED_MOVEMENT_APPLY_MIN_KG:
+            continue
+        try:
+            event_shed_no = int(event.get("shed_no")) if event.get("shed_no") not in [None, ""] else None
+        except Exception:
+            event_shed_no = None
+        try:
+            event_crop_id = int(event.get("crop_id")) if event.get("crop_id") not in [None, ""] else None
+        except Exception:
+            event_crop_id = None
+        try:
+            feed_kg_after = round(float(event.get("feed_kg_after")), 3) if event.get("feed_kg_after") not in [None, ""] else None
+        except Exception:
+            feed_kg_after = None
+        clean_events.append({
+            "id": str(event.get("id") or uuid.uuid4().hex),
+            "ts": event_ts,
+            "shed_no": event_shed_no,
+            "movement": str(event.get("movement") or "").strip(),
+            "kg": event_kg,
+            "crop_state": str(event.get("crop_state") or "").strip(),
+            "crop_id": event_crop_id,
+            "feed_kg_after": feed_kg_after,
+        })
+    clean_events.sort(key=lambda row: int(row.get("ts") or 0))
+    return {
+        "baseline_kg": float_or_none("baseline_kg"),
+        "low_kg": float_or_none("low_kg"),
+        "last_feed_kg": float_or_none("last_feed_kg"),
+        "last_sample_ts": int_or_none("last_sample_ts"),
+        "start_ts": int_or_none("start_ts"),
+        "updated_ts": int_or_none("updated_ts"),
+        "out_of_crop_feed_out_kg": round(max(0.0, out_of_crop_feed_out_kg), 3),
+        "out_of_crop_feed_in_kg": round(max(0.0, out_of_crop_feed_in_kg), 3),
+        "in_crop_feed_out_kg": round(max(0.0, in_crop_feed_out_kg), 3),
+        "in_crop_feed_in_kg": round(max(0.0, in_crop_feed_in_kg), 3),
+        "last_crop_state": str(rec.get("last_crop_state") or "").strip(),
+        "last_crop_id": int_or_none("last_crop_id"),
+        "last_movement": str(rec.get("last_movement") or "").strip(),
+        "events": clean_events[-500:],
+        "last_applied_ts": int_or_none("last_applied_ts"),
+        "last_applied_crop_id": int_or_none("last_applied_crop_id"),
+        "last_applied_kg": float_or_none("last_applied_kg"),
+    }
+
+
+def update_feed_movement_activity_from_meta(shed_no, meta):
+    if not isinstance(meta, dict):
+        return False
+    shed_name = shed_name_from_number(shed_no)
+    crop_id = get_active_crop_id_for_shed(shed_name)
+    in_crop = crop_id not in [None, ""]
+    try:
+        feed_kg = float(meta.get("feed_kg"))
+    except Exception:
+        return False
+    try:
+        sample_ts = int(meta.get("feed_kg_updated_ts"))
+    except Exception:
+        try:
+            sample_ts = int(meta.get("last_sensor_ts"))
+        except Exception:
+            sample_ts = int(time.time())
+    try:
+        noise_kg = max(0.0, float(meta.get("feed_noise_kg") or 0.0))
+    except Exception:
+        noise_kg = 0.0
+    min_drop_kg = max(FEED_RECORDING_MIN_DROP_KG, noise_kg * FEED_RECORDING_NOISE_FACTOR)
+
+    data = load_feed_movement_activity()
+    key = str(int(shed_no))
+    rec = clean_feed_movement_activity_rec(data.get(key, {}))
+    last_sample_ts = rec.get("last_sample_ts")
+    if last_sample_ts is not None and sample_ts <= last_sample_ts:
+        return False
+
+    if rec.get("baseline_kg") is None:
+        rec["baseline_kg"] = feed_kg
+    if rec.get("low_kg") is None:
+        rec["low_kg"] = feed_kg
+    if rec.get("start_ts") is None:
+        rec["start_ts"] = sample_ts
+
+    baseline_kg = float(rec.get("baseline_kg") or feed_kg)
+    low_kg = float(rec.get("low_kg") or feed_kg)
+    state_prefix = "in_crop" if in_crop else "out_of_crop"
+    feed_out_key = "%s_feed_out_kg" % state_prefix
+    feed_in_key = "%s_feed_in_kg" % state_prefix
+    feed_out_kg = float(rec.get(feed_out_key) or 0.0)
+    feed_in_kg = float(rec.get(feed_in_key) or 0.0)
+    last_movement = rec.get("last_movement") or ""
+    movement_kg = 0.0
+    movement_kind = ""
+
+    if feed_kg >= baseline_kg + FEED_RECORDING_REFILL_RISE_KG:
+        fill_kg = max(0.0, feed_kg - low_kg)
+        if fill_kg >= min_drop_kg:
+            feed_in_kg += fill_kg
+            last_movement = "bin_fill"
+            movement_kind = "bin_fill"
+            movement_kg = fill_kg
+        baseline_kg = feed_kg
+        low_kg = feed_kg
+    elif feed_kg <= low_kg - min_drop_kg:
+        movement_kg = low_kg - feed_kg
+        feed_out_kg += movement_kg
+        last_movement = "feed_out"
+        movement_kind = "feed_out"
+        low_kg = feed_kg
+    elif feed_kg > low_kg + min_drop_kg:
+        low_kg = feed_kg
+
+    if movement_kind and movement_kg >= min_drop_kg:
+        events = rec.get("events", [])
+        if not isinstance(events, list):
+            events = []
+        events.append({
+            "id": uuid.uuid4().hex,
+            "ts": int(sample_ts),
+            "shed_no": int(shed_no),
+            "movement": movement_kind,
+            "kg": round(float(movement_kg), 3),
+            "crop_state": "in_crop" if in_crop else "out_of_crop",
+            "crop_id": None if crop_id in [None, ""] else int(crop_id),
+            "feed_kg_after": round(feed_kg, 3),
+        })
+        rec["events"] = events[-500:]
+
+    rec[feed_out_key] = round(max(0.0, feed_out_kg), 3)
+    rec[feed_in_key] = round(max(0.0, feed_in_kg), 3)
+    rec.update({
+        "baseline_kg": round(baseline_kg, 3),
+        "low_kg": round(low_kg, 3),
+        "last_feed_kg": round(feed_kg, 3),
+        "last_sample_ts": int(sample_ts),
+        "updated_ts": int(time.time()),
+        "last_crop_state": "in_crop" if in_crop else "out_of_crop",
+        "last_crop_id": None if crop_id in [None, ""] else int(crop_id),
+        "last_movement": last_movement,
+    })
+    data[key] = rec
+    save_feed_movement_activity(data)
+    return True
+
+
+def clear_feed_movement_activity(shed_no, crop_id=None, applied_kg=None, out_of_crop_only=False):
+    data = load_feed_movement_activity()
+    key = str(int(shed_no))
+    rec = clean_feed_movement_activity_rec(data.get(key, {}))
+    current_feed_kg = rec.get("last_feed_kg")
+    if out_of_crop_only:
+        rec["out_of_crop_feed_out_kg"] = 0.0
+        rec["out_of_crop_feed_in_kg"] = 0.0
+    else:
+        rec["out_of_crop_feed_out_kg"] = 0.0
+        rec["out_of_crop_feed_in_kg"] = 0.0
+        rec["in_crop_feed_out_kg"] = 0.0
+        rec["in_crop_feed_in_kg"] = 0.0
+    rec.update({
+        "baseline_kg": current_feed_kg,
+        "low_kg": current_feed_kg,
+        "start_ts": int(time.time()),
+        "updated_ts": int(time.time()),
+        "last_applied_ts": int(time.time()),
+        "last_applied_crop_id": None if crop_id in [None, ""] else int(crop_id),
+        "last_applied_kg": None if applied_kg in [None, ""] else round(float(applied_kg), 3),
+    })
+    data[key] = rec
+    save_feed_movement_activity(data)
+
+
+def feed_movement_activity_rows():
+    data = load_feed_movement_activity()
+    rows = []
+    i = 0
+    while i < len(SHED_NUMBERS):
+        shed_no = SHED_NUMBERS[i]
+        key = str(int(shed_no))
+        rec = clean_feed_movement_activity_rec(data.get(key, {}))
+        shed_name = shed_name_from_number(shed_no)
+        crop = active_crop_record_for_shed(shed_name)
+        try:
+            crop_id = int(crop.get("crop_id"))
+        except Exception:
+            crop_id = None
+        out_of_crop_feed_out_kg = float(rec.get("out_of_crop_feed_out_kg") or 0.0)
+        out_of_crop_feed_in_kg = float(rec.get("out_of_crop_feed_in_kg") or 0.0)
+        in_crop_feed_out_kg = float(rec.get("in_crop_feed_out_kg") or 0.0)
+        in_crop_feed_in_kg = float(rec.get("in_crop_feed_in_kg") or 0.0)
+        movement_total = out_of_crop_feed_out_kg + out_of_crop_feed_in_kg + in_crop_feed_out_kg + in_crop_feed_in_kg
+        last_feed_kg = rec.get("last_feed_kg")
+        updated_ts = rec.get("last_sample_ts") or rec.get("updated_ts")
+        is_in_crop = crop_id not in [None, ""]
+        rows.append({
+            "shed_no": shed_no,
+            "shed_name": shed_name,
+            "crop_state_label": "In Crop" if is_in_crop else "Out Of Crop",
+            "crop_state_class": "in-crop" if is_in_crop else "out-crop",
+            "out_of_crop_feed_out_kg": round(out_of_crop_feed_out_kg, 3),
+            "out_of_crop_feed_out_label": fmt_value(out_of_crop_feed_out_kg if out_of_crop_feed_out_kg >= FEED_MOVEMENT_APPLY_MIN_KG else None, "f1"),
+            "in_crop_feed_out_label": fmt_value(in_crop_feed_out_kg if in_crop_feed_out_kg >= FEED_MOVEMENT_APPLY_MIN_KG else None, "f1"),
+            "out_of_crop_feed_in_label": fmt_value(out_of_crop_feed_in_kg if out_of_crop_feed_in_kg >= FEED_MOVEMENT_APPLY_MIN_KG else None, "f1"),
+            "in_crop_feed_in_label": fmt_value(in_crop_feed_in_kg if in_crop_feed_in_kg >= FEED_MOVEMENT_APPLY_MIN_KG else None, "f1"),
+            "last_feed_kg_label": fmt_value(last_feed_kg, "f0"),
+            "updated_label": format_ts_label(updated_ts),
+            "crop_id": crop_id,
+            "crop_code": fmt_crop_code(crop_id, crop.get("placement_epoch")) if crop_id not in [None, ""] else "--",
+            "can_apply": crop_id not in [None, ""] and out_of_crop_feed_out_kg >= FEED_MOVEMENT_APPLY_MIN_KG,
+            "can_clear": movement_total >= FEED_MOVEMENT_APPLY_MIN_KG,
+            "status": (
+                "Out-of-crop feed ready to add"
+                if crop_id not in [None, ""] and out_of_crop_feed_out_kg >= FEED_MOVEMENT_APPLY_MIN_KG
+                else ("Tracking in crop" if is_in_crop else "Tracking out of crop")
+            ),
+        })
+        i += 1
+    return rows
+
+
+def feed_movement_event_rows(shed_no=None, limit=200):
+    data = load_feed_movement_activity()
+    target_shed_no = None
+    try:
+        target_shed_no = int(shed_no) if shed_no not in [None, ""] else None
+    except Exception:
+        target_shed_no = None
+    events = []
+    for key in data:
+        rec = clean_feed_movement_activity_rec(data.get(key, {}))
+        i = 0
+        while i < len(rec.get("events", [])):
+            event = rec["events"][i]
+            i += 1
+            try:
+                event_shed_no = int(event.get("shed_no") or key)
+            except Exception:
+                continue
+            if target_shed_no is not None and event_shed_no != target_shed_no:
+                continue
+            movement = str(event.get("movement") or "")
+            crop_state = str(event.get("crop_state") or "")
+            crop_id = event.get("crop_id")
+            events.append({
+                "id": event.get("id"),
+                "ts": event.get("ts"),
+                "ts_label": format_ts_label(event.get("ts")),
+                "shed_no": event_shed_no,
+                "shed_name": shed_name_from_number(event_shed_no),
+                "movement": movement,
+                "movement_label": "Feed Out" if movement == "feed_out" else ("Bin Fill-Up" if movement == "bin_fill" else "--"),
+                "kg": event.get("kg"),
+                "kg_label": fmt_value(event.get("kg"), "f1"),
+                "crop_state": crop_state,
+                "crop_state_label": "In Crop" if crop_state == "in_crop" else "Out Of Crop",
+                "crop_state_class": "in-crop" if crop_state == "in_crop" else "out-crop",
+                "crop_label": fmt_crop_code(crop_id) if crop_id not in [None, ""] else "--",
+                "feed_kg_after_label": fmt_value(event.get("feed_kg_after"), "f0"),
+            })
+    events.sort(key=lambda row: int(row.get("ts") or 0), reverse=True)
+    try:
+        limit = max(0, int(limit))
+    except Exception:
+        limit = 200
+    return events[:limit] if limit else events
+
+
+def feed_movement_activity_row_for_shed(shed_no):
+    try:
+        shed_no = int(shed_no)
+    except Exception:
+        return {}
+    rows = feed_movement_activity_rows()
+    i = 0
+    while i < len(rows):
+        if rows[i].get("shed_no") == shed_no:
+            return rows[i]
+        i += 1
+    return {}
 
 
 def feed_stock_active_target_rows():
@@ -2380,13 +2798,22 @@ def feed_stock_allocated_kg_for_target(shed_no, crop_id, rows=None):
 
 def build_feed_stock_context(preselected_shed_no=None):
     tx_rows = feed_stock_transactions()
-    display_rows = [row for row in reversed(tx_rows) if row.get("kind") == "shed_allocation"]
+    display_rows = list(reversed(tx_rows))
     i = 0
     while i < len(display_rows):
         rec = display_rows[i]
+        display_kind = feed_stock_display_kind(rec.get("kind"))
+        rec["display_kind"] = display_kind
         rec["kind_label"] = FEED_STOCK_KIND_LABELS.get(rec.get("kind"), str(rec.get("kind") or "").replace("_", " ").title())
+        if display_kind == "bin_fill":
+            rec["kind_label"] = "Bin Fill-Up"
+        elif display_kind == "shed_allocation":
+            rec["kind_label"] = "Shed Feed Entry"
         rec["delta_kg_label"] = fmt_value(rec.get("delta_kg"), "f1")
         rec["feed_kg_label"] = fmt_value(abs(float(rec.get("delta_kg") or 0.0)), "f1")
+        rec["feed_kg_value"] = "%.1f" % abs(float(rec.get("delta_kg") or 0.0))
+        rec["form_id"] = "feed-edit-%s" % re.sub(r"[^A-Za-z0-9_-]+", "-", str(rec.get("tx_id") or ""))
+        rec["can_edit"] = display_kind in EDITABLE_FEED_STOCK_KINDS
         try:
             rec["ts_label"] = datetime.fromtimestamp(int(rec.get("ts"))).strftime("%d %b %Y %H:%M")
         except Exception:
@@ -2411,7 +2838,10 @@ def build_feed_stock_context(preselected_shed_no=None):
     return {
         "transaction_rows": display_rows,
         "active_targets": feed_stock_active_target_rows(),
+        "feed_movement_rows": feed_movement_activity_rows(),
+        "feed_movement_event_rows": feed_movement_event_rows(),
         "preselected_shed_no": preselected_shed_no,
+        "shed_options": [{"shed_no": shed_no, "shed_name": shed_name_from_number(shed_no)} for shed_no in SHED_NUMBERS],
     }
 
 
@@ -4845,7 +5275,8 @@ def build_rows():
         active_entries = active_entries_for_tile(entries)
         has_active_entry = has_any_active_entry(entries)
         is_online = controller_online(controller_meta)
-        operational_display_active = is_online and has_active_entry
+        live_display_active = is_online and bool(live)
+        crop_operational_active = is_online and has_active_entry
 
         try:
             active_crop_id = int(crop.get("crop_id"))
@@ -4935,9 +5366,12 @@ def build_rows():
         feed_kg = live.get("feed_kg")
         updated_ts = live.get("ts")
         water_lpm = live.get("water_lpm")
-        if not operational_display_active:
+        if not live_display_active:
             temp_c = None
             rh_pct = None
+            feed_kg = None
+            water_lpm = None
+            updated_ts = None
 
         env_limits = environment_limits_for_shed(shed_no, office_env_limits_map, controller_meta)
         temp_glow = range_glow_class(
@@ -5009,7 +5443,7 @@ def build_rows():
         auger_tiles = dashboard_auger_tiles(
             controller_meta,
             now_ts=now_ts,
-            force_red=not operational_display_active,
+            force_red=not crop_operational_active,
         )
         lighting_visible = True
         lighting_on = bool(controller_meta.get("lighting_on", False))
@@ -5088,6 +5522,9 @@ def build_dashboard_water_context():
     while i < len(SHED_NUMBERS):
         shed_no = SHED_NUMBERS[i]
         live = effective_live_for_shed(live_map, controller_meta_map, shed_no)
+        meta = controller_meta_map.get(str(int(shed_no)), {})
+        if not (controller_online(meta) and bool(live)):
+            live = {}
         water_lpm = live.get("water_lpm")
         try:
             water_lpm_f = float(water_lpm) if water_lpm is not None else None
@@ -6781,6 +7218,7 @@ MANUAL_FEED_ENTRY_HTML = """
         .status.err { border-color:#c65460; color:#ffdbe1; }
         .panel { background:#737373; border:1px solid #8a8a8a; border-radius:8px; padding:14px; margin-bottom:16px; min-width:0; }
         .form-grid { display:grid; grid-template-columns:1fr 0.55fr 1fr auto; gap:10px; align-items:end; }
+        .bin-fill-grid { grid-template-columns:1fr 0.55fr 1fr auto; }
         .field { display:flex; flex-direction:column; gap:6px; min-width:0; }
         .field label { color:#f0f0f0; font-size:14px; }
         input, select {
@@ -6802,22 +7240,71 @@ MANUAL_FEED_ENTRY_HTML = """
             color:#ececec;
             cursor:pointer;
         }
+        button.secondary { border-color:#8a8a8a; background:#686868; }
+        .action-stack { display:flex; gap:8px; flex-wrap:wrap; }
         .table-wrap { overflow:auto; -webkit-overflow-scrolling:touch; border:1px solid #818181; border-radius:6px; background:#686868; }
         table { width:100%; border-collapse:collapse; font-size:14px; table-layout:fixed; }
         th, td { padding:10px 8px; border-bottom:1px solid #818181; text-align:left; vertical-align:top; overflow-wrap:anywhere; word-break:break-word; }
         th { color:#f0f0f0; }
+        .history-table { min-width:980px; }
+        .movement-table { min-width:980px; }
+        .history-table input, .history-table select { min-height:38px; padding:8px 10px; }
+        .history-actions { display:flex; gap:8px; flex-wrap:wrap; }
+        .delete-button { border-color:#a65c5c; background:#764444; }
+        .state-pill { display:inline-flex; align-items:center; justify-content:center; min-height:28px; padding:5px 9px; border-radius:999px; border:1px solid #8a8a8a; background:#686868; font-weight:700; font-size:12px; }
+        .state-pill.in-crop { border-color:#35d07f; color:#e4ffed; }
+        .state-pill.out-crop { border-color:#d4aa4f; color:#fff1ca; }
         .empty { color:#d2d2d2; font-size:14px; }
-        @media (max-width: 760px) { .wrap { padding:12px; } h1 { font-size:24px; } .form-grid { grid-template-columns:1fr; } button { width:100%; } table { font-size:13px; } }
+        @media (max-width: 760px) { .wrap { padding:12px; } h1 { font-size:24px; } .form-grid, .bin-fill-grid { grid-template-columns:1fr; } button { width:100%; } table { font-size:13px; } }
     </style>
 </head>
 <body>
     <div class="wrap">
         <div class="topbar">{{ render_page_nav() }}</div>
         <h1>Manual Feed Entry</h1>
-        <div class="sub">Normal silo feeding is recorded automatically from the weigh cells. Use this only for extra feed that the weigh cells will not see, such as floor-fed feed or feed moved between sheds.</div>
+        <div class="sub">Normal in-crop silo feeding is recorded automatically from the weigh cells. Feed movement is tracked below whether the shed is in crop or out of crop, with out-of-crop setup feed kept separate until you add it to the crop.</div>
         {% if status_msg %}
         <div class="status auto-dismiss {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
         {% endif %}
+
+        <div class="panel">
+            <h2>Feed Movement Tracker</h2>
+            <div class="sub">Automatic movement seen by the bin weigh cells. Each detected feed movement is listed separately with shed, time, amount, and crop state.</div>
+            {% if feed_movement_event_rows %}
+            <div class="table-wrap">
+                <table class="movement-table">
+                    <thead><tr><th>Time</th><th>Shed</th><th>Movement</th><th>KG</th><th>Crop State</th><th>Crop</th><th>Feed KG After</th></tr></thead>
+                    <tbody>
+                        {% for row in feed_movement_event_rows %}
+                        <tr>
+                            <td>{{ row.ts_label }}</td>
+                            <td>{{ row.shed_name }}</td>
+                            <td>{{ row.movement_label }}</td>
+                            <td>{{ row.kg_label }}</td>
+                            <td><span class="state-pill {{ row.crop_state_class }}">{{ row.crop_state_label }}</span></td>
+                            <td>{{ row.crop_label }}</td>
+                            <td>{{ row.feed_kg_after_label }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty">No feed movement activity recorded yet.</div>
+            {% endif %}
+            {% if feed_movement_rows %}
+            <div class="action-stack" style="margin-top:12px;">
+                {% for row in feed_movement_rows %}
+                {% if row.can_apply %}
+                <form method="post" action="{{ url_for('office_pre_crop_feed_apply_view') }}">
+                    <input type="hidden" name="shed_no" value="{{ row.shed_no }}">
+                    <button type="submit">Add {{ row.out_of_crop_feed_out_label }} KG Out-Of-Crop Feed To {{ row.shed_name }}</button>
+                </form>
+                {% endif %}
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
 
         <div class="panel">
             <h2>Record Shed Feed</h2>
@@ -6844,28 +7331,97 @@ MANUAL_FEED_ENTRY_HTML = """
         </div>
 
         <div class="panel">
-            <h2>Manual Feed History</h2>
+            <h2>Record Bin Fill-Up</h2>
+            <form class="form-grid bin-fill-grid" method="post" action="{{ url_for('office_feed_stock_bin_fill_view') }}">
+                <div class="field">
+                    <label for="bin_fill_shed_no">Shed / Bin</label>
+                    <select id="bin_fill_shed_no" name="shed_no">
+                        <option value="">Farm / unspecified</option>
+                        {% for shed in shed_options %}
+                        <option value="{{ shed.shed_no }}">{{ shed.shed_name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="field">
+                    <label for="bin_fill_kg">Feed KG</label>
+                    <input id="bin_fill_kg" type="number" step="0.1" min="0" name="kg" value="">
+                </div>
+                <div class="field">
+                    <label for="bin_fill_note">Note</label>
+                    <input id="bin_fill_note" type="text" name="note" value="" placeholder="Delivery / bin fill-up">
+                </div>
+                <button type="submit">Record Fill-Up</button>
+            </form>
+        </div>
+
+        <div class="panel">
+            <h2>Feed Activity History</h2>
             {% if transaction_rows %}
             <div class="table-wrap">
-                <table>
-                    <thead><tr><th>Time</th><th>Shed</th><th>Crop</th><th>Feed KG</th><th>Note</th></tr></thead>
+                <table class="history-table">
+                    <thead><tr><th>Time</th><th>Type</th><th>Shed</th><th>Crop</th><th>Feed KG</th><th>Note</th><th>Actions</th></tr></thead>
                     <tbody>
                         {% for row in transaction_rows %}
-                        {% if row.kind == "shed_allocation" %}
                         <tr>
                             <td>{{ row.ts_label }}</td>
-                            <td>{{ row.shed_label }}</td>
+                            <td>
+                                {% if row.can_edit %}
+                                <select name="kind" form="{{ row.form_id }}">
+                                    <option value="bin_fill" {% if row.display_kind == "bin_fill" %}selected{% endif %}>Bin Fill-Up</option>
+                                    <option value="shed_allocation" {% if row.display_kind == "shed_allocation" %}selected{% endif %}>Shed Feed</option>
+                                </select>
+                                {% else %}
+                                {{ row.kind_label }}
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if row.can_edit %}
+                                <select name="shed_no" form="{{ row.form_id }}">
+                                    <option value="">--</option>
+                                    {% for shed in shed_options %}
+                                    <option value="{{ shed.shed_no }}" {% if row.shed_no == shed.shed_no %}selected{% endif %}>{{ shed.shed_name }}</option>
+                                    {% endfor %}
+                                </select>
+                                {% else %}
+                                {{ row.shed_label }}
+                                {% endif %}
+                            </td>
                             <td>{{ row.crop_label }}</td>
-                            <td>{{ row.feed_kg_label }}</td>
-                            <td>{{ row.note if row.note else "--" }}</td>
+                            <td>
+                                {% if row.can_edit %}
+                                <input type="number" step="0.1" min="0" name="kg" value="{{ row.feed_kg_value }}" form="{{ row.form_id }}">
+                                {% else %}
+                                {{ row.feed_kg_label }}
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if row.can_edit %}
+                                <input type="text" name="note" value="{{ row.note }}" form="{{ row.form_id }}">
+                                {% else %}
+                                {{ row.note if row.note else "--" }}
+                                {% endif %}
+                            </td>
+                            <td>
+                                <div class="history-actions">
+                                    {% if row.can_edit %}
+                                    <form id="{{ row.form_id }}" method="post" action="{{ url_for('office_feed_stock_edit_view') }}">
+                                        <input type="hidden" name="tx_id" value="{{ row.tx_id }}">
+                                        <button type="submit">Update</button>
+                                    </form>
+                                    {% endif %}
+                                    <form method="post" action="{{ url_for('office_feed_stock_delete_view') }}">
+                                        <input type="hidden" name="tx_id" value="{{ row.tx_id }}">
+                                        <button class="delete-button" type="submit">Delete</button>
+                                    </form>
+                                </div>
+                            </td>
                         </tr>
-                        {% endif %}
                         {% endfor %}
                     </tbody>
                 </table>
             </div>
             {% else %}
-            <div class="empty">No manual feed entries recorded yet.</div>
+            <div class="empty">No feed activity entries recorded yet.</div>
             {% endif %}
         </div>
     </div>
@@ -9514,6 +10070,11 @@ METRIC_PERIOD_HTML = """
         }
         .inline-note { margin-top: 8px; }
         .feed-extra-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+        .movement-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .movement-table { min-width: 760px; }
+        .state-pill { display: inline-flex; align-items: center; justify-content: center; min-height: 30px; padding: 6px 10px; border-radius: 999px; border: 1px solid #8a8a8a; background: #686868; font-weight: 700; font-size: 12px; }
+        .state-pill.in-crop { border-color: #35d07f; color: #e4ffed; }
+        .state-pill.out-crop { border-color: #d4aa4f; color: #fff1ca; }
         .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
         .toolbar button {
             background: #727272;
@@ -9647,6 +10208,50 @@ METRIC_PERIOD_HTML = """
                 <div class="summary-value">{{ shed_feed_stock_label }}</div>
                 <div class="summary-note">Manual entries added to this shed in the active crop.</div>
             </div>
+        </div>
+
+        <div class="card" style="margin-bottom:14px;">
+            <h2>Feed Movement Tracker</h2>
+            <div class="sub" style="margin-bottom:14px;">Automatic bin movement for this shed. Each detected movement is listed separately with time, kg, and whether it happened in crop or out of crop.</div>
+            {% if shed_feed_movement_events %}
+            <div class="table-wrap">
+                <table class="movement-table">
+                    <thead><tr><th>Time</th><th>Movement</th><th>KG</th><th>Crop State</th><th>Crop</th><th>Feed KG After</th></tr></thead>
+                    <tbody>
+                        {% for row in shed_feed_movement_events %}
+                        <tr>
+                            <td>{{ row.ts_label }}</td>
+                            <td>{{ row.movement_label }}</td>
+                            <td>{{ row.kg_label }}</td>
+                            <td><span class="state-pill {{ row.crop_state_class }}">{{ row.crop_state_label }}</span></td>
+                            <td>{{ row.crop_label }}</td>
+                            <td>{{ row.feed_kg_after_label }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty">No feed movement lines recorded for this shed yet.</div>
+            {% endif %}
+            {% if shed_feed_movement %}
+            <div class="movement-actions" style="margin-top:12px;">
+                {% if shed_feed_movement.can_apply %}
+                <form method="post" action="{{ url_for('office_pre_crop_feed_apply_view') }}">
+                    <input type="hidden" name="shed_no" value="{{ shed_no }}">
+                    <input type="hidden" name="next" value="{{ feed_page_url }}">
+                    <button class="full" type="submit">Add Out-Of-Crop To {{ shed_feed_movement.crop_code }}</button>
+                </form>
+                {% endif %}
+                {% if shed_feed_movement.can_clear %}
+                <form method="post" action="{{ url_for('office_pre_crop_feed_clear_view') }}">
+                    <input type="hidden" name="shed_no" value="{{ shed_no }}">
+                    <input type="hidden" name="next" value="{{ feed_page_url }}">
+                    <button class="full" type="submit">Clear Movement</button>
+                </form>
+                {% endif %}
+            </div>
+            {% endif %}
         </div>
 
         <div class="card" style="margin-bottom:14px;">
@@ -10472,6 +11077,9 @@ def office_feed_stock_view():
         transaction_rows=context["transaction_rows"],
         transaction_count=fmt_value(len(context["transaction_rows"]), "i"),
         active_targets=context["active_targets"],
+        feed_movement_rows=context["feed_movement_rows"],
+        feed_movement_event_rows=context["feed_movement_event_rows"],
+        shed_options=context["shed_options"],
         preselected_shed_no=context["preselected_shed_no"],
         status_msg=request.args.get("msg", ""),
         status_ok=request.args.get("ok", "1") == "1",
@@ -10501,6 +11109,153 @@ def office_feed_stock_allocate_view():
     if ok:
         log_event("office", "manual_feed_recorded", "Manual feed recorded for shed", shed_no=shed_no, detail="%s KG to %s" % (fmt_value(kg, "f1"), fmt_crop_code(crop_id)))
     return redirect_with_next("office_feed_stock_view", ok, "Feed recorded for shed" if ok else "Shed feed entry failed", shed_no=shed_no)
+
+
+@app.route("/feed-stock/bin-fill", methods=["POST"])
+def office_feed_stock_bin_fill_view():
+    try:
+        shed_no = int(request.form.get("shed_no", "").strip()) if request.form.get("shed_no", "").strip() else None
+    except Exception:
+        shed_no = None
+    try:
+        kg = round(float(request.form.get("kg", "").strip()), 3)
+    except Exception:
+        kg = None
+    if shed_no not in SHED_NUMBERS and shed_no is not None:
+        return redirect_with_next("office_feed_stock_view", False, "Choose a valid shed")
+    if kg is None or kg <= 0:
+        return redirect_with_next("office_feed_stock_view", False, "Enter a valid bin fill-up KG")
+    note = str(request.form.get("note", "") or "").strip()
+    ok = append_feed_stock_transaction("bin_fill", kg, note=note, shed_no=shed_no)
+    if ok:
+        log_event("office", "feed_bin_fill_recorded", "Feed bin fill-up recorded", shed_no=shed_no, detail="%s KG" % fmt_value(kg, "f1"))
+    return redirect_with_next("office_feed_stock_view", ok, "Bin fill-up recorded" if ok else "Bin fill-up entry failed")
+
+
+@app.route("/feed-stock/edit", methods=["POST"])
+def office_feed_stock_edit_view():
+    tx_id = str(request.form.get("tx_id", "") or "").strip()
+    kind = feed_stock_display_kind(request.form.get("kind", ""))
+    if kind not in EDITABLE_FEED_STOCK_KINDS:
+        return redirect_with_next("office_feed_stock_view", False, "Choose a valid feed activity type")
+    try:
+        kg = round(float(request.form.get("kg", "").strip()), 3)
+    except Exception:
+        kg = None
+    delta_kg = feed_stock_delta_for_kind(kind, kg)
+    if delta_kg is None:
+        return redirect_with_next("office_feed_stock_view", False, "Enter a valid feed KG")
+
+    existing = None
+    rows = read_all_json_lines("feed_stock.ndjson")
+    i = 0
+    while i < len(rows):
+        rec = rows[i]
+        if isinstance(rec, dict) and feed_stock_record_id(rec, i) == tx_id:
+            existing = rec
+            break
+        i += 1
+    if not isinstance(existing, dict):
+        return redirect_with_next("office_feed_stock_view", False, "Feed activity entry was not found")
+
+    try:
+        shed_no = int(request.form.get("shed_no", "").strip()) if request.form.get("shed_no", "").strip() else None
+    except Exception:
+        shed_no = None
+    if shed_no not in SHED_NUMBERS and shed_no is not None:
+        return redirect_with_next("office_feed_stock_view", False, "Choose a valid shed")
+
+    crop_id = None
+    if kind == "shed_allocation":
+        if shed_no not in SHED_NUMBERS:
+            return redirect_with_next("office_feed_stock_view", False, "Choose a shed for shed feed")
+        existing_shed_no = None
+        try:
+            existing_shed_no = int(existing.get("shed_no")) if existing.get("shed_no") not in [None, ""] else None
+        except Exception:
+            existing_shed_no = None
+        if existing_shed_no == shed_no and existing.get("crop_id") not in [None, ""]:
+            crop_id = existing.get("crop_id")
+        else:
+            crop_id = get_active_crop_id_for_shed(shed_name_from_number(shed_no))
+        if crop_id in [None, ""]:
+            return redirect_with_next("office_feed_stock_view", False, "That shed does not have an active crop to apply feed against", shed_no=shed_no)
+
+    note = str(request.form.get("note", "") or "").strip()
+    try:
+        ts = int(existing.get("ts") or time.time())
+    except Exception:
+        ts = int(time.time())
+    new_rec = {
+        "tx_id": feed_stock_record_id(existing, i),
+        "ts": ts,
+        "kind": kind,
+        "delta_kg": delta_kg,
+        "shed_no": shed_no,
+        "crop_id": None if crop_id in [None, ""] else int(crop_id),
+        "source_crop_id": None,
+        "note": note,
+    }
+    ok = rewrite_feed_stock_transaction(tx_id, new_rec)
+    if ok:
+        log_event("office", "feed_activity_updated", "Feed activity entry updated", shed_no=shed_no, detail="%s KG" % fmt_value(abs(delta_kg), "f1"))
+    return redirect_with_next("office_feed_stock_view", ok, "Feed activity updated" if ok else "Feed activity update failed", shed_no=shed_no)
+
+
+@app.route("/feed-stock/delete", methods=["POST"])
+def office_feed_stock_delete_view():
+    tx_id = str(request.form.get("tx_id", "") or "").strip()
+    ok = rewrite_feed_stock_transaction(tx_id, None)
+    if ok:
+        log_event("office", "feed_activity_deleted", "Feed activity entry deleted", detail=tx_id)
+    return redirect_with_next("office_feed_stock_view", ok, "Feed activity deleted" if ok else "Feed activity entry was not found")
+
+
+@app.route("/feed-stock/pre-crop/apply", methods=["POST"])
+def office_pre_crop_feed_apply_view():
+    try:
+        shed_no = int(request.form.get("shed_no", "").strip())
+    except Exception:
+        shed_no = None
+    if shed_no not in SHED_NUMBERS:
+        return redirect_with_next("office_feed_stock_view", False, "Choose a valid shed")
+
+    data = load_feed_movement_activity()
+    rec = clean_feed_movement_activity_rec(data.get(str(int(shed_no)), {}))
+    activity_kg = float(rec.get("out_of_crop_feed_out_kg") or 0.0)
+    if activity_kg < FEED_MOVEMENT_APPLY_MIN_KG:
+        return redirect_with_next("office_feed_stock_view", False, "No out-of-crop feed movement to add", shed_no=shed_no)
+
+    shed_name = shed_name_from_number(shed_no)
+    crop_id = get_active_crop_id_for_shed(shed_name)
+    if crop_id in [None, ""]:
+        return redirect_with_next("office_feed_stock_view", False, "Start the crop before adding out-of-crop feed", shed_no=shed_no)
+
+    note = "Out-of-crop feeder fill from weigh-cell activity"
+    ok = append_feed_stock_transaction("shed_allocation", -activity_kg, note=note, shed_no=shed_no, crop_id=crop_id)
+    if ok:
+        clear_feed_movement_activity(shed_no, crop_id=crop_id, applied_kg=activity_kg, out_of_crop_only=True)
+        log_event(
+            "office",
+            "out_of_crop_feed_applied",
+            "Out-of-crop feed movement added to crop",
+            shed_no=shed_no,
+            detail="%s KG to %s" % (fmt_value(activity_kg, "f1"), fmt_crop_code(crop_id)),
+        )
+    return redirect_with_next("office_feed_stock_view", ok, "Out-of-crop feed added to crop" if ok else "Out-of-crop feed add failed", shed_no=shed_no)
+
+
+@app.route("/feed-stock/pre-crop/clear", methods=["POST"])
+def office_pre_crop_feed_clear_view():
+    try:
+        shed_no = int(request.form.get("shed_no", "").strip())
+    except Exception:
+        shed_no = None
+    if shed_no not in SHED_NUMBERS:
+        return redirect_with_next("office_feed_stock_view", False, "Choose a valid shed")
+    clear_feed_movement_activity(shed_no)
+    log_event("office", "feed_movement_cleared", "Feed movement activity cleared", shed_no=shed_no)
+    return redirect_with_next("office_feed_stock_view", True, "Feed movement activity cleared", shed_no=shed_no)
 
 
 @app.route("/farm-health")
@@ -10953,6 +11708,8 @@ def shed_metric_period_view(shed_no, metric, period):
     status_msg = request.args.get("msg", "")
     status_ok = request.args.get("ok", "1") == "1"
     shed_feed_stock_label = fmt_value(0, "f1")
+    shed_feed_movement = {}
+    shed_feed_movement_events = []
     shed_stock_rows = []
     auger_run_rows = []
     auger_runs_backup_name = ""
@@ -10960,6 +11717,8 @@ def shed_metric_period_view(shed_no, metric, period):
     auger_runs_api_url = ""
     if metric == "feed":
         stock_context = build_feed_stock_context(shed_no)
+        shed_feed_movement = feed_movement_activity_row_for_shed(shed_no)
+        shed_feed_movement_events = feed_movement_event_rows(shed_no=shed_no)
         live_auger_runs = fetch_live_auger_runs_from_controller(shed_no, limit=200)
         if live_auger_runs.get("ok"):
             auger_run_rows = live_auger_runs.get("rows", [])
@@ -11027,6 +11786,8 @@ def shed_metric_period_view(shed_no, metric, period):
         status_msg=status_msg,
         status_ok=status_ok,
         shed_feed_stock_label=shed_feed_stock_label,
+        shed_feed_movement=shed_feed_movement,
+        shed_feed_movement_events=shed_feed_movement_events,
         auger_run_rows=auger_run_rows,
         auger_runs_backup_name=auger_runs_backup_name,
         auger_runs_backup_at=auger_runs_backup_at,
