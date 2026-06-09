@@ -329,6 +329,13 @@ def inject_favicon(response):
 DATA_DIR = "controller_data"
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 SHED_NUMBERS = [1, 2, 3, 4, 6, 7, 8, 9, 10]
+ENTRY_SHED_NUMBERS = [1, 2, 3, 4, 6, 61, 7, 8, 9, 10]
+ENTRY_SHED_LABELS = {
+    61: "Shed 6B",
+}
+SHED_DISPLAY_LABELS = {
+    6: "Shed 6 & 6B",
+}
 DEFAULT_CONFIG = {
     "farm_id": "",
     "farm_name": "",
@@ -507,6 +514,39 @@ def crop_age_days(placement_epoch):
     except Exception:
         return None
     return max(0, (today - started_date).days)
+
+
+def shed_display_name_from_number(shed_no):
+    try:
+        shed_no = int(shed_no)
+    except Exception:
+        return "Shed --"
+    return SHED_DISPLAY_LABELS.get(shed_no, "Shed %d" % shed_no)
+
+
+def entry_shed_label(dest_shed):
+    try:
+        dest_shed = int(dest_shed)
+    except Exception:
+        return "Shed --"
+    return ENTRY_SHED_LABELS.get(dest_shed, "Shed %d" % dest_shed)
+
+
+def entry_home_shed_no(dest_shed):
+    try:
+        dest_shed = int(dest_shed)
+    except Exception:
+        return None
+    if dest_shed == 61:
+        return 6
+    return dest_shed
+
+
+def valid_entry_shed(dest_shed):
+    try:
+        return int(dest_shed) in ENTRY_SHED_NUMBERS
+    except Exception:
+        return False
 
 
 def append_ndjson(path, payload):
@@ -2313,11 +2353,12 @@ def oldest_bird_age_days(entries):
 def build_allocation_rows(state):
     rows = []
     i = 0
-    while i < len(SHED_NUMBERS):
-        dest_shed = SHED_NUMBERS[i]
+    while i < len(ENTRY_SHED_NUMBERS):
+        dest_shed = ENTRY_SHED_NUMBERS[i]
         rec = get_entry_for_dest(state, dest_shed)
         rows.append({
             "dest_shed": dest_shed,
+            "dest_shed_label": entry_shed_label(dest_shed),
             "bird_count": rec["bird_count"],
             "crop_active": rec["crop_active"],
             "crop_id": rec["crop_id"],
@@ -2348,7 +2389,7 @@ def allocation_summary_text(current_shed_no, entries):
     while i < len(keys):
         rec = clean_entry_record(entries.get(str(keys[i]), {}))
         if rec["bird_count"] > 0:
-            parts.append("Shed %d: %s" % (keys[i], fmt_value(rec["bird_count"], "i")))
+            parts.append("%s: %s" % (entry_shed_label(keys[i]), fmt_value(rec["bird_count"], "i")))
         i += 1
 
     return " - ".join(parts)
@@ -3014,6 +3055,7 @@ def build_home_context():
 
     return {
         "shed_no": cfg["shed_no"],
+        "shed_display_name": shed_display_name_from_number(cfg["shed_no"]),
         "host_ips": host_ipv4_display(),
         "dashboard_url": cfg["dashboard_url"],
         "serial_port": detect_serial_port(),
@@ -4512,7 +4554,7 @@ HTML = """
 <html lang="en">
 <head>
     <meta charset="utf-8">
-    <title>Shed {{ shed_no }} Controller</title>
+    <title>{{ shed_display_name }} Controller</title>
     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
     <style>
         :root {
@@ -5362,7 +5404,7 @@ HTML = """
                 <div class="hero-main">
                     <div>
                         <div class="title-row">
-                            <h1 id="headerTitle" class="{{ crop_class }}">CDF - SHED {{ shed_no }}</h1>
+                            <h1 id="headerTitle" class="{{ crop_class }}">CDF - {{ shed_display_name|upper }}</h1>
                             <div class="hero-crop-wrap">
                                 <div id="cropHeader" class="hero-crop {{ crop_class }}">Crop <span id="cropValue">{{ active_crop_code }}</span></div>
                             </div>
@@ -7352,7 +7394,7 @@ ALLOCATION_HTML = """
 <html lang="en">
 <head>
     <meta charset="utf-8">
-    <title>Shed {{ shed_no }} Allocation</title>
+    <title>{{ shed_display_name }} Allocation</title>
     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
     <style>
         :root {
@@ -7479,14 +7521,14 @@ ALLOCATION_HTML = """
     <div class="wrap">
         <div class="topbar"><a href="{{ url_for('index') }}">← Back</a></div>
         <div class="panel">
-            <h1>Shed {{ shed_no }} Allocation</h1>
+            <h1>{{ shed_display_name }} Allocation</h1>
             <div class="sub">Birds physically in this shed, grouped by their destination shed.</div>
             <div class="allocation-list">
                 {% for row in allocation_rows %}
                 <div class="allocation-card">
                     <div class="allocation-top">
                         <div>
-                            <div class="allocation-title">For Shed {{ row.dest_shed }}</div>
+                            <div class="allocation-title">For {{ row.dest_shed_label }}</div>
                             <div class="allocation-meta">Started {{ row.started_at }} • Crop {{ row.crop_code }}</div>
                         </div>
                         <div class="allocation-meta">{{ "Active" if row.crop_active == 1 else "Not active" }}</div>
@@ -7497,7 +7539,7 @@ ALLOCATION_HTML = """
                         <button type="submit">Save</button>
                         <button formaction="{{ url_for('start_entry_for_dest', dest_shed=row.dest_shed) }}" type="submit">Start</button>
                         {% if row.can_move %}
-                        <button class="secondary" formaction="{{ url_for('move_entry_for_dest', dest_shed=row.dest_shed) }}" type="submit" onclick="return confirm('Move birds from Shed {{ shed_no }} to Shed {{ row.dest_shed }}?');">Move</button>
+                        <button class="secondary" formaction="{{ url_for('move_entry_for_dest', dest_shed=row.dest_shed) }}" type="submit" onclick="return confirm('Move birds from {{ shed_display_name }} to {{ row.dest_shed_label }}?');">Move</button>
                         {% else %}
                         <button class="secondary" type="button" disabled>Move</button>
                         {% endif %}
@@ -7644,7 +7686,7 @@ MORTALITY_HTML = """
 <body>
     <div class="wrap">
         <div class="topbar"><a href="{{ url_for('index') }}">← Back</a></div>
-        <h1>Shed {{ shed_no }} Mortality</h1>
+        <h1>{{ shed_display_name }} Mortality</h1>
         <div class="sub">Current crop {{ active_crop_code }}. Record losses against an active entry shed.</div>
         {% if status_msg %}
         <div class="status auto-dismiss {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
@@ -7657,7 +7699,7 @@ MORTALITY_HTML = """
                     <label for="dest_shed">Entry Shed</label>
                     <select id="dest_shed" name="dest_shed">
                         {% for row in target_rows %}
-                        <option value="{{ row.dest_shed }}">Shed {{ row.dest_shed }} ({{ row.bird_count }} birds)</option>
+                        <option value="{{ row.dest_shed }}">{{ row.dest_shed_label }} ({{ row.bird_count }} birds)</option>
                         {% endfor %}
                     </select>
                     <label for="bird_loss">Bird Loss</label>
@@ -7693,7 +7735,7 @@ MORTALITY_HTML = """
                         {% for row in history_rows %}
                         <tr>
                             <td>{{ row.ts_label }}</td>
-                            <td>Shed {{ row.dest_shed }}</td>
+                            <td>{{ row.dest_shed_label }}</td>
                             <td>{{ row.bird_loss }}</td>
                             <td>{{ row.note if row.note else "--" }}</td>
                         </tr>
@@ -7968,7 +8010,7 @@ def allocation_view():
     while i < len(allocation_rows):
         allocation_rows[i]["started_at"] = fmt_ts(allocation_rows[i]["placement_epoch"])
         allocation_rows[i]["can_move"] = (
-            allocation_rows[i]["dest_shed"] != cfg["shed_no"]
+            entry_home_shed_no(allocation_rows[i]["dest_shed"]) != cfg["shed_no"]
             and allocation_rows[i]["crop_active"] == 1
             and int(allocation_rows[i]["bird_count"] or 0) > 0
         )
@@ -7977,6 +8019,7 @@ def allocation_view():
     return render_template_string(
         ALLOCATION_HTML,
         shed_no=cfg["shed_no"],
+        shed_display_name=shed_display_name_from_number(cfg["shed_no"]),
         allocation_rows=allocation_rows,
     )
 
@@ -7987,15 +8030,30 @@ def mortality_view():
     cfg = load_config()
     payload = fetch_mortality_from_dashboard(cfg["shed_no"])
     state = load_state()
+    target_rows = payload.get("target_rows", [])
+    if not isinstance(target_rows, list):
+        target_rows = []
+    history_rows = payload.get("history_rows", [])
+    if not isinstance(history_rows, list):
+        history_rows = []
+    i = 0
+    while i < len(target_rows):
+        target_rows[i]["dest_shed_label"] = target_rows[i].get("dest_shed_label") or entry_shed_label(target_rows[i].get("dest_shed"))
+        i += 1
+    i = 0
+    while i < len(history_rows):
+        history_rows[i]["dest_shed_label"] = history_rows[i].get("dest_shed_label") or entry_shed_label(history_rows[i].get("dest_shed"))
+        i += 1
     status_msg = request.args.get("msg", "")
     status_ok = request.args.get("ok", "1") == "1"
     return render_template_string(
         MORTALITY_HTML,
         shed_no=cfg["shed_no"],
+        shed_display_name=shed_display_name_from_number(cfg["shed_no"]),
         active_crop_id=payload.get("active_crop_id"),
         active_crop_code=fmt_crop_code(payload.get("active_crop_id"), active_crop_epoch_from_entries(state.get("entries", {}), payload.get("active_crop_id"))),
-        target_rows=payload.get("target_rows", []),
-        history_rows=payload.get("history_rows", []),
+        target_rows=target_rows,
+        history_rows=history_rows,
         mortality_total=fmt_value(payload.get("mortality_total"), "i"),
         active_birds=fmt_value(payload.get("active_birds"), "i"),
         status_msg=status_msg,
@@ -8009,7 +8067,7 @@ def mortality_add_view():
     try:
         dest_shed = int(request.form.get("dest_shed", "").strip())
         bird_loss = int(request.form.get("bird_loss", "").strip())
-        if dest_shed not in SHED_NUMBERS or bird_loss <= 0:
+        if not valid_entry_shed(dest_shed) or bird_loss <= 0:
             raise ValueError()
     except Exception:
         return redirect(url_for("mortality_view", ok=0, msg="Invalid mortality entry"))
@@ -8018,7 +8076,7 @@ def mortality_add_view():
     ok, msg = post_mortality_to_dashboard(cfg["shed_no"], dest_shed, bird_loss, note=note)
     if ok:
         pull_from_dashboard(load_state())
-        record_controller_event("mortality_recorded", "Recorded mortality", "Entry Shed %d Loss %d" % (dest_shed, bird_loss), push_to_office=True)
+        record_controller_event("mortality_recorded", "Recorded mortality", "%s Loss %d" % (entry_shed_label(dest_shed), bird_loss), push_to_office=True)
     return redirect(url_for("mortality_view", ok=1 if ok else 0, msg=msg if msg else ("Mortality recorded" if ok else "Mortality failed")))
 
 
@@ -8849,7 +8907,7 @@ def auger_runs_api_view():
 
 
 def save_entry_for_dest_impl(dest_shed, bird_count):
-    if dest_shed not in SHED_NUMBERS:
+    if not valid_entry_shed(dest_shed):
         return False, "Invalid shed"
 
     def mutator(state):
@@ -8865,7 +8923,7 @@ def save_entry_for_dest_impl(dest_shed, bird_count):
         state["entries_updated_ts"] = int(time.time())
 
     state = mutate_state(mutator)
-    record_controller_event("entry_saved", "Saved bird count", "Entry Shed %d = %d" % (dest_shed, bird_count), push_to_office=True)
+    record_controller_event("entry_saved", "Saved bird count", "%s = %d" % (entry_shed_label(dest_shed), bird_count), push_to_office=True)
     return push_to_dashboard(state)
 
 
@@ -8884,7 +8942,7 @@ def save_entry_for_dest(dest_shed):
 
 
 def start_entry_for_dest_impl(dest_shed, bird_count_override=None):
-    if dest_shed not in SHED_NUMBERS:
+    if not valid_entry_shed(dest_shed):
         return False, "Invalid shed"
 
     state = load_state()
@@ -8911,7 +8969,7 @@ def start_entry_for_dest_impl(dest_shed, bird_count_override=None):
         state["entries_updated_ts"] = int(time.time())
 
     state = mutate_state(mutator)
-    record_controller_event("entry_started", "Started entry", "Entry Shed %d" % dest_shed, push_to_office=True)
+    record_controller_event("entry_started", "Started entry", entry_shed_label(dest_shed), push_to_office=True)
     return push_to_dashboard(state, pull_back=False)
 
 
@@ -8932,9 +8990,9 @@ def start_entry_for_dest(dest_shed):
 
 def move_entry_for_dest_impl(dest_shed):
     cfg = load_config()
-    if dest_shed not in SHED_NUMBERS:
+    if not valid_entry_shed(dest_shed):
         return False, "Invalid shed"
-    if dest_shed == cfg["shed_no"]:
+    if entry_home_shed_no(dest_shed) == cfg["shed_no"]:
         return False, "Cannot move to same shed"
 
     state = load_state()
@@ -8950,8 +9008,8 @@ def move_entry_for_dest_impl(dest_shed):
     # re-post the old source allocation back to the office before the pull completes.
     mutate_state(lambda state: (clear_entry_for_dest(state, dest_shed), state.update({"entries_updated_ts": int(time.time())})))
     pull_from_dashboard(load_state())
-    record_controller_event("entry_moved", "Moved entry via office", "Entry Shed %d" % dest_shed, push_to_office=True)
-    return True, "Entry moved to Shed %d" % dest_shed
+    record_controller_event("entry_moved", "Moved entry via office", entry_shed_label(dest_shed), push_to_office=True)
+    return True, "Entry moved to %s" % shed_display_name_from_number(entry_home_shed_no(dest_shed))
 
 
 @app.route("/entry/<int:dest_shed>/move", methods=["POST"])
@@ -8961,7 +9019,7 @@ def move_entry_for_dest(dest_shed):
 
 
 def end_entry_for_dest_impl(dest_shed):
-    if dest_shed not in SHED_NUMBERS:
+    if not valid_entry_shed(dest_shed):
         return False, "Invalid shed"
 
     def mutator(state):
@@ -8970,7 +9028,7 @@ def end_entry_for_dest_impl(dest_shed):
         state["entries_updated_ts"] = int(time.time())
 
     state = mutate_state(mutator)
-    record_controller_event("entry_ended", "Ended entry", "Entry Shed %d" % dest_shed, push_to_office=True)
+    record_controller_event("entry_ended", "Ended entry", entry_shed_label(dest_shed), push_to_office=True)
     return push_to_dashboard(state)
 
 

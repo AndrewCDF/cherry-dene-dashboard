@@ -190,6 +190,13 @@ def inject_favicon(response):
 
 DATA_DIR = os.path.join(APP_ROOT, "data")
 SHED_NUMBERS = [1, 2, 3, 4, 6, 7, 8, 9, 10]
+ENTRY_SHED_NUMBERS = [1, 2, 3, 4, 6, 61, 7, 8, 9, 10]
+ENTRY_SHED_LABELS = {
+    61: "Shed 6B",
+}
+SHED_DISPLAY_LABELS = {
+    6: "Shed 6 & 6B",
+}
 OFFICE_BACKUP_KEEP_COUNT = 6
 OFFICE_AUTO_BACKUP_INTERVAL_SECONDS = 3600
 OFFICE_AUTO_BACKUP_CHECK_SECONDS = 60
@@ -1283,6 +1290,8 @@ def restore_shed_from_controller_backup(path, shed_no):
             dest_shed = int(key)
         except Exception:
             continue
+        if dest_shed not in ENTRY_SHED_NUMBERS:
+            continue
         bucket[str(dest_shed)] = clean_entry_record(rec)
     save_shed_entries_state(state)
     refresh_farm_crop_current_id(state)
@@ -2104,6 +2113,7 @@ def log_mortality_event(shed_name, dest_shed, crop_id, bird_loss, note=""):
         "ts": int(time.time()),
         "shed": shed_name,
         "dest_shed": int(dest_shed),
+        "dest_shed_label": entry_shed_label(dest_shed),
         "crop_id": int(crop_id),
         "bird_loss": int(bird_loss),
         "note": str(note or "").strip(),
@@ -2153,12 +2163,13 @@ def mortality_payload_for_shed(shed_no):
     entries = ensure_shed_entry_bucket(state, shed_name)
     target_rows = []
     i = 0
-    while i < len(SHED_NUMBERS):
-        dest_shed = SHED_NUMBERS[i]
+    while i < len(ENTRY_SHED_NUMBERS):
+        dest_shed = ENTRY_SHED_NUMBERS[i]
         rec = clean_entry_record(entries.get(str(dest_shed), {}))
         if rec["crop_active"] == 1 and rec["bird_count"] > 0:
             target_rows.append({
                 "dest_shed": dest_shed,
+                "dest_shed_label": entry_shed_label(dest_shed),
                 "bird_count": rec["bird_count"],
                 "crop_id": rec.get("crop_id"),
                 "crop_code": fmt_crop_code(rec.get("crop_id"), rec.get("placement_epoch")),
@@ -2170,6 +2181,7 @@ def mortality_payload_for_shed(shed_no):
     history_rows = get_mortality_history_for_shed(shed_name, crop_id=crop_filter)
     i = 0
     while i < len(history_rows):
+        history_rows[i]["dest_shed_label"] = entry_shed_label(history_rows[i].get("dest_shed"))
         try:
             history_rows[i]["ts_label"] = datetime.fromtimestamp(int(history_rows[i].get("ts"))).strftime("%d %b %Y %H:%M")
         except Exception:
@@ -2190,7 +2202,7 @@ def mortality_payload_for_shed(shed_no):
 
 
 def apply_mortality_to_shed(shed_no, dest_shed, bird_loss, note="", updated_by="dashboard"):
-    if shed_no not in SHED_NUMBERS or dest_shed not in SHED_NUMBERS:
+    if shed_no not in SHED_NUMBERS or not valid_entry_shed(dest_shed):
         return False, "Invalid mortality entry"
     if bird_loss <= 0:
         return False, "Invalid mortality entry"
@@ -2216,7 +2228,7 @@ def apply_mortality_to_shed(shed_no, dest_shed, bird_loss, note="", updated_by="
         entries[str(dest_shed)] = rec
 
     log_mortality_event(shed_name, dest_shed, crop_id, bird_loss, note=note)
-    log_event("office", "mortality_recorded", "Mortality recorded", shed_no=shed_no, detail="Entry Shed %d Loss %d" % (dest_shed, bird_loss))
+    log_event("office", "mortality_recorded", "Mortality recorded", shed_no=shed_no, detail="%s Loss %d" % (entry_shed_label(dest_shed), bird_loss))
     save_shed_entries_state(state)
     refresh_farm_crop_current_id(state)
     push_shed_state_to_controller_async(shed_no)
@@ -3117,7 +3129,7 @@ def apply_external_shed_entries(shed_no, incoming_entries, source, controller_me
                 dest_shed = int(key)
             except Exception:
                 continue
-            if dest_shed not in SHED_NUMBERS:
+            if dest_shed not in ENTRY_SHED_NUMBERS:
                 continue
 
             rec = clean_entry_record(incoming_entries.get(key, {}))
@@ -3136,21 +3148,11 @@ def apply_external_shed_entries(shed_no, incoming_entries, source, controller_me
                     "entry_sync_revival_blocked",
                     "Blocked stale controller reactivation",
                     shed_no=shed_no,
-                    detail="Entry Shed %d older than dashboard end" % dest_shed,
+                    detail="%s older than dashboard end" % entry_shed_label(dest_shed),
                 )
                 continue
             if rec["bird_count"] > 0 and rec["crop_active"] == 1 and rec["crop_id"] is None:
                 rec["crop_id"] = crop_id_for_new_start(state)
-            other_shed = active_entry_location_for_dest(state, dest_shed, exclude_shed_name=shed_name)
-            if rec["bird_count"] > 0 and rec["crop_active"] == 1 and other_shed:
-                log_event(
-                    "office",
-                    "entry_sync_conflict",
-                    "Rejected duplicate active entry from controller sync",
-                    shed_no=shed_no,
-                    detail="Entry Shed %d already active in %s" % (dest_shed, other_shed),
-                )
-                continue
             cleaned_incoming[str(dest_shed)] = rec
 
     existing_keys = list(entries.keys())
@@ -3175,7 +3177,7 @@ def apply_external_shed_entries(shed_no, incoming_entries, source, controller_me
                     "entry_sync_delete_blocked",
                     "Blocked stale controller delete by omission",
                     shed_no=shed_no,
-                    detail="Entry Shed %s retained in %s" % (key, shed_name),
+                    detail="%s retained in %s" % (entry_shed_label(key), shed_name),
                 )
                 continue
             if prev["bird_count"] > 0 or prev["crop_id"] is not None:
@@ -3273,6 +3275,39 @@ def custom_day_key(dt_obj):
 
 def shed_name_from_number(shed_no):
     return "Shed %d" % int(shed_no)
+
+
+def shed_display_name_from_number(shed_no):
+    try:
+        shed_no = int(shed_no)
+    except Exception:
+        return "Shed --"
+    return SHED_DISPLAY_LABELS.get(shed_no, "Shed %d" % shed_no)
+
+
+def entry_shed_label(dest_shed):
+    try:
+        dest_shed = int(dest_shed)
+    except Exception:
+        return "Shed --"
+    return ENTRY_SHED_LABELS.get(dest_shed, "Shed %d" % dest_shed)
+
+
+def entry_home_shed_no(dest_shed):
+    try:
+        dest_shed = int(dest_shed)
+    except Exception:
+        return None
+    if dest_shed == 61:
+        return 6
+    return dest_shed
+
+
+def valid_entry_shed(dest_shed):
+    try:
+        return int(dest_shed) in ENTRY_SHED_NUMBERS
+    except Exception:
+        return False
 
 
 def shed_number_from_name(shed_name):
@@ -4911,6 +4946,8 @@ def load_shed_entries_state():
                 dest_shed = int(key)
             except Exception:
                 continue
+            if dest_shed not in ENTRY_SHED_NUMBERS:
+                continue
             clean_entries[str(dest_shed)] = clean_entry_record(entries.get(key, {}))
 
         ended_entries = shed_rec.get("ended_entries", {})
@@ -4922,6 +4959,8 @@ def load_shed_entries_state():
                 dest_shed = int(key)
                 ended_ts = int(value or 0)
             except Exception:
+                continue
+            if dest_shed not in ENTRY_SHED_NUMBERS:
                 continue
             if ended_ts > 0:
                 clean_ended_entries[str(dest_shed)] = ended_ts
@@ -5028,7 +5067,7 @@ def entry_summary_text(current_shed_no, active_entries):
             bird_count = 0
 
         if bird_count > 0:
-            parts.append("Shed %d: %s" % (shed_no, fmt_value(bird_count, "i")))
+            parts.append("%s: %s" % (entry_shed_label(shed_no), fmt_value(bird_count, "i")))
         i += 1
 
     if not parts:
@@ -5040,8 +5079,8 @@ def entry_summary_text(current_shed_no, active_entries):
 def build_detail_entry_rows(current_shed_no, entries):
     rows = []
     i = 0
-    while i < len(SHED_NUMBERS):
-        dest_shed = SHED_NUMBERS[i]
+    while i < len(ENTRY_SHED_NUMBERS):
+        dest_shed = ENTRY_SHED_NUMBERS[i]
         rec = entries.get(str(dest_shed), {})
 
         try:
@@ -5062,10 +5101,11 @@ def build_detail_entry_rows(current_shed_no, entries):
             except Exception:
                 placement_str = "--"
 
-        can_move = (dest_shed != current_shed_no) and crop_active == 1 and bird_count > 0
+        can_move = (entry_home_shed_no(dest_shed) != current_shed_no) and crop_active == 1 and bird_count > 0
         placement_input_epoch = placement_epoch if (crop_active == 1 and bird_count > 0) else None
         rows.append({
             "dest_shed": dest_shed,
+            "dest_shed_label": entry_shed_label(dest_shed),
             "bird_count": bird_count,
             "crop_active": crop_active,
             "placement_epoch": placement_epoch,
@@ -5264,6 +5304,7 @@ def build_rows():
     while i < len(SHED_NUMBERS):
         shed_no = SHED_NUMBERS[i]
         shed = shed_name_from_number(shed_no)
+        shed_display = shed_display_name_from_number(shed_no)
         live = effective_live_for_shed(live_map, controller_meta_map, shed_no)
         controller_meta = controller_meta_map.get(str(int(shed_no)), {})
         alarms = list(alarms_map.get(shed, []))
@@ -5449,7 +5490,8 @@ def build_rows():
         lighting_on = bool(controller_meta.get("lighting_on", False))
 
         rows.append({
-            "shed": shed,
+            "shed": shed_display,
+            "shed_name": shed,
             "shed_no": shed_no,
             "has_data": bool(live) or bool(days) or bool(crop) or bool(active_entries),
             "has_active_entry": has_active_entry,
@@ -8480,7 +8522,7 @@ DETAIL_HTML = """
                         <tbody>
                             {% for r in entry_rows %}
                             <tr>
-                                <td>Shed {{ r.dest_shed }}</td>
+                                <td>{{ r.dest_shed_label }}</td>
                                 <td>
                                     <form id="entry-form-{{ r.dest_shed }}" class="form-inline" method="post" action="{{ url_for('shed_entry_save', shed_no=shed_no, dest_shed=r.dest_shed) }}">
                                         <input type="number" name="bird_count" min="0" step="1" value="{{ '' if r.bird_count == 0 else r.bird_count }}">
@@ -8503,8 +8545,8 @@ DETAIL_HTML = """
                                 </td>
                                 <td>
                                     {% if r.can_move %}
-                                    <form class="form-inline" method="post" action="{{ url_for('shed_entry_move', shed_no=shed_no, dest_shed=r.dest_shed) }}" onsubmit="return confirm('Move birds from Shed {{ shed_no }} to Shed {{ r.dest_shed }}?');">
-                                        <button class="move" type="submit">Move to Shed {{ r.dest_shed }}</button>
+                                    <form class="form-inline" method="post" action="{{ url_for('shed_entry_move', shed_no=shed_no, dest_shed=r.dest_shed) }}" onsubmit="return confirm('Move birds from {{ shed_display_name }} to {{ r.dest_shed_label }}?');">
+                                        <button class="move" type="submit">Move to {{ r.dest_shed_label }}</button>
                                     </form>
                                     {% else %}
                                     <span class="empty">--</span>
@@ -8590,7 +8632,7 @@ MORTALITY_HTML = """
                     <label for="dest_shed">Entry Shed</label>
                     <select id="dest_shed" name="dest_shed">
                         {% for row in target_rows %}
-                        <option value="{{ row.dest_shed }}">Shed {{ row.dest_shed }} ({{ row.bird_count }} birds)</option>
+                        <option value="{{ row.dest_shed }}">{{ row.dest_shed_label }} ({{ row.bird_count }} birds)</option>
                         {% endfor %}
                     </select>
                     <label for="bird_loss">Bird Loss</label>
@@ -8629,7 +8671,7 @@ MORTALITY_HTML = """
                             {% for row in history_rows %}
                             <tr>
                                 <td>{{ row.ts_label }}</td>
-                                <td>Shed {{ row.dest_shed }}</td>
+                                <td>{{ row.dest_shed_label }}</td>
                                 <td>{{ row.bird_loss }}</td>
                                 <td>{{ row.note if row.note else "--" }}</td>
                             </tr>
@@ -11627,6 +11669,7 @@ def shed_detail(shed_no):
         abort(404)
 
     shed_name = shed_name_from_number(shed_no)
+    shed_display_name = shed_display_name_from_number(shed_no)
     active_crop_id = get_active_crop_id_for_shed(shed_name)
     state = load_shed_entries_state()
     entries = ensure_shed_entry_bucket(state, shed_name)
@@ -11637,7 +11680,9 @@ def shed_detail(shed_no):
 
     return render_template_string(
         DETAIL_HTML,
-        shed_name=shed_name,
+        shed_name=shed_display_name,
+        shed_storage_name=shed_name,
+        shed_display_name=shed_display_name,
         shed_no=shed_no,
         active_crop_id=active_crop_id,
         active_crop_code=fmt_crop_code(active_crop_id, active_crop_record_for_shed(shed_name).get("placement_epoch")),
@@ -11834,7 +11879,7 @@ def shed_mortality_view(shed_no):
     return render_template_string(
         MORTALITY_HTML,
         shed_no=payload["shed_no"],
-        shed_name=payload["shed_name"],
+        shed_name=shed_display_name_from_number(shed_no),
         active_crop_id=payload["active_crop_id"],
         active_crop_code=payload["active_crop_code"],
         target_rows=payload["target_rows"],
@@ -11854,7 +11899,7 @@ def shed_mortality_add(shed_no):
     try:
         dest_shed = int(request.form.get("dest_shed"))
         bird_loss = int(request.form.get("bird_loss"))
-        if dest_shed not in SHED_NUMBERS or bird_loss <= 0:
+        if not valid_entry_shed(dest_shed) or bird_loss <= 0:
             raise ValueError()
     except Exception:
         return redirect(url_for("shed_mortality_view", shed_no=shed_no, ok=0, msg="Invalid mortality entry"))
@@ -11904,6 +11949,9 @@ def shed_mortality_api_post(shed_no):
         return jsonify({"ok": False, "message": "Invalid mortality entry"}), 400
 
     note = str(payload.get("note", "") or "").strip()
+    if not valid_entry_shed(dest_shed) or bird_loss <= 0:
+        return jsonify({"ok": False, "message": "Invalid mortality entry"}), 400
+
     ok, msg = apply_mortality_to_shed(shed_no, dest_shed, bird_loss, note=note, updated_by="controller")
     if not ok:
         return jsonify({"ok": False, "message": msg}), 400
@@ -11916,7 +11964,7 @@ def shed_mortality_api_post(shed_no):
 
 @app.route("/shed/<int:shed_no>/entry/<int:dest_shed>/save", methods=["POST"])
 def shed_entry_save(shed_no, dest_shed):
-    if shed_no not in SHED_NUMBERS or dest_shed not in SHED_NUMBERS:
+    if shed_no not in SHED_NUMBERS or not valid_entry_shed(dest_shed):
         abort(404)
 
     raw = request.form.get("bird_count", "").strip()
@@ -11966,16 +12014,16 @@ def shed_entry_save(shed_no, dest_shed):
             prev_rec["updated_ts"] = now_ts
             prev_rec["updated_by"] = "dashboard"
             log_crop_event(shed_name, prev_rec, False)
-        log_event("office", "entry_cleared", "Entry saved as zero birds", shed_no=shed_no, detail="Entry Shed %d" % dest_shed)
+        log_event("office", "entry_cleared", "Entry saved as zero birds", shed_no=shed_no, detail=entry_shed_label(dest_shed))
     else:
-        log_event("office", "entry_saved", "Bird count saved", shed_no=shed_no, detail="Entry Shed %d = %d" % (dest_shed, bird_count))
+        log_event("office", "entry_saved", "Bird count saved", shed_no=shed_no, detail="%s = %d" % (entry_shed_label(dest_shed), bird_count))
     push_shed_state_to_controller_async(shed_no)
     return redirect(url_for("shed_detail", shed_no=shed_no, ok=1, msg="Entry saved"))
 
 
 @app.route("/shed/<int:shed_no>/entry/<int:dest_shed>/start", methods=["POST"])
 def shed_entry_start(shed_no, dest_shed):
-    if shed_no not in SHED_NUMBERS or dest_shed not in SHED_NUMBERS:
+    if shed_no not in SHED_NUMBERS or not valid_entry_shed(dest_shed):
         abort(404)
 
     state = load_shed_entries_state()
@@ -12021,17 +12069,6 @@ def shed_entry_start(shed_no, dest_shed):
     if placement_epoch is not None and placement_epoch > now_ts:
         return redirect(url_for("shed_detail", shed_no=shed_no, ok=0, msg="Placement date cannot be in the future"))
 
-    other_shed = active_entry_location_for_dest(state, dest_shed, exclude_shed_name=shed_name)
-    if other_shed:
-        return redirect(
-            url_for(
-                "shed_detail",
-                shed_no=shed_no,
-                ok=0,
-                msg="Entry Shed %d is already active in %s" % (dest_shed, other_shed),
-            )
-        )
-
     rec["crop_active"] = 1
     if placement_epoch is not None:
         rec["placement_epoch"] = placement_epoch
@@ -12048,14 +12085,14 @@ def shed_entry_start(shed_no, dest_shed):
     save_shed_entries_state(state)
     refresh_farm_crop_current_id(state)
     log_crop_event(shed_name, rec, True)
-    log_event("office", "entry_started", "Entry started", shed_no=shed_no, detail="Entry Shed %d Crop %s" % (dest_shed, rec.get("crop_id")))
+    log_event("office", "entry_started", "Entry started", shed_no=shed_no, detail="%s Crop %s" % (entry_shed_label(dest_shed), rec.get("crop_id")))
     push_shed_state_to_controller_async(shed_no)
     return redirect(url_for("shed_detail", shed_no=shed_no, ok=1, msg="Entry started"))
 
 
 @app.route("/shed/<int:shed_no>/entry/<int:dest_shed>/end", methods=["POST"])
 def shed_entry_end(shed_no, dest_shed):
-    if shed_no not in SHED_NUMBERS or dest_shed not in SHED_NUMBERS:
+    if shed_no not in SHED_NUMBERS or not valid_entry_shed(dest_shed):
         abort(404)
 
     state = load_shed_entries_state()
@@ -12075,7 +12112,7 @@ def shed_entry_end(shed_no, dest_shed):
     del entries[str(dest_shed)]
     save_shed_entries_state(state)
     refresh_farm_crop_current_id(state)
-    log_event("office", "entry_ended", "Entry ended", shed_no=shed_no, detail="Entry Shed %d" % dest_shed)
+    log_event("office", "entry_ended", "Entry ended", shed_no=shed_no, detail=entry_shed_label(dest_shed))
     push_shed_state_to_controller_async(shed_no)
 
     return redirect(url_for("shed_detail", shed_no=shed_no, ok=1, msg="Entry ended and shed cleared"))
@@ -12083,16 +12120,20 @@ def shed_entry_end(shed_no, dest_shed):
 
 @app.route("/shed/<int:shed_no>/entry/<int:dest_shed>/move", methods=["POST"])
 def shed_entry_move(shed_no, dest_shed):
-    if shed_no not in SHED_NUMBERS or dest_shed not in SHED_NUMBERS:
+    if shed_no not in SHED_NUMBERS or not valid_entry_shed(dest_shed):
         abort(404)
 
-    if shed_no == dest_shed:
+    dest_home_shed_no = entry_home_shed_no(dest_shed)
+    if dest_home_shed_no not in SHED_NUMBERS:
+        abort(404)
+
+    if shed_no == dest_home_shed_no:
         return redirect(url_for("shed_detail", shed_no=shed_no, ok=0, msg="Cannot move to same shed"))
 
     state = load_shed_entries_state()
 
     from_name = shed_name_from_number(shed_no)
-    to_name = shed_name_from_number(dest_shed)
+    to_name = shed_name_from_number(dest_home_shed_no)
 
     from_entries = ensure_shed_entry_bucket(state, from_name)
     to_entries = ensure_shed_entry_bucket(state, to_name)
@@ -12135,23 +12176,27 @@ def shed_entry_move(shed_no, dest_shed):
         dest_active = 0
 
     same_crop = str(dest_rec.get("crop_id")) == str(rec.get("crop_id"))
-    same_epoch = str(dest_rec.get("placement_epoch")) == str(rec.get("placement_epoch"))
-    duplicate_move = existing > 0 and dest_active == 1 and same_crop and same_epoch
-
-    if existing > 0 and dest_active == 1 and not duplicate_move:
+    if existing > 0 and dest_active == 1 and not same_crop:
         return redirect(
             url_for(
                 "shed_detail",
                 shed_no=shed_no,
                 ok=0,
-                msg="Destination already has active birds for that entry",
+                msg="Destination already has active birds for a different crop",
             )
         )
 
-    dest_rec["bird_count"] = existing if duplicate_move else (existing + bird_count)
+    dest_rec["bird_count"] = existing + bird_count
     dest_rec["crop_active"] = 1
+    source_epoch = rec.get("placement_epoch")
+    dest_epoch = dest_rec.get("placement_epoch")
+    try:
+        if source_epoch not in [None, ""] and (dest_epoch in [None, ""] or int(source_epoch) < int(dest_epoch)):
+            dest_rec["placement_epoch"] = int(source_epoch)
+    except Exception:
+        pass
     if dest_rec.get("placement_epoch") is None:
-        dest_rec["placement_epoch"] = rec.get("placement_epoch") or int(time.time())
+        dest_rec["placement_epoch"] = source_epoch or int(time.time())
     if dest_rec.get("crop_id") in [None, ""]:
         dest_rec["crop_id"] = rec.get("crop_id")
     move_ts = int(time.time())
@@ -12174,26 +12219,18 @@ def shed_entry_move(shed_no, dest_shed):
 
     save_shed_entries_state(state)
     refresh_farm_crop_current_id(state)
-    log_event("office", "entry_moved", "Entry moved between sheds", shed_no=shed_no, detail="Entry Shed %d moved to Shed %d" % (dest_shed, dest_shed))
-    if duplicate_move:
-        log_event(
-            "office",
-            "entry_move_duplicate_blocked",
-            "Duplicate shed move suppressed",
-            shed_no=shed_no,
-            detail="Entry Shed %d already present in Shed %d" % (dest_shed, dest_shed),
-        )
+    log_event("office", "entry_moved", "Entry moved between sheds", shed_no=shed_no, detail="%s moved to %s" % (entry_shed_label(dest_shed), shed_display_name_from_number(dest_home_shed_no)))
     if moved_mortality > 0:
         log_event(
             "office",
             "mortality_moved",
             "Mortality moved with active entry",
             shed_no=shed_no,
-            detail="Moved %d mortality rows from %s to %s for Entry Shed %d" % (moved_mortality, from_name, to_name, dest_shed),
+            detail="Moved %d mortality rows from %s to %s for %s" % (moved_mortality, from_name, to_name, entry_shed_label(dest_shed)),
         )
     push_shed_state_to_controller_async(shed_no)
-    push_shed_state_to_controller_async(dest_shed)
-    return redirect(url_for("shed_detail", shed_no=shed_no, ok=1, msg="Entry moved to Shed %d" % dest_shed))
+    push_shed_state_to_controller_async(dest_home_shed_no)
+    return redirect(url_for("shed_detail", shed_no=shed_no, ok=1, msg="Entry moved to %s" % shed_display_name_from_number(dest_home_shed_no)))
 
 
 @app.route("/api/shed/<int:shed_no>/sync", methods=["GET"])
