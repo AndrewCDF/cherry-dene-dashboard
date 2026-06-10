@@ -205,6 +205,7 @@ FEED_RECORDING_REFILL_RISE_KG = 8.0
 FEED_RECORDING_NOISE_FACTOR = 2.0
 FEED_REFILL_SETTLING_SECONDS = 5 * 60
 FEED_MOVEMENT_APPLY_MIN_KG = 0.5
+FEED_MOVEMENT_SESSION_GAP_SECONDS = 150
 _office_backup_lock = threading.Lock()
 
 
@@ -2484,6 +2485,14 @@ def clean_feed_movement_activity_rec(rec):
             event_kg = round(float(event.get("kg")), 3)
         except Exception:
             continue
+        try:
+            start_ts = int(event.get("start_ts") or event_ts)
+        except Exception:
+            start_ts = event_ts
+        try:
+            end_ts = int(event.get("end_ts") or event_ts)
+        except Exception:
+            end_ts = event_ts
         if event_kg < FEED_MOVEMENT_APPLY_MIN_KG:
             continue
         try:
@@ -2501,6 +2510,8 @@ def clean_feed_movement_activity_rec(rec):
         clean_events.append({
             "id": str(event.get("id") or uuid.uuid4().hex),
             "ts": event_ts,
+            "start_ts": start_ts,
+            "end_ts": end_ts,
             "shed_no": event_shed_no,
             "movement": str(event.get("movement") or "").strip(),
             "kg": event_kg,
@@ -2528,6 +2539,62 @@ def clean_feed_movement_activity_rec(rec):
         "last_applied_crop_id": int_or_none("last_applied_crop_id"),
         "last_applied_kg": float_or_none("last_applied_kg"),
     }
+
+
+def append_feed_movement_event(events, event, session_gap_seconds=FEED_MOVEMENT_SESSION_GAP_SECONDS):
+    if not isinstance(events, list):
+        events = []
+    event = dict(event or {})
+    try:
+        event_ts = int(event.get("ts"))
+    except Exception:
+        event_ts = int(time.time())
+    event["ts"] = event_ts
+    event["start_ts"] = int(event.get("start_ts") or event_ts)
+    event["end_ts"] = int(event.get("end_ts") or event_ts)
+    try:
+        event["kg"] = round(float(event.get("kg") or 0.0), 3)
+    except Exception:
+        event["kg"] = 0.0
+
+    if event["kg"] < FEED_MOVEMENT_APPLY_MIN_KG:
+        return events[-500:]
+
+    i = len(events) - 1
+    while i >= 0:
+        prev = events[i]
+        i -= 1
+        if not isinstance(prev, dict):
+            continue
+        try:
+            prev_end_ts = int(prev.get("end_ts") or prev.get("ts") or 0)
+        except Exception:
+            prev_end_ts = 0
+        if prev_end_ts <= 0:
+            continue
+        if event_ts - prev_end_ts > session_gap_seconds:
+            break
+        same_session = (
+            str(prev.get("movement") or "") == str(event.get("movement") or "")
+            and str(prev.get("crop_state") or "") == str(event.get("crop_state") or "")
+            and str(prev.get("crop_id") or "") == str(event.get("crop_id") or "")
+            and str(prev.get("shed_no") or "") == str(event.get("shed_no") or "")
+        )
+        if not same_session:
+            continue
+        try:
+            prev["kg"] = round(float(prev.get("kg") or 0.0) + float(event["kg"]), 3)
+        except Exception:
+            prev["kg"] = event["kg"]
+        prev["ts"] = int(prev.get("start_ts") or prev.get("ts") or event_ts)
+        prev["start_ts"] = int(prev.get("start_ts") or prev.get("ts") or event_ts)
+        prev["end_ts"] = event_ts
+        prev["feed_kg_after"] = event.get("feed_kg_after")
+        return events[-500:]
+
+    event["id"] = str(event.get("id") or uuid.uuid4().hex)
+    events.append(event)
+    return events[-500:]
 
 
 def update_feed_movement_activity_from_meta(shed_no, meta):
@@ -2600,9 +2667,11 @@ def update_feed_movement_activity_from_meta(shed_no, meta):
         events = rec.get("events", [])
         if not isinstance(events, list):
             events = []
-        events.append({
+        events = append_feed_movement_event(events, {
             "id": uuid.uuid4().hex,
             "ts": int(sample_ts),
+            "start_ts": int(sample_ts),
+            "end_ts": int(sample_ts),
             "shed_no": int(shed_no),
             "movement": movement_kind,
             "kg": round(float(movement_kg), 3),
@@ -2726,10 +2795,18 @@ def feed_movement_event_rows(shed_no=None, limit=200):
             movement = str(event.get("movement") or "")
             crop_state = str(event.get("crop_state") or "")
             crop_id = event.get("crop_id")
+            start_ts = event.get("start_ts") or event.get("ts")
+            end_ts = event.get("end_ts") or event.get("ts")
+            ts_label = format_ts_label(start_ts)
+            try:
+                if int(end_ts or 0) > int(start_ts or 0):
+                    ts_label = "%s - %s" % (format_ts_label(start_ts), format_ts_label(end_ts))
+            except Exception:
+                pass
             events.append({
                 "id": event.get("id"),
                 "ts": event.get("ts"),
-                "ts_label": format_ts_label(event.get("ts")),
+                "ts_label": ts_label,
                 "shed_no": event_shed_no,
                 "shed_name": shed_name_from_number(event_shed_no),
                 "movement": movement,

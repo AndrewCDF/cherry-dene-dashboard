@@ -409,6 +409,7 @@ FEED_REFILL_RISE_KG = 8.0
 FEED_REFILL_SETTLING_SECONDS = 5 * 60
 FEED_MOVEMENT_MIN_DROP_KG = 1.0
 FEED_MOVEMENT_NOISE_FACTOR = 2.0
+FEED_MOVEMENT_SESSION_GAP_SECONDS = 150
 FEED_STABLE_NOISE_KG = 2.0
 BACKUP_KEEP_COUNT = 6
 PICO_AUTO_RECOVERY_FREEZE_SECONDS = 90
@@ -1608,6 +1609,14 @@ def clean_feed_movement_state(rec):
             event_kg = round(float(event.get("kg")), 3)
         except Exception:
             continue
+        try:
+            start_ts = int(event.get("start_ts") or event_ts)
+        except Exception:
+            start_ts = event_ts
+        try:
+            end_ts = int(event.get("end_ts") or event_ts)
+        except Exception:
+            end_ts = event_ts
         if event_kg < 0.5:
             continue
         try:
@@ -1621,6 +1630,8 @@ def clean_feed_movement_state(rec):
         clean_events.append({
             "id": str(event.get("id") or "%d-%d" % (event_ts, i)),
             "ts": event_ts,
+            "start_ts": start_ts,
+            "end_ts": end_ts,
             "movement": str(event.get("movement") or "").strip(),
             "kg": event_kg,
             "crop_state": str(event.get("crop_state") or "").strip(),
@@ -1630,6 +1641,61 @@ def clean_feed_movement_state(rec):
     clean_events.sort(key=lambda row: int(row.get("ts") or 0))
     out["events"] = clean_events[-500:]
     return out
+
+
+def append_feed_movement_event(events, event, session_gap_seconds=FEED_MOVEMENT_SESSION_GAP_SECONDS):
+    if not isinstance(events, list):
+        events = []
+    event = dict(event or {})
+    try:
+        event_ts = int(event.get("ts"))
+    except Exception:
+        event_ts = int(time.time())
+    event["ts"] = event_ts
+    event["start_ts"] = int(event.get("start_ts") or event_ts)
+    event["end_ts"] = int(event.get("end_ts") or event_ts)
+    try:
+        event["kg"] = round(float(event.get("kg") or 0.0), 3)
+    except Exception:
+        event["kg"] = 0.0
+
+    if event["kg"] < 0.5:
+        return events[-500:]
+
+    i = len(events) - 1
+    while i >= 0:
+        prev = events[i]
+        i -= 1
+        if not isinstance(prev, dict):
+            continue
+        try:
+            prev_end_ts = int(prev.get("end_ts") or prev.get("ts") or 0)
+        except Exception:
+            prev_end_ts = 0
+        if prev_end_ts <= 0:
+            continue
+        if event_ts - prev_end_ts > session_gap_seconds:
+            break
+        same_session = (
+            str(prev.get("movement") or "") == str(event.get("movement") or "")
+            and str(prev.get("crop_state") or "") == str(event.get("crop_state") or "")
+            and str(prev.get("crop_id") or "") == str(event.get("crop_id") or "")
+        )
+        if not same_session:
+            continue
+        try:
+            prev["kg"] = round(float(prev.get("kg") or 0.0) + float(event["kg"]), 3)
+        except Exception:
+            prev["kg"] = event["kg"]
+        prev["ts"] = int(prev.get("start_ts") or prev.get("ts") or event_ts)
+        prev["start_ts"] = int(prev.get("start_ts") or prev.get("ts") or event_ts)
+        prev["end_ts"] = event_ts
+        prev["feed_kg_after"] = event.get("feed_kg_after")
+        return events[-500:]
+
+    event["id"] = str(event.get("id") or "%s-%s" % (event_ts, event.get("movement") or "feed"))
+    events.append(event)
+    return events[-500:]
 
 
 def normalize_bool(value):
@@ -2890,8 +2956,16 @@ def feed_movement_display_context(sensors, entries):
         i += 1
         movement_kind = str(event.get("movement") or "")
         crop_state = str(event.get("crop_state") or "")
+        start_ts = event.get("start_ts") or event.get("ts")
+        end_ts = event.get("end_ts") or event.get("ts")
+        ts_label = fmt_ts(start_ts)
+        try:
+            if int(end_ts or 0) > int(start_ts or 0):
+                ts_label = "%s - %s" % (fmt_ts(start_ts), fmt_ts(end_ts))
+        except Exception:
+            pass
         event_rows.append({
-            "ts_label": fmt_ts(event.get("ts")),
+            "ts_label": ts_label,
             "movement_label": "Feed Out" if movement_kind == "feed_out" else ("Bin Fill-Up" if movement_kind == "bin_fill" else "--"),
             "kg_label": fmt_value(event.get("kg"), "f1"),
             "crop_state_label": "In Crop" if crop_state == "in_crop" else "Out Of Crop",
@@ -3954,9 +4028,11 @@ def update_feed_movement_state(sensors, feed_kg, sample_ts, entries=None):
         events = movement.get("events", [])
         if not isinstance(events, list):
             events = []
-        events.append({
+        events = append_feed_movement_event(events, {
             "id": "%s-%s" % (sample_ts, movement_kind),
             "ts": int(sample_ts),
+            "start_ts": int(sample_ts),
+            "end_ts": int(sample_ts),
             "movement": movement_kind,
             "kg": round(float(movement_kg), 3),
             "crop_state": "in_crop" if in_crop else "out_of_crop",
