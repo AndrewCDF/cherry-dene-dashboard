@@ -1551,6 +1551,12 @@ def default_sensor_state():
         "feed_raw_display_samples": [],
         "feed_raw_samples": [],
         "feed_average_raw_units": None,
+        "hx711_dout": None,
+        "hx711_sck": None,
+        "hx711_ready": None,
+        "hx711_dout_before": None,
+        "hx711_sck_before": None,
+        "hx711_ready_before": None,
         "feed_kg_live": None,
         "feed_kg_updated_ts": None,
         "feed_minute_change_kg": None,
@@ -4251,6 +4257,12 @@ def apply_sensor_packet(state, packet):
         "rh_pct": "rh_pct",
         "water_lpm": "water_lpm",
         "feed_kg": "feed_kg",
+        "hx711_dout": "hx711_dout",
+        "hx711_sck": "hx711_sck",
+        "hx711_ready": "hx711_ready",
+        "hx711_dout_before": "hx711_dout_before",
+        "hx711_sck_before": "hx711_sck_before",
+        "hx711_ready_before": "hx711_ready_before",
         "status": "device_status",
         "device_status": "device_status",
     }
@@ -5984,6 +5996,7 @@ SETTINGS_HTML = """
                     <a class="button-link" href="{{ url_for('allocation_view') }}">Shed Allocation</a>
                     <a class="button-link" href="{{ url_for('controller_alarms_view') }}">Alarms{% if alarm_count %} ({{ alarm_count }}){% endif %}</a>
                     <a class="button-link" href="{{ url_for('commissioning_view') }}">Commissioning</a>
+                    <a class="button-link" href="{{ url_for('hx711_diagnostics_view') }}">HX711 Diagnostics</a>
                     <a class="button-link" href="{{ url_for('controller_config_view') }}">Controller Config</a>
                     <a class="button-link" href="{{ url_for('controller_health_view') }}">Controller Health</a>
                     <form class="action-form" method="post" action="{{ url_for('controller_reboot_view') }}" onsubmit="return confirm('Reboot this controller Pi now?');">
@@ -7226,6 +7239,7 @@ FEED_SETTINGS_HTML = """
         label { display:block; color:var(--muted); font-size:16px; margin-bottom:8px; }
         input[type="number"] { width:100%; min-height:72px; border-radius:16px; border:1px solid var(--line); background:#686868; color:var(--text); font-size:30px; padding:12px 16px; box-sizing:border-box; }
         button { min-height:72px; border-radius:16px; border:1px solid #8a8a8a; background:linear-gradient(180deg, #7d7d7d, #696969); color:var(--text); font-size:22px; font-weight:700; padding:0 18px; cursor:pointer; margin-top:14px; width:100%; }
+        .button-link { min-height:58px; border-radius:16px; border:1px solid #8a8a8a; background:linear-gradient(180deg, #7d7d7d, #696969); color:var(--text); font-size:20px; font-weight:700; text-decoration:none; line-height:58px; box-sizing:border-box; }
         .hint { color:var(--muted); font-size:16px; margin-top:12px; }
         .state-pill { display:inline-flex; align-items:center; justify-content:center; min-height:34px; padding:7px 12px; border-radius:999px; border:1px solid var(--line); background:#686868; font-weight:700; font-size:15px; }
         .state-pill.in-crop { border-color:#35d07f; color:#e4ffed; }
@@ -7244,6 +7258,7 @@ FEED_SETTINGS_HTML = """
         <div class="panel">
             <h1>Shed {{ shed_no }} Feed Settings</h1>
             <div class="sub">Low-feed warning plus feed bin calibration using tare, bin capacity, and a known weight.</div>
+            <a class="button-link" href="{{ url_for('hx711_diagnostics_view') }}" style="display:block;text-align:center;margin-bottom:14px;">HX711 Diagnostics</a>
             <div class="current">Current: <span id="currentFeedKg">{{ current_feed_kg }}</span> KG</div>
             <div class="detail"><span>Live calculated KG</span><span id="feedLiveKg">{{ feed_live_kg }}</span></div>
             <div class="detail"><span>Smoothed raw feed units</span><span id="currentFeedRaw">{{ current_feed_raw }}</span></div>
@@ -7459,6 +7474,147 @@ FEED_SETTINGS_HTML = """
 
         refreshFeedState();
         setInterval(refreshFeedState, 1000);
+    </script>
+</body>
+</html>
+"""
+
+
+HX711_DIAGNOSTICS_HTML = """
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Shed {{ shed_no }} HX711 Diagnostics</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <style>
+        :root { --bg:#5b5b5b; --panel:rgba(115,115,115,0.96); --panel-2:rgba(104,104,104,0.98); --line:#8a8a8a; --text:#ececec; --muted:#d2d2d2; --ok:#bff2cb; --warn:#ffe19a; --bad:#ffc4cb; }
+        body { margin:0; color:var(--text); font-family:"Helvetica Neue",Helvetica,Arial,sans-serif; background:var(--bg); }
+        .wrap { max-width:1100px; margin:0 auto; padding:18px; }
+        .topbar { margin-bottom:16px; }
+        .topbar a { color:var(--text); text-decoration:none; font-size:18px; }
+        .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+        .panel { background:var(--panel); border:1px solid var(--line); border-radius:20px; padding:18px; }
+        h1 { margin:0 0 8px 0; font-size:34px; }
+        h2 { margin:0 0 12px 0; font-size:24px; }
+        .sub { color:var(--muted); margin-bottom:16px; font-size:18px; }
+        .detail { display:flex; justify-content:space-between; gap:12px; padding:12px 0; border-bottom:1px solid #818181; font-size:18px; }
+        .detail:last-child { border-bottom:0; }
+        .label { color:var(--muted); }
+        .value { text-align:right; overflow-wrap:anywhere; }
+        .pill { display:inline-block; border-radius:999px; padding:4px 10px; border:1px solid var(--line); font-weight:700; }
+        .ok { color:var(--ok); border-color:#579261; }
+        .warn { color:var(--warn); border-color:#a88b3d; }
+        .bad { color:var(--bad); border-color:#9b4d58; }
+        .actions { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:14px; }
+        button { min-height:62px; border-radius:16px; border:1px solid #8a8a8a; background:linear-gradient(180deg,#7a7a7a,#676767); color:var(--text); font-size:19px; font-weight:700; cursor:pointer; }
+        pre { white-space:pre-wrap; word-break:break-word; margin:0; padding:12px; border-radius:14px; background:#4f4f4f; border:1px solid #777; max-height:300px; overflow:auto; }
+        @media (max-width: 900px) { .grid, .actions { grid-template-columns:1fr; } h1 { font-size:28px; } }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="topbar"><a href="{{ url_for('feed_settings_view') }}">← Back to Feed</a></div>
+        <div class="grid">
+            <div class="panel">
+                <h1>Shed {{ shed_no }} HX711 Diagnostics</h1>
+                <div class="sub">Live feed weighing signal path from Pico, HX711, and controller calibration.</div>
+                <div class="detail"><span class="label">Diagnosis</span><span id="diagnosis" class="value pill {{ diagnosis_class }}">{{ diagnosis }}</span></div>
+                <div class="detail"><span class="label">Raw Feed Units</span><span id="feedRaw" class="value">{{ feed_raw_units }}</span></div>
+                <div class="detail"><span class="label">Smoothed Raw</span><span id="feedRawSmoothed" class="value">{{ feed_raw_smoothed }}</span></div>
+                <div class="detail"><span class="label">Published Average Raw</span><span id="feedAverageRaw" class="value">{{ feed_average_raw }}</span></div>
+                <div class="detail"><span class="label">Feed KG</span><span id="feedKg" class="value">{{ feed_kg }}</span></div>
+                <div class="detail"><span class="label">Live Feed KG</span><span id="feedKgLive" class="value">{{ feed_kg_live }}</span></div>
+                <div class="detail"><span class="label">Updated</span><span id="lastSensor" class="value">{{ last_sensor_age }}</span></div>
+                <div class="actions">
+                    <form method="post" action="{{ url_for('hx711_reset_pico_view') }}"><button type="submit">Soft Reset Pico</button></form>
+                    <form method="post" action="{{ url_for('hx711_clear_feed_average_view') }}"><button type="submit">Clear Feed Average</button></form>
+                </div>
+            </div>
+            <div class="panel">
+                <h2>HX711 Pins</h2>
+                <div class="detail"><span class="label">DOUT/DT Pin</span><span class="value">GP14</span></div>
+                <div class="detail"><span class="label">SCK/CLK Pin</span><span class="value">GP15</span></div>
+                <div class="detail"><span class="label">DOUT Before Read</span><span id="doutBefore" class="value">{{ hx711_dout_before }}</span></div>
+                <div class="detail"><span class="label">SCK Before Read</span><span id="sckBefore" class="value">{{ hx711_sck_before }}</span></div>
+                <div class="detail"><span class="label">Ready Before Read</span><span id="readyBefore" class="value">{{ hx711_ready_before }}</span></div>
+                <div class="detail"><span class="label">DOUT After Read</span><span id="doutAfter" class="value">{{ hx711_dout }}</span></div>
+                <div class="detail"><span class="label">SCK After Read</span><span id="sckAfter" class="value">{{ hx711_sck }}</span></div>
+                <div class="detail"><span class="label">Ready After Read</span><span id="readyAfter" class="value">{{ hx711_ready }}</span></div>
+            </div>
+            <div class="panel">
+                <h2>Pico / Serial</h2>
+                <div class="detail"><span class="label">Pico</span><span id="picoStatus" class="value">{{ pico_status }}</span></div>
+                <div class="detail"><span class="label">Packet Kind</span><span id="packetKind" class="value">{{ pico_packet_kind }}</span></div>
+                <div class="detail"><span class="label">Checkpoint</span><span id="checkpoint" class="value">{{ pico_checkpoint }}</span></div>
+                <div class="detail"><span class="label">Boot Count</span><span id="bootCount" class="value">{{ pico_boot_count }}</span></div>
+                <div class="detail"><span class="label">Reset Cause</span><span id="resetCause" class="value">{{ pico_reset_cause }}</span></div>
+                <div class="detail"><span class="label">Serial Port</span><span id="serialPort" class="value">{{ serial_port }}</span></div>
+            </div>
+            <div class="panel">
+                <h2>Calibration</h2>
+                <div class="detail"><span class="label">Tare Raw</span><span id="tareRaw" class="value">{{ feed_tare_raw }}</span></div>
+                <div class="detail"><span class="label">KG Per Raw Unit</span><span id="kgPerRaw" class="value">{{ feed_kg_per_raw_unit }}</span></div>
+                <div class="detail"><span class="label">Capacity KG</span><span id="capacityKg" class="value">{{ feed_capacity_kg }}</span></div>
+                <div class="detail"><span class="label">Raw Noise</span><span id="rawNoise" class="value">{{ feed_noise_raw_units }}</span></div>
+                <div class="detail"><span class="label">KG Noise</span><span id="kgNoise" class="value">{{ feed_noise_kg }}</span></div>
+            </div>
+            <div class="panel">
+                <h2>Alarms</h2>
+                <pre id="alarmsText">{{ alarms_text }}</pre>
+            </div>
+            <div class="panel">
+                <h2>Latest Pico Packet</h2>
+                <pre id="packetText">{{ raw_packet_text }}</pre>
+            </div>
+        </div>
+    </div>
+    <script>
+        function setText(id, value) {
+            const el = document.getElementById(id);
+            if (el) el.textContent = value || '--';
+        }
+        function setDiagnosis(cls, text) {
+            const el = document.getElementById('diagnosis');
+            if (!el) return;
+            el.className = 'value pill ' + (cls || 'warn');
+            el.textContent = text || '--';
+        }
+        async function refreshHx711() {
+            try {
+                const resp = await fetch('{{ url_for('hx711_diagnostics_state_api') }}', { cache: 'no-store' });
+                if (!resp.ok) return;
+                const d = await resp.json();
+                setDiagnosis(d.diagnosis_class, d.diagnosis);
+                setText('feedRaw', d.feed_raw_units);
+                setText('feedRawSmoothed', d.feed_raw_smoothed);
+                setText('feedAverageRaw', d.feed_average_raw);
+                setText('feedKg', d.feed_kg);
+                setText('feedKgLive', d.feed_kg_live);
+                setText('lastSensor', d.last_sensor_age);
+                setText('doutBefore', d.hx711_dout_before);
+                setText('sckBefore', d.hx711_sck_before);
+                setText('readyBefore', d.hx711_ready_before);
+                setText('doutAfter', d.hx711_dout);
+                setText('sckAfter', d.hx711_sck);
+                setText('readyAfter', d.hx711_ready);
+                setText('picoStatus', d.pico_status);
+                setText('packetKind', d.pico_packet_kind);
+                setText('checkpoint', d.pico_checkpoint);
+                setText('bootCount', d.pico_boot_count);
+                setText('resetCause', d.pico_reset_cause);
+                setText('serialPort', d.serial_port);
+                setText('tareRaw', d.feed_tare_raw);
+                setText('kgPerRaw', d.feed_kg_per_raw_unit);
+                setText('capacityKg', d.feed_capacity_kg);
+                setText('rawNoise', d.feed_noise_raw_units);
+                setText('kgNoise', d.feed_noise_kg);
+                setText('alarmsText', d.alarms_text);
+                setText('packetText', d.raw_packet_text);
+            } catch (err) {}
+        }
+        refreshHx711();
+        setInterval(refreshHx711, 1000);
     </script>
 </body>
 </html>
@@ -8745,6 +8901,151 @@ def build_feed_settings_context(cfg, state):
         "feed_calibration_rows": feed_calibration_history_rows(),
         "feed_calibration_can_undo": feed_calibration_undo_row() is not None,
     }
+
+
+def fmt_logic_level(value):
+    if value in [None, ""]:
+        return "--"
+    try:
+        value_i = int(value)
+    except Exception:
+        return str(value)
+    if value_i == 0:
+        return "LOW / 0"
+    if value_i == 1:
+        return "HIGH / 1"
+    return str(value)
+
+
+def fmt_ready(value):
+    if value is True:
+        return "Ready"
+    if value is False:
+        return "Not Ready"
+    return "--"
+
+
+def hx711_diagnosis(cfg, sensors):
+    raw = sensors.get("raw", {}) if isinstance(sensors.get("raw", {}), dict) else {}
+    alarms = sensors.get("alarms", [])
+    alarm_text = " ".join(str(item) for item in alarms) if isinstance(alarms, list) else ""
+    feed_raw = sensors.get("feed_raw_units")
+    if feed_raw in [None, ""]:
+        feed_raw = raw.get("feed_raw_units")
+
+    dout = sensors.get("hx711_dout")
+    if dout in [None, ""]:
+        dout = raw.get("hx711_dout")
+    dout_before = sensors.get("hx711_dout_before")
+    if dout_before in [None, ""]:
+        dout_before = raw.get("hx711_dout_before")
+
+    if "HX711 not ready" in alarm_text:
+        return "bad", "HX711 not ready: DOUT is likely stuck high or not connected"
+
+    try:
+        feed_raw_f = float(feed_raw)
+    except Exception:
+        feed_raw_f = None
+
+    try:
+        dout_i = int(dout)
+    except Exception:
+        dout_i = None
+    try:
+        dout_before_i = int(dout_before)
+    except Exception:
+        dout_before_i = None
+
+    if feed_raw_f == 0.0 and (dout_i == 0 or dout_before_i == 0):
+        return "bad", "Raw is zero and DOUT is low: suspect HX711 stuck low, short to ground, or failed module"
+    if feed_raw_f == 0.0:
+        return "bad", "Raw is exactly zero: suspect HX711 data path or module fault"
+    if feed_raw_f is None:
+        return "bad", "No feed raw value arriving from Pico"
+    if cfg.get("feed_tare_raw") in [None, ""] or cfg.get("feed_kg_per_raw_unit") in [None, ""]:
+        return "warn", "Raw is present but feed calibration is incomplete"
+    return "ok", "HX711 raw feed data is arriving"
+
+
+def build_hx711_diagnostics_context(cfg, state):
+    sensors = state.get("sensors", default_sensor_state())
+    raw = sensors.get("raw", {}) if isinstance(sensors.get("raw", {}), dict) else {}
+    diagnosis_class, diagnosis = hx711_diagnosis(cfg, sensors)
+    alarms = sensors.get("alarms", [])
+    controller_alarms = sensors.get("controller_alarms", [])
+    all_alarms = []
+    if isinstance(alarms, list):
+        all_alarms.extend(str(item) for item in alarms)
+    if isinstance(controller_alarms, list):
+        all_alarms.extend(str(item.get("message") if isinstance(item, dict) else item) for item in controller_alarms)
+    try:
+        raw_packet_text = json.dumps(raw, indent=2, sort_keys=True)
+    except Exception:
+        raw_packet_text = str(raw)
+
+    def raw_or_sensor(key):
+        value = sensors.get(key)
+        if value in [None, ""]:
+            value = raw.get(key)
+        return value
+
+    return {
+        "shed_no": cfg["shed_no"],
+        "diagnosis": diagnosis,
+        "diagnosis_class": diagnosis_class,
+        "feed_raw_units": fmt_value(raw_or_sensor("feed_raw_units"), "f1"),
+        "feed_raw_smoothed": fmt_value(feed_raw_display_units(sensors), "f1"),
+        "feed_average_raw": fmt_value(sensors.get("feed_average_raw_units"), "f1"),
+        "feed_kg": fmt_value(sensors.get("feed_kg"), "f1"),
+        "feed_kg_live": fmt_value(sensors.get("feed_kg_live"), "f1"),
+        "last_sensor_age": fmt_age_seconds(sensors.get("last_sensor_ts")),
+        "hx711_dout": fmt_logic_level(raw_or_sensor("hx711_dout")),
+        "hx711_sck": fmt_logic_level(raw_or_sensor("hx711_sck")),
+        "hx711_ready": fmt_ready(raw_or_sensor("hx711_ready")),
+        "hx711_dout_before": fmt_logic_level(raw_or_sensor("hx711_dout_before")),
+        "hx711_sck_before": fmt_logic_level(raw_or_sensor("hx711_sck_before")),
+        "hx711_ready_before": fmt_ready(raw_or_sensor("hx711_ready_before")),
+        "pico_status": sensor_status_text(sensors),
+        "pico_packet_kind": str(sensors.get("pico_packet_kind") or "--"),
+        "pico_checkpoint": str(sensors.get("pico_checkpoint") or "--"),
+        "pico_boot_count": fmt_value(sensors.get("pico_boot_count"), "i"),
+        "pico_reset_cause": str(sensors.get("pico_reset_cause") or "--"),
+        "serial_port": str(sensors.get("serial_reader_port") or detect_serial_port() or "--"),
+        "feed_tare_raw": fmt_value(cfg.get("feed_tare_raw"), "f1"),
+        "feed_kg_per_raw_unit": fmt_value(cfg.get("feed_kg_per_raw_unit"), "f4"),
+        "feed_capacity_kg": fmt_value(cfg.get("feed_capacity_kg"), "f0"),
+        "feed_noise_raw_units": fmt_value(sensors.get("feed_noise_raw_units"), "f1"),
+        "feed_noise_kg": fmt_value(sensors.get("feed_noise_kg"), "f1"),
+        "alarms_text": "\n".join(all_alarms) if all_alarms else "No active Pico/controller alarms.",
+        "raw_packet_text": raw_packet_text if raw_packet_text not in ["{}", ""] else "No full Pico packet received yet.",
+    }
+
+
+@app.route("/settings/hx711")
+def hx711_diagnostics_view():
+    cfg = load_config()
+    state = load_state()
+    return render_template_string(HX711_DIAGNOSTICS_HTML, **build_hx711_diagnostics_context(cfg, state))
+
+
+@app.route("/api/settings/hx711-state")
+def hx711_diagnostics_state_api():
+    cfg = load_config()
+    state = load_state()
+    return jsonify(build_hx711_diagnostics_context(cfg, state))
+
+
+@app.route("/settings/hx711/reset-pico", methods=["POST"])
+def hx711_reset_pico_view():
+    status = soft_reset_pico()
+    return redirect(url_for("hx711_diagnostics_view", msg=str(status.get("status") or "")))
+
+
+@app.route("/settings/hx711/clear-average", methods=["POST"])
+def hx711_clear_feed_average_view():
+    mutate_state(lambda s: reset_feed_average_state(s.get("sensors", default_sensor_state())))
+    return redirect(url_for("hx711_diagnostics_view"))
 
 
 @app.route("/settings/feed")

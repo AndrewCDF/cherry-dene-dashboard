@@ -238,6 +238,23 @@ def read_feed_raw_units(samples=HX711_READINGS):
     return round(sum(readings) / len(readings), 1)
 
 
+def hx711_debug_snapshot(label=""):
+    try:
+        dout_level = hx711_dout.value()
+    except Exception:
+        dout_level = None
+    try:
+        sck_level = hx711_sck.value()
+    except Exception:
+        sck_level = None
+    return {
+        "label": label,
+        "dout": dout_level,
+        "sck": sck_level,
+        "ready": True if dout_level == 0 else (False if dout_level == 1 else None),
+    }
+
+
 def read_value(read_fn, alarm_prefix, alarms, default=None):
     try:
         return read_fn()
@@ -294,7 +311,9 @@ def build_payload():
     water_lpm = read_value(read_water_lpm, "Flow read failed", alarms)
     total_pulses = read_value(read_total_flow_pulses, "Total flow pulse read failed", alarms)
     emit_checkpoint("pre_hx711")
+    hx711_before = hx711_debug_snapshot("before_read")
     feed_raw_units = read_value(read_feed_raw_units, "Feed raw read failed", alarms)
+    hx711_after = hx711_debug_snapshot("after_read")
     emit_checkpoint("pre_augers")
     auger_payload = read_auger_inputs(alarms)
 
@@ -305,6 +324,12 @@ def build_payload():
         "water_lpm": water_lpm,
         "total_flow_pulses": total_pulses,
         "feed_raw_units": feed_raw_units,
+        "hx711_dout": hx711_after.get("dout"),
+        "hx711_sck": hx711_after.get("sck"),
+        "hx711_ready": hx711_after.get("ready"),
+        "hx711_dout_before": hx711_before.get("dout"),
+        "hx711_sck_before": hx711_before.get("sck"),
+        "hx711_ready_before": hx711_before.get("ready"),
         "feed_kg": None,
         "status": "Sensors OK" if not alarms else "Sensor warnings",
         "alarms": alarms,
