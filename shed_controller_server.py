@@ -4178,7 +4178,7 @@ def update_feed_from_raw(sensors, now_ts=None, entries=None):
         sensors["feed_kg_updated_ts"] = None
         return False
 
-    feed_kg_live = max(0.0, (feed_raw - tare) * scale)
+    feed_kg_live = (feed_raw - tare) * scale
     if capacity is not None and capacity > 0:
         feed_kg_live = min(feed_kg_live, capacity)
     sensors["feed_kg_live"] = round(feed_kg_live, 1)
@@ -4198,7 +4198,7 @@ def update_feed_from_raw(sensors, now_ts=None, entries=None):
     averaged_raw = feed_raw
     if kept_samples:
         averaged_raw = sum(sample["raw"] for sample in kept_samples) / float(len(kept_samples))
-    feed_kg = max(0.0, (averaged_raw - tare) * scale)
+    feed_kg = (averaged_raw - tare) * scale
     if capacity is not None and capacity > 0:
         feed_kg = min(feed_kg, capacity)
     previous_feed_kg = sensors.get("feed_kg")
