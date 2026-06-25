@@ -1955,6 +1955,31 @@ def active_crop_record_for_shed(shed_name):
     }
 
 
+def active_bird_count_for_shed_crop(shed_name, crop_id):
+    if crop_id in [None, ""]:
+        return None
+
+    state = load_shed_entries_state()
+    entries = ensure_shed_entry_bucket(state, shed_name)
+    total = 0
+
+    for key in entries:
+        rec = clean_entry_record(entries.get(key, {}))
+        try:
+            rec_crop_id = int(rec.get("crop_id"))
+        except Exception:
+            continue
+
+        if rec_crop_id != int(crop_id):
+            continue
+        if rec["crop_active"] != 1 or rec["bird_count"] <= 0:
+            continue
+
+        total += int(rec["bird_count"])
+
+    return total if total > 0 else None
+
+
 def crop_start_epoch_for_state(state, crop_id):
     if crop_id in [None, ""]:
         return None
@@ -4063,11 +4088,16 @@ def build_crop_summary_for_shed(shed_name, crop_id):
         feed_bin_end_kg = _safe_float(latest_event.get("feed_kg"))
 
     birds_placed_candidates = []
-    if max_active_birds > 0:
-        birds_placed_candidates.append(max_active_birds)
-    if birds_remaining_end is not None:
-        birds_placed_candidates.append((birds_remaining_end or 0) + int(mortality_total or 0))
-    birds_placed = max(birds_placed_candidates) if birds_placed_candidates else None
+    current_active_birds = active_bird_count_for_shed_crop(shed_name, crop_id)
+    if current_active_birds is not None:
+        birds_remaining_end = current_active_birds
+        birds_placed = current_active_birds + int(mortality_total or 0)
+    else:
+        if max_active_birds > 0:
+            birds_placed_candidates.append(max_active_birds)
+        if birds_remaining_end is not None:
+            birds_placed_candidates.append((birds_remaining_end or 0) + int(mortality_total or 0))
+        birds_placed = max(birds_placed_candidates) if birds_placed_candidates else None
 
     total_feed = 0.0
     total_water = 0.0
@@ -8615,7 +8645,10 @@ DETAIL_HTML = """
                                     {% endif %}
                                 </td>
                                 <td>
+                                    <button form="entry-form-{{ r.dest_shed }}" type="submit">Save</button>
+                                    {% if r.crop_active != 1 %}
                                     <button form="entry-form-{{ r.dest_shed }}" formaction="{{ url_for('shed_entry_start', shed_no=shed_no, dest_shed=r.dest_shed) }}" type="submit">Start</button>
+                                    {% endif %}
                                     <form class="form-inline" method="post" action="{{ url_for('shed_entry_end', shed_no=shed_no, dest_shed=r.dest_shed) }}">
                                         <button class="danger" type="submit">End</button>
                                     </form>
@@ -12068,15 +12101,25 @@ def shed_entry_save(shed_no, dest_shed):
     rec = clean_entry_record(rec)
     now_ts = int(time.time())
     prev_rec = dict(rec)
+    had_active_crop = int(rec.get("crop_active", 0) or 0) == 1 and rec.get("crop_id") is not None
+    placement_at_raw = request.form.get("placement_at", "")
+    placement_epoch = parse_datetime_local_value(placement_at_raw)
+    if str(placement_at_raw or "").strip() and placement_epoch is None:
+        return redirect(url_for("shed_detail", shed_no=shed_no, ok=0, msg="Invalid placement date"))
+    if placement_epoch is not None and placement_epoch > now_ts:
+        return redirect(url_for("shed_detail", shed_no=shed_no, ok=0, msg="Placement date cannot be in the future"))
 
     if bird_count == 0:
-        had_active_crop = int(rec.get("crop_active", 0) or 0) == 1 and rec.get("crop_id") is not None
         rec["bird_count"] = 0
         rec["crop_active"] = 0
         rec["placement_epoch"] = None
         rec["crop_id"] = None
+        rec["pens"] = []
     else:
         rec["bird_count"] = bird_count
+        rec["pens"] = []
+        if placement_epoch is not None:
+            rec["placement_epoch"] = placement_epoch
 
     rec["updated_ts"] = now_ts
     rec["updated_by"] = "dashboard"
@@ -12094,6 +12137,8 @@ def shed_entry_save(shed_no, dest_shed):
         log_event("office", "entry_cleared", "Entry saved as zero birds", shed_no=shed_no, detail=entry_shed_label(dest_shed))
     else:
         log_event("office", "entry_saved", "Bird count saved", shed_no=shed_no, detail="%s = %d" % (entry_shed_label(dest_shed), bird_count))
+        if had_active_crop:
+            log_crop_event(shed_name, rec, True)
     push_shed_state_to_controller_async(shed_no)
     return redirect(url_for("shed_detail", shed_no=shed_no, ok=1, msg="Entry saved"))
 
@@ -12126,6 +12171,7 @@ def shed_entry_start(shed_no, dest_shed):
             if bird_count < 0:
                 raise ValueError()
             rec["bird_count"] = bird_count
+            rec["pens"] = []
             rec["updated_ts"] = int(time.time())
             rec["updated_by"] = "dashboard"
         except Exception:

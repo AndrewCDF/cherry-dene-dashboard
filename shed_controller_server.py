@@ -7769,7 +7769,9 @@ ALLOCATION_HTML = """
                         <input type="hidden" name="return_to" value="allocation">
                         <input type="number" name="bird_count" min="0" step="1" inputmode="numeric" enterkeyhint="done" value="{{ '' if row.bird_count == 0 else row.bird_count }}">
                         <button type="submit">Save</button>
+                        {% if row.crop_active != 1 %}
                         <button formaction="{{ url_for('start_entry_for_dest', dest_shed=row.dest_shed) }}" type="submit">Start</button>
+                        {% endif %}
                         {% if row.can_move %}
                         <button class="secondary" formaction="{{ url_for('move_entry_for_dest', dest_shed=row.dest_shed) }}" type="submit" onclick="return confirm('Move birds from {{ shed_display_name }} to {{ row.dest_shed_label }}?');">Move</button>
                         {% else %}
