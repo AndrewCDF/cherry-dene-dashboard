@@ -2002,12 +2002,9 @@ def active_placed_bird_count_for_shed_crop(shed_name, crop_id):
             continue
 
         placed_bird_count = int(rec.get("placed_bird_count") or rec["bird_count"])
-        if (
-            isinstance(raw_rec, dict)
-            and raw_rec.get("placed_bird_count") in [None, ""]
-            and raw_rec.get("placed_count") in [None, ""]
-        ):
-            placed_bird_count = rec["bird_count"] + mortality_total_for_entry(shed_name, crop_id, key)
+        entry_mortality = mortality_total_for_entry(shed_name, crop_id, key)
+        if entry_mortality > 0 and placed_bird_count <= rec["bird_count"]:
+            placed_bird_count = rec["bird_count"] + entry_mortality
         total += placed_bird_count
 
     return total if total > 0 else None
@@ -5294,12 +5291,7 @@ def build_detail_entry_rows(current_shed_no, entries):
         entry_mortality = 0
         if crop_active == 1 and rec.get("crop_id") not in [None, ""]:
             entry_mortality = mortality_total_for_entry(shed_name, rec.get("crop_id"), dest_shed)
-            if (
-                isinstance(raw_rec, dict)
-                and raw_rec.get("placed_bird_count") in [None, ""]
-                and raw_rec.get("placed_count") in [None, ""]
-                and entry_mortality > 0
-            ):
+            if entry_mortality > 0 and placed_bird_count <= bird_count:
                 placed_bird_count = bird_count + entry_mortality
 
         placement_epoch = rec.get("placement_epoch")

@@ -3041,7 +3041,9 @@ def build_home_context():
         mortality_total_raw = 0
     birds_remaining_raw = total_birds if total_birds > 0 else 0
     birds_placed_raw = total_placed_birds_from_entries(state.get("entries", {})) if birds_remaining_raw > 0 else 0
-    if birds_placed_raw <= 0 and birds_remaining_raw > 0:
+    if birds_remaining_raw > 0 and mortality_total_raw > 0 and birds_placed_raw <= birds_remaining_raw:
+        birds_placed_raw = birds_remaining_raw + mortality_total_raw
+    elif birds_placed_raw <= 0 and birds_remaining_raw > 0:
         birds_placed_raw = birds_remaining_raw + mortality_total_raw
     birds_display = fmt_value(birds_remaining_raw if birds_remaining_raw > 0 else None, "i")
     if birds_placed_raw > 0:
