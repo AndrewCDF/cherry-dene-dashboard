@@ -12214,6 +12214,7 @@ def shed_entry_move(shed_no, dest_shed):
 
     from_entries = ensure_shed_entry_bucket(state, from_name)
     to_entries = ensure_shed_entry_bucket(state, to_name)
+    from_ended_entries = state.get(from_name, {}).get("ended_entries", {})
 
     rec = from_entries.get(str(dest_shed))
     if not rec:
@@ -12286,6 +12287,7 @@ def shed_entry_move(shed_no, dest_shed):
     log_crop_event(from_name, rec, False)
     log_crop_event(to_name, dest_rec, True)
     del from_entries[str(dest_shed)]
+    from_ended_entries[str(dest_shed)] = move_ts
 
     moved_mortality = move_mortality_history_between_sheds(
         from_name,
