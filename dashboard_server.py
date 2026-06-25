@@ -1980,6 +1980,39 @@ def active_bird_count_for_shed_crop(shed_name, crop_id):
     return total if total > 0 else None
 
 
+def active_placed_bird_count_for_shed_crop(shed_name, crop_id):
+    if crop_id in [None, ""]:
+        return None
+
+    state = load_shed_entries_state()
+    entries = ensure_shed_entry_bucket(state, shed_name)
+    total = 0
+
+    for key in entries:
+        raw_rec = entries.get(key, {})
+        rec = clean_entry_record(raw_rec)
+        try:
+            rec_crop_id = int(rec.get("crop_id"))
+        except Exception:
+            continue
+
+        if rec_crop_id != int(crop_id):
+            continue
+        if rec["crop_active"] != 1 or rec["bird_count"] <= 0:
+            continue
+
+        placed_bird_count = int(rec.get("placed_bird_count") or rec["bird_count"])
+        if (
+            isinstance(raw_rec, dict)
+            and raw_rec.get("placed_bird_count") in [None, ""]
+            and raw_rec.get("placed_count") in [None, ""]
+        ):
+            placed_bird_count = rec["bird_count"] + mortality_total_for_entry(shed_name, crop_id, key)
+        total += placed_bird_count
+
+    return total if total > 0 else None
+
+
 def crop_start_epoch_for_state(state, crop_id):
     if crop_id in [None, ""]:
         return None
@@ -2122,6 +2155,15 @@ def log_crop_event(shed_name, rec, crop_active):
     except Exception:
         bird_count = 0
 
+    try:
+        placed_bird_count = rec.get("placed_bird_count", rec.get("placed_count", None))
+        if placed_bird_count not in [None, ""]:
+            placed_bird_count = int(placed_bird_count)
+        else:
+            placed_bird_count = bird_count
+    except Exception:
+        placed_bird_count = bird_count
+
     payload = {
         "ts": int(time.time()),
         "shed": shed_name,
@@ -2129,6 +2171,7 @@ def log_crop_event(shed_name, rec, crop_active):
         "crop_active": 1 if crop_active else 0,
         "placement_epoch": placement_epoch,
         "bird_count": bird_count,
+        "placed_bird_count": placed_bird_count,
         "feed_kg": latest_feed_kg_for_shed(shed_name),
     }
     append_named_json_line("crop.ndjson", payload)
@@ -2177,6 +2220,23 @@ def mortality_total_for_shed_crop(shed_name, crop_id=None):
     while i < len(rows):
         try:
             total += int(rows[i].get("bird_loss", 0) or 0)
+        except Exception:
+            pass
+        i += 1
+    return total
+
+
+def mortality_total_for_entry(shed_name, crop_id, dest_shed):
+    if crop_id in [None, ""]:
+        return 0
+
+    rows = get_mortality_history_for_shed(shed_name, crop_id=crop_id)
+    total = 0
+    i = 0
+    while i < len(rows):
+        try:
+            if int(rows[i].get("dest_shed")) == int(dest_shed):
+                total += int(rows[i].get("bird_loss", 0) or 0)
         except Exception:
             pass
         i += 1
@@ -2243,6 +2303,14 @@ def apply_mortality_to_shed(shed_no, dest_shed, bird_loss, note="", updated_by="
         return False, "Mortality exceeds birds in entry"
 
     crop_id = rec.get("crop_id")
+    existing_mortality = mortality_total_for_entry(shed_name, crop_id, dest_shed)
+    try:
+        placed_bird_count = int(rec.get("placed_bird_count", 0) or 0)
+    except Exception:
+        placed_bird_count = 0
+    if placed_bird_count < rec["bird_count"] + existing_mortality:
+        placed_bird_count = rec["bird_count"] + existing_mortality
+    rec["placed_bird_count"] = placed_bird_count
     rec["bird_count"] = max(0, rec["bird_count"] - bird_loss)
     rec["updated_ts"] = int(time.time())
     rec["updated_by"] = str(updated_by or "dashboard")
@@ -3022,6 +3090,15 @@ def clean_entry_record(rec):
         bird_count = 0
 
     try:
+        placed_bird_count = rec.get("placed_bird_count", rec.get("placed_count", None))
+        if placed_bird_count not in [None, ""]:
+            placed_bird_count = int(placed_bird_count)
+        else:
+            placed_bird_count = bird_count
+    except Exception:
+        placed_bird_count = bird_count
+
+    try:
         crop_active = 1 if int(rec.get("crop_active", 0) or 0) == 1 else 0
     except Exception:
         crop_active = 0
@@ -3062,16 +3139,22 @@ def clean_entry_record(rec):
         while i < len(pens):
             bird_count += pens[i]["bird_count"]
             i += 1
+        if placed_bird_count <= 0:
+            placed_bird_count = bird_count
 
     if bird_count <= 0:
         bird_count = 0
+        placed_bird_count = 0
         crop_active = 0
         placement_epoch = None
         crop_id = None
         pens = []
+    elif placed_bird_count < bird_count:
+        placed_bird_count = bird_count
 
     return {
         "bird_count": bird_count,
+        "placed_bird_count": placed_bird_count,
         "crop_active": crop_active,
         "placement_epoch": placement_epoch,
         "crop_id": crop_id,
@@ -4089,9 +4172,10 @@ def build_crop_summary_for_shed(shed_name, crop_id):
 
     birds_placed_candidates = []
     current_active_birds = active_bird_count_for_shed_crop(shed_name, crop_id)
+    current_placed_birds = active_placed_bird_count_for_shed_crop(shed_name, crop_id)
     if current_active_birds is not None:
         birds_remaining_end = current_active_birds
-        birds_placed = current_active_birds + int(mortality_total or 0)
+        birds_placed = current_placed_birds or (current_active_birds + int(mortality_total or 0))
     else:
         if max_active_birds > 0:
             birds_placed_candidates.append(max_active_birds)
@@ -5185,10 +5269,12 @@ def entry_summary_text(current_shed_no, active_entries):
 
 def build_detail_entry_rows(current_shed_no, entries):
     rows = []
+    shed_name = shed_name_from_number(current_shed_no)
     i = 0
     while i < len(ENTRY_SHED_NUMBERS):
         dest_shed = ENTRY_SHED_NUMBERS[i]
-        rec = entries.get(str(dest_shed), {})
+        raw_rec = entries.get(str(dest_shed), {})
+        rec = clean_entry_record(raw_rec)
 
         try:
             bird_count = int(rec.get("bird_count", 0) or 0)
@@ -5196,9 +5282,25 @@ def build_detail_entry_rows(current_shed_no, entries):
             bird_count = 0
 
         try:
+            placed_bird_count = int(rec.get("placed_bird_count", 0) or 0)
+        except Exception:
+            placed_bird_count = bird_count
+
+        try:
             crop_active = 1 if int(rec.get("crop_active", 0) or 0) == 1 else 0
         except Exception:
             crop_active = 0
+
+        entry_mortality = 0
+        if crop_active == 1 and rec.get("crop_id") not in [None, ""]:
+            entry_mortality = mortality_total_for_entry(shed_name, rec.get("crop_id"), dest_shed)
+            if (
+                isinstance(raw_rec, dict)
+                and raw_rec.get("placed_bird_count") in [None, ""]
+                and raw_rec.get("placed_count") in [None, ""]
+                and entry_mortality > 0
+            ):
+                placed_bird_count = bird_count + entry_mortality
 
         placement_epoch = rec.get("placement_epoch")
         placement_str = "--"
@@ -5214,6 +5316,8 @@ def build_detail_entry_rows(current_shed_no, entries):
             "dest_shed": dest_shed,
             "dest_shed_label": entry_shed_label(dest_shed),
             "bird_count": bird_count,
+            "placed_bird_count": placed_bird_count,
+            "entry_mortality": entry_mortality,
             "crop_active": crop_active,
             "placement_epoch": placement_epoch,
             "placement_str": placement_str,
@@ -5336,11 +5440,16 @@ def build_overall_summary():
 
         birds_remaining = total_birds_from_active_entries(active_entries)
         total_birds_remaining += birds_remaining
-        total_birds_placed += birds_remaining
         if current_crop_id not in [None, ""]:
             shed_mortality = mortality_total_for_shed_crop(shed_name, current_crop_id)
             total_mortality += shed_mortality
-            total_birds_placed += shed_mortality
+            shed_placed = active_placed_bird_count_for_shed_crop(shed_name, current_crop_id)
+            if shed_placed is not None:
+                total_birds_placed += shed_placed
+            else:
+                total_birds_placed += birds_remaining + shed_mortality
+        else:
+            total_birds_placed += birds_remaining
 
         crop = active_crop_record_for_shed(shed_name)
         try:
@@ -5458,7 +5567,9 @@ def build_rows():
             mortality_total_i = int(mortality_total or 0)
         except Exception:
             mortality_total_i = 0
-        birds_placed = birds + mortality_total_i if (birds > 0 or mortality_total_i > 0) else None
+        birds_placed = active_placed_bird_count_for_shed_crop(shed, active_crop_id) if active_crop_id is not None else None
+        if birds_placed is None:
+            birds_placed = birds + mortality_total_i if (birds > 0 or mortality_total_i > 0) else None
         mortality_pct = None
         try:
             if birds_placed not in [None, 0] and mortality_total_i > 0:
@@ -8619,7 +8730,8 @@ DETAIL_HTML = """
                         <thead>
                             <tr>
                                 <th>Entry Shed</th>
-                                <th>Birds</th>
+                                <th>Placed Birds</th>
+                                <th>Live Birds</th>
                                 <th>Placed At</th>
                                 <th>Active</th>
                                 <th>Update</th>
@@ -8632,10 +8744,11 @@ DETAIL_HTML = """
                                 <td>{{ r.dest_shed_label }}</td>
                                 <td>
                                     <form id="entry-form-{{ r.dest_shed }}" class="form-inline" method="post" action="{{ url_for('shed_entry_save', shed_no=shed_no, dest_shed=r.dest_shed) }}">
-                                        <input type="number" name="bird_count" min="0" step="1" value="{{ '' if r.bird_count == 0 else r.bird_count }}">
+                                        <input type="number" name="placed_bird_count" min="0" step="1" value="{{ '' if r.placed_bird_count == 0 else r.placed_bird_count }}">
                                         <input type="datetime-local" name="placement_at" value="{{ r.placement_input_value }}">
                                     </form>
                                 </td>
+                                <td>{{ r.bird_count }}{% if r.entry_mortality > 0 %}<div class="empty">Mortality {{ r.entry_mortality }}</div>{% endif %}</td>
                                 <td>{{ r.placement_str }}</td>
                                 <td>
                                     {% if r.crop_active == 1 %}
@@ -12077,13 +12190,13 @@ def shed_entry_save(shed_no, dest_shed):
     if shed_no not in SHED_NUMBERS or not valid_entry_shed(dest_shed):
         abort(404)
 
-    raw = request.form.get("bird_count", "").strip()
+    raw = request.form.get("placed_bird_count", request.form.get("bird_count", "")).strip()
     try:
-        bird_count = int(raw)
-        if bird_count < 0:
+        placed_bird_count = int(raw)
+        if placed_bird_count < 0:
             raise ValueError()
     except Exception:
-        return redirect(url_for("shed_detail", shed_no=shed_no, ok=0, msg="Invalid bird count"))
+        return redirect(url_for("shed_detail", shed_no=shed_no, ok=0, msg="Invalid placed bird count"))
 
     state = load_shed_entries_state()
     shed_name = shed_name_from_number(shed_no)
@@ -12109,14 +12222,20 @@ def shed_entry_save(shed_no, dest_shed):
     if placement_epoch is not None and placement_epoch > now_ts:
         return redirect(url_for("shed_detail", shed_no=shed_no, ok=0, msg="Placement date cannot be in the future"))
 
-    if bird_count == 0:
+    entry_mortality = mortality_total_for_entry(shed_name, rec.get("crop_id"), dest_shed) if had_active_crop else 0
+
+    if placed_bird_count == 0:
         rec["bird_count"] = 0
+        rec["placed_bird_count"] = 0
         rec["crop_active"] = 0
         rec["placement_epoch"] = None
         rec["crop_id"] = None
         rec["pens"] = []
     else:
-        rec["bird_count"] = bird_count
+        if had_active_crop and placed_bird_count < entry_mortality:
+            return redirect(url_for("shed_detail", shed_no=shed_no, ok=0, msg="Placed birds cannot be below recorded mortality"))
+        rec["placed_bird_count"] = placed_bird_count
+        rec["bird_count"] = placed_bird_count - entry_mortality if had_active_crop else placed_bird_count
         rec["pens"] = []
         if placement_epoch is not None:
             rec["placement_epoch"] = placement_epoch
@@ -12128,7 +12247,7 @@ def shed_entry_save(shed_no, dest_shed):
     if str(dest_shed) in ended_entries:
         del ended_entries[str(dest_shed)]
     save_shed_entries_state(state)
-    if bird_count == 0:
+    if placed_bird_count == 0:
         refresh_farm_crop_current_id(state)
         if had_active_crop:
             prev_rec["updated_ts"] = now_ts
@@ -12136,7 +12255,7 @@ def shed_entry_save(shed_no, dest_shed):
             log_crop_event(shed_name, prev_rec, False)
         log_event("office", "entry_cleared", "Entry saved as zero birds", shed_no=shed_no, detail=entry_shed_label(dest_shed))
     else:
-        log_event("office", "entry_saved", "Bird count saved", shed_no=shed_no, detail="%s = %d" % (entry_shed_label(dest_shed), bird_count))
+        log_event("office", "entry_saved", "Placed bird count saved", shed_no=shed_no, detail="%s = %d" % (entry_shed_label(dest_shed), placed_bird_count))
         if had_active_crop:
             log_crop_event(shed_name, rec, True)
     push_shed_state_to_controller_async(shed_no)
@@ -12163,19 +12282,20 @@ def shed_entry_start(shed_no, dest_shed):
     })
     rec = clean_entry_record(rec)
 
-    raw = str(request.form.get("bird_count", "") or "").strip()
+    raw = str(request.form.get("placed_bird_count", request.form.get("bird_count", "")) or "").strip()
     placement_at_raw = request.form.get("placement_at", "")
     if raw != "":
         try:
-            bird_count = int(raw)
-            if bird_count < 0:
+            placed_bird_count = int(raw)
+            if placed_bird_count < 0:
                 raise ValueError()
-            rec["bird_count"] = bird_count
+            rec["placed_bird_count"] = placed_bird_count
+            rec["bird_count"] = placed_bird_count
             rec["pens"] = []
             rec["updated_ts"] = int(time.time())
             rec["updated_by"] = "dashboard"
         except Exception:
-            return redirect(url_for("shed_detail", shed_no=shed_no, ok=0, msg="Invalid bird count"))
+            return redirect(url_for("shed_detail", shed_no=shed_no, ok=0, msg="Invalid placed bird count"))
 
     try:
         bird_count = int(rec.get("bird_count", 0) or 0)
@@ -12193,6 +12313,8 @@ def shed_entry_start(shed_no, dest_shed):
         return redirect(url_for("shed_detail", shed_no=shed_no, ok=0, msg="Placement date cannot be in the future"))
 
     rec["crop_active"] = 1
+    if rec.get("placed_bird_count") in [None, ""] or int(rec.get("placed_bird_count") or 0) < bird_count:
+        rec["placed_bird_count"] = bird_count
     if placement_epoch is not None:
         rec["placement_epoch"] = placement_epoch
     elif rec.get("placement_epoch") is None:
@@ -12262,17 +12384,17 @@ def shed_entry_move(shed_no, dest_shed):
     to_entries = ensure_shed_entry_bucket(state, to_name)
     from_ended_entries = state.get(from_name, {}).get("ended_entries", {})
 
-    rec = from_entries.get(str(dest_shed))
-    if not rec:
+    raw_rec = from_entries.get(str(dest_shed))
+    if not raw_rec:
         return redirect(url_for("shed_detail", shed_no=shed_no, ok=0, msg="Entry not found"))
 
     try:
-        bird_count = int(rec.get("bird_count", 0) or 0)
+        bird_count = int(raw_rec.get("bird_count", 0) or 0)
     except Exception:
         bird_count = 0
 
     try:
-        crop_active = int(rec.get("crop_active", 0) or 0)
+        crop_active = int(raw_rec.get("crop_active", 0) or 0)
     except Exception:
         crop_active = 0
 
@@ -12287,13 +12409,30 @@ def shed_entry_move(shed_no, dest_shed):
         "updated_ts": None,
         "updated_by": "dashboard",
     })
-    rec = clean_entry_record(rec)
+    raw_dest_rec = dest_rec
+    rec = clean_entry_record(raw_rec)
     dest_rec = clean_entry_record(dest_rec)
 
     try:
         existing = int(dest_rec.get("bird_count", 0) or 0)
     except Exception:
         existing = 0
+    source_mortality = mortality_total_for_entry(from_name, rec.get("crop_id"), dest_shed)
+    dest_mortality = mortality_total_for_entry(to_name, dest_rec.get("crop_id"), dest_shed)
+    source_has_placed = isinstance(raw_rec, dict) and raw_rec.get("placed_bird_count") not in [None, ""]
+    dest_has_placed = isinstance(raw_dest_rec, dict) and raw_dest_rec.get("placed_bird_count") not in [None, ""]
+    try:
+        source_placed = int(rec.get("placed_bird_count") or 0)
+    except Exception:
+        source_placed = 0
+    try:
+        existing_placed = int(dest_rec.get("placed_bird_count") or 0)
+    except Exception:
+        existing_placed = 0
+    if not source_has_placed:
+        source_placed = bird_count + source_mortality
+    if not dest_has_placed:
+        existing_placed = existing + dest_mortality
     try:
         dest_active = int(dest_rec.get("crop_active", 0) or 0)
     except Exception:
@@ -12311,6 +12450,7 @@ def shed_entry_move(shed_no, dest_shed):
         )
 
     dest_rec["bird_count"] = existing + bird_count
+    dest_rec["placed_bird_count"] = existing_placed + source_placed
     dest_rec["crop_active"] = 1
     source_epoch = rec.get("placement_epoch")
     dest_epoch = dest_rec.get("placement_epoch")

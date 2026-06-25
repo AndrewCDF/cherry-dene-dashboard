@@ -2235,6 +2235,15 @@ def clean_entry_record(rec):
         bird_count = 0
 
     try:
+        placed_bird_count = rec.get("placed_bird_count", rec.get("placed_count", None))
+        if placed_bird_count not in [None, ""]:
+            placed_bird_count = int(placed_bird_count)
+        else:
+            placed_bird_count = bird_count
+    except Exception:
+        placed_bird_count = bird_count
+
+    try:
         crop_active = 1 if int(rec.get("crop_active", 0) or 0) == 1 else 0
     except Exception:
         crop_active = 0
@@ -2275,16 +2284,22 @@ def clean_entry_record(rec):
         while i < len(pens):
             bird_count += pens[i]["bird_count"]
             i += 1
+        if placed_bird_count <= 0:
+            placed_bird_count = bird_count
 
     if bird_count <= 0:
         bird_count = 0
+        placed_bird_count = 0
         crop_active = 0
         placement_epoch = None
         crop_id = None
         pens = []
+    elif placed_bird_count < bird_count:
+        placed_bird_count = bird_count
 
     return {
         "bird_count": bird_count,
+        "placed_bird_count": placed_bird_count,
         "crop_active": crop_active,
         "placement_epoch": placement_epoch,
         "crop_id": crop_id,
@@ -2364,6 +2379,14 @@ def total_birds_from_entries(entries):
     return total
 
 
+def total_placed_birds_from_entries(entries):
+    total = 0
+    for key in entries:
+        rec = clean_entry_record(entries.get(key, {}))
+        total += int(rec.get("placed_bird_count") or rec["bird_count"])
+    return total
+
+
 def active_crop_id_from_entries(entries):
     active_crop_id = None
     for key in entries:
@@ -2432,6 +2455,7 @@ def build_allocation_rows(state):
             "dest_shed": dest_shed,
             "dest_shed_label": entry_shed_label(dest_shed),
             "bird_count": rec["bird_count"],
+            "placed_bird_count": rec.get("placed_bird_count") or rec["bird_count"],
             "crop_active": rec["crop_active"],
             "crop_id": rec["crop_id"],
             "crop_code": fmt_crop_code(rec["crop_id"], rec["placement_epoch"]),
@@ -3016,7 +3040,9 @@ def build_home_context():
     except Exception:
         mortality_total_raw = 0
     birds_remaining_raw = total_birds if total_birds > 0 else 0
-    birds_placed_raw = birds_remaining_raw + mortality_total_raw if birds_remaining_raw > 0 else 0
+    birds_placed_raw = total_placed_birds_from_entries(state.get("entries", {})) if birds_remaining_raw > 0 else 0
+    if birds_placed_raw <= 0 and birds_remaining_raw > 0:
+        birds_placed_raw = birds_remaining_raw + mortality_total_raw
     birds_display = fmt_value(birds_remaining_raw if birds_remaining_raw > 0 else None, "i")
     if birds_placed_raw > 0:
         birds_display = "%s (%s)" % (
@@ -7761,13 +7787,13 @@ ALLOCATION_HTML = """
                     <div class="allocation-top">
                         <div>
                             <div class="allocation-title">For {{ row.dest_shed_label }}</div>
-                            <div class="allocation-meta">Started {{ row.started_at }} • Crop {{ row.crop_code }}</div>
+                            <div class="allocation-meta">Started {{ row.started_at }} • Crop {{ row.crop_code }} • Live {{ row.bird_count }}</div>
                         </div>
                         <div class="allocation-meta">{{ "Active" if row.crop_active == 1 else "Not active" }}</div>
                     </div>
                     <form class="allocation-form" method="post" action="{{ url_for('save_entry_for_dest', dest_shed=row.dest_shed) }}">
                         <input type="hidden" name="return_to" value="allocation">
-                        <input type="number" name="bird_count" min="0" step="1" inputmode="numeric" enterkeyhint="done" value="{{ '' if row.bird_count == 0 else row.bird_count }}">
+                        <input type="number" name="placed_bird_count" min="0" step="1" inputmode="numeric" enterkeyhint="done" value="{{ '' if row.placed_bird_count == 0 else row.placed_bird_count }}">
                         <button type="submit">Save</button>
                         {% if row.crop_active != 1 %}
                         <button formaction="{{ url_for('start_entry_for_dest', dest_shed=row.dest_shed) }}" type="submit">Start</button>
@@ -9285,16 +9311,29 @@ def auger_runs_api_view():
     })
 
 
-def save_entry_for_dest_impl(dest_shed, bird_count):
+def save_entry_for_dest_impl(dest_shed, placed_bird_count):
     if not valid_entry_shed(dest_shed):
         return False, "Invalid shed"
 
     def mutator(state):
         entry = get_entry_for_dest(state, dest_shed)
-        if bird_count == 0:
+        if placed_bird_count == 0:
             clear_entry_for_dest(state, dest_shed)
         else:
-            entry["bird_count"] = bird_count
+            try:
+                old_placed = int(entry.get("placed_bird_count") or entry.get("bird_count") or 0)
+            except Exception:
+                old_placed = 0
+            try:
+                old_live = int(entry.get("bird_count") or 0)
+            except Exception:
+                old_live = 0
+            inferred_mortality = max(0, old_placed - old_live)
+            entry["placed_bird_count"] = placed_bird_count
+            if int(entry.get("crop_active", 0) or 0) == 1:
+                entry["bird_count"] = max(0, placed_bird_count - inferred_mortality)
+            else:
+                entry["bird_count"] = placed_bird_count
             entry["pens"] = []
             entry["updated_ts"] = int(time.time())
             entry["updated_by"] = "controller"
@@ -9302,32 +9341,33 @@ def save_entry_for_dest_impl(dest_shed, bird_count):
         state["entries_updated_ts"] = int(time.time())
 
     state = mutate_state(mutator)
-    record_controller_event("entry_saved", "Saved bird count", "%s = %d" % (entry_shed_label(dest_shed), bird_count), push_to_office=True)
+    record_controller_event("entry_saved", "Saved placed bird count", "%s = %d" % (entry_shed_label(dest_shed), placed_bird_count), push_to_office=True)
     return push_to_dashboard(state)
 
 
 @app.route("/entry/<int:dest_shed>/save", methods=["POST"])
 def save_entry_for_dest(dest_shed):
-    raw = request.form.get("bird_count", "").strip()
+    raw = request.form.get("placed_bird_count", request.form.get("bird_count", "")).strip()
     try:
-        bird_count = int(raw)
-        if bird_count < 0:
+        placed_bird_count = int(raw)
+        if placed_bird_count < 0:
             raise ValueError()
     except Exception:
-        return redirect_back_with_status("index", False, "Invalid bird count")
+        return redirect_back_with_status("index", False, "Invalid placed bird count")
 
-    ok, sync_msg = save_entry_for_dest_impl(dest_shed, bird_count)
+    ok, sync_msg = save_entry_for_dest_impl(dest_shed, placed_bird_count)
     return redirect_back_with_status("index", ok, sync_msg if sync_msg else "Saved")
 
 
-def start_entry_for_dest_impl(dest_shed, bird_count_override=None):
+def start_entry_for_dest_impl(dest_shed, placed_bird_count_override=None):
     if not valid_entry_shed(dest_shed):
         return False, "Invalid shed"
 
     state = load_state()
-    if bird_count_override is not None:
+    if placed_bird_count_override is not None:
         entry = get_entry_for_dest(state, dest_shed)
-        entry["bird_count"] = bird_count_override
+        entry["placed_bird_count"] = placed_bird_count_override
+        entry["bird_count"] = placed_bird_count_override
         entry["pens"] = []
         set_entry_for_dest(state, dest_shed, entry)
     entry = get_entry_for_dest(state, dest_shed)
@@ -9336,10 +9376,13 @@ def start_entry_for_dest_impl(dest_shed, bird_count_override=None):
 
     def mutator(state):
         entry = get_entry_for_dest(state, dest_shed)
-        if bird_count_override is not None:
-            entry["bird_count"] = bird_count_override
+        if placed_bird_count_override is not None:
+            entry["placed_bird_count"] = placed_bird_count_override
+            entry["bird_count"] = placed_bird_count_override
             entry["pens"] = []
         entry["crop_active"] = 1
+        if int(entry.get("placed_bird_count") or 0) < int(entry.get("bird_count") or 0):
+            entry["placed_bird_count"] = entry["bird_count"]
         if entry["placement_epoch"] is None:
             entry["placement_epoch"] = int(time.time())
         entry["updated_ts"] = int(time.time())
@@ -9354,16 +9397,16 @@ def start_entry_for_dest_impl(dest_shed, bird_count_override=None):
 
 @app.route("/entry/<int:dest_shed>/start", methods=["POST"])
 def start_entry_for_dest(dest_shed):
-    bird_count_override = None
-    raw = str(request.form.get("bird_count", "") or "").strip()
+    placed_bird_count_override = None
+    raw = str(request.form.get("placed_bird_count", request.form.get("bird_count", "")) or "").strip()
     if raw != "":
         try:
-            bird_count_override = int(raw)
-            if bird_count_override < 0:
+            placed_bird_count_override = int(raw)
+            if placed_bird_count_override < 0:
                 raise ValueError()
         except Exception:
-            return redirect_back_with_status("index", False, "Invalid bird count")
-    ok, sync_msg = start_entry_for_dest_impl(dest_shed, bird_count_override=bird_count_override)
+            return redirect_back_with_status("index", False, "Invalid placed bird count")
+    ok, sync_msg = start_entry_for_dest_impl(dest_shed, placed_bird_count_override=placed_bird_count_override)
     return redirect_back_with_status("index", ok, sync_msg if sync_msg else "Started")
 
 
