@@ -13,6 +13,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import zipfile
+from collections import deque
 from datetime import datetime, timedelta
 from email.message import EmailMessage
 from markupsafe import Markup, escape
@@ -207,6 +208,13 @@ FEED_REFILL_SETTLING_SECONDS = 5 * 60
 FEED_MOVEMENT_APPLY_MIN_KG = 0.5
 FEED_MOVEMENT_SESSION_GAP_SECONDS = 150
 _office_backup_lock = threading.Lock()
+_event_log_lock = threading.Lock()
+_json_line_cache_lock = threading.Lock()
+_json_line_cache = {}
+EVENT_LOG_MAX_BYTES = 5 * 1024 * 1024
+EVENT_LOG_KEEP_LINES = 10000
+NOTIFICATION_LOG_MAX_BYTES = 1024 * 1024
+NOTIFICATION_LOG_KEEP_LINES = 1000
 
 
 def ensure_data_dir():
@@ -246,12 +254,26 @@ def append_json_line(path, payload):
     with open(path, "a") as f:
         f.write(json.dumps(payload))
         f.write("\n")
+    with _json_line_cache_lock:
+        _json_line_cache.pop(os.path.abspath(path), None)
 
 
 def read_all_json_lines(filename):
     path = os.path.join(DATA_DIR, filename)
     if not os.path.exists(path):
         return []
+
+    try:
+        stat = os.stat(path)
+        cache_key = os.path.abspath(path)
+        signature = (stat.st_mtime_ns, stat.st_size)
+        with _json_line_cache_lock:
+            cached = _json_line_cache.get(cache_key)
+            if cached and cached[0] == signature:
+                return list(cached[1])
+    except Exception:
+        cache_key = None
+        signature = None
 
     out = []
     try:
@@ -266,7 +288,81 @@ def read_all_json_lines(filename):
                     pass
     except Exception:
         return []
+    if cache_key is not None and signature is not None:
+        with _json_line_cache_lock:
+            _json_line_cache[cache_key] = (signature, out)
     return out
+
+
+def read_recent_json_lines(filename, limit=200):
+    path = os.path.join(DATA_DIR, filename)
+    try:
+        limit = max(0, int(limit))
+    except Exception:
+        limit = 200
+    if limit <= 0 or not os.path.exists(path):
+        return []
+
+    lines = []
+    remainder = b""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            position = f.tell()
+            while position > 0 and len(lines) < limit:
+                read_size = min(65536, position)
+                position -= read_size
+                f.seek(position)
+                block = f.read(read_size) + remainder
+                parts = block.splitlines()
+                if position > 0 and parts:
+                    remainder = parts[0]
+                    parts = parts[1:]
+                else:
+                    remainder = b""
+                lines = parts + lines
+    except Exception:
+        return []
+
+    out = []
+    for line in lines[-limit:]:
+        try:
+            out.append(json.loads(line.decode("utf-8")))
+        except Exception:
+            pass
+    return out
+
+
+def compact_json_line_log(filename, max_bytes, keep_lines):
+    path = os.path.join(DATA_DIR, filename)
+    try:
+        if not os.path.exists(path) or os.path.getsize(path) <= int(max_bytes):
+            return False
+    except Exception:
+        return False
+
+    recent = deque(maxlen=max(1, int(keep_lines)))
+    try:
+        with open(path, "r") as f:
+            for line in f:
+                if line.strip():
+                    recent.append(line if line.endswith("\n") else line + "\n")
+        parent = os.path.dirname(path) or "."
+        fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".", suffix=".tmp", dir=parent)
+        with os.fdopen(fd, "w") as f:
+            for line in recent:
+                f.write(line)
+        os.replace(tmp, path)
+        with _json_line_cache_lock:
+            _json_line_cache.pop(os.path.abspath(path), None)
+        return True
+    except Exception:
+        try:
+            if "tmp" in locals() and os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+        return False
 
 
 def append_named_json_line(filename, payload):
@@ -285,6 +381,8 @@ def write_named_json_lines_atomic(filename, payloads):
             f.write("\n")
             i += 1
     os.replace(tmp, path)
+    with _json_line_cache_lock:
+        _json_line_cache.pop(os.path.abspath(path), None)
 
 
 def backups_dir():
@@ -1421,6 +1519,16 @@ def save_controller_meta(data):
     write_json_file_atomic(path, data)
 
 
+IMPORTANT_NOTIFICATION_EVENT_TYPES = {
+    "crop_report_ready",
+    "crop_report_emailed",
+    "crop_report_failed",
+    "backup_failed",
+    "controller_backup_failed",
+    "office_updated",
+}
+
+
 def log_event(source, event_type, message, shed_no=None, detail=None):
     payload = {
         "ts": int(time.time()),
@@ -1432,11 +1540,20 @@ def log_event(source, event_type, message, shed_no=None, detail=None):
     if shed_no in SHED_NUMBERS:
         payload["shed_no"] = int(shed_no)
         payload["shed"] = shed_name_from_number(int(shed_no))
-    append_named_json_line("events.ndjson", payload)
+    with _event_log_lock:
+        append_named_json_line("events.ndjson", payload)
+        compact_json_line_log("events.ndjson", EVENT_LOG_MAX_BYTES, EVENT_LOG_KEEP_LINES)
+        if payload["event_type"] in IMPORTANT_NOTIFICATION_EVENT_TYPES:
+            append_named_json_line("notification_events.ndjson", payload)
+            compact_json_line_log(
+                "notification_events.ndjson",
+                NOTIFICATION_LOG_MAX_BYTES,
+                NOTIFICATION_LOG_KEEP_LINES,
+            )
 
 
 def get_recent_events(limit=200):
-    rows = read_all_json_lines("events.ndjson")
+    rows = read_recent_json_lines("events.ndjson", limit=limit or 200)
     rows.sort(key=lambda r: int(r.get("ts", 0)), reverse=True)
     if limit is not None:
         rows = rows[:limit]
@@ -1448,16 +1565,6 @@ def get_recent_events(limit=200):
             rows[i]["ts_label"] = "--"
         i += 1
     return rows
-
-
-IMPORTANT_NOTIFICATION_EVENT_TYPES = {
-    "crop_report_ready",
-    "crop_report_emailed",
-    "crop_report_failed",
-    "backup_failed",
-    "controller_backup_failed",
-    "office_updated",
-}
 
 
 def notification_url_for_event(row):
@@ -1478,7 +1585,7 @@ def notification_url_for_event(row):
 
 
 def build_notification_events_since(since_ts):
-    rows = read_all_json_lines("events.ndjson")
+    rows = read_recent_json_lines("notification_events.ndjson", limit=NOTIFICATION_LOG_KEEP_LINES)
     out = []
     i = 0
     while i < len(rows):
@@ -7138,6 +7245,8 @@ function renderOverall(o) {
 
 async function pollDashboard() {
     if (document.visibilityState === 'hidden') return;
+    if (pollDashboard.inFlight) return;
+    pollDashboard.inFlight = true;
     try {
         const resp = await fetch('/api/overview', { cache: 'no-store' });
         if (!resp.ok) return;
@@ -7146,6 +7255,8 @@ async function pollDashboard() {
         if (payload.borehole) renderBorehole(payload.borehole);
         if (payload.overall) renderOverall(payload.overall);
     } catch (err) {
+    } finally {
+        pollDashboard.inFlight = false;
     }
 }
 
@@ -12833,5 +12944,12 @@ def shed_crop_period_view(shed_no, crop_id, period):
 
 if __name__ == "__main__":
     ensure_data_dir()
+    with _event_log_lock:
+        compact_json_line_log("events.ndjson", EVENT_LOG_MAX_BYTES, EVENT_LOG_KEEP_LINES)
+        compact_json_line_log(
+            "notification_events.ndjson",
+            NOTIFICATION_LOG_MAX_BYTES,
+            NOTIFICATION_LOG_KEEP_LINES,
+        )
     start_office_background_workers()
     app.run(host="0.0.0.0", port=8090)
