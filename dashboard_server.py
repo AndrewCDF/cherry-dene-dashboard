@@ -167,6 +167,32 @@ def service_worker_view():
     )
 
 
+# Shared look matching the shed controllers' dark theme. Injected after each page's own
+# styles so it wins; status colours, glows and alarm cards keep their own colours.
+OFFICE_THEME_HEAD = (
+    '<link rel="preconnect" href="https://fonts.googleapis.com">'
+    '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@500;600&display=swap">'
+    '<style id="cdf-theme">'
+    'html,body{background:#2b2e2c !important;color:#ecebe6 !important;}'
+    'body,button,input,select,textarea{font-family:"Barlow","Helvetica Neue",Helvetica,sans-serif !important;}'
+    'h1,h2,h3{font-family:"Barlow Semi Condensed","Barlow","Helvetica Neue",Helvetica,sans-serif !important;font-weight:600 !important;letter-spacing:0;}'
+    '.card:not(.alarm),.panel,.health-card,.navcard,.summary-tile,.shed-threshold-card,.table-card,.alarmbox,.status,.msg,.preview{background:#343835 !important;border-color:#454a46 !important;border-radius:14px !important;}'
+    '.table-wrap,.chart-wrap,.collapse summary,.summary-box,.footer-stat,.auger-mini,.metric,.recipient-row,.check,.badge,.state-pill,.status-pill{background:#3a3e3b !important;border-color:#4a4f4b !important;}'
+    'button,.action-link,.actions a,.settings-link,.toolbar button{background:#3a3e3b !important;border:1px solid #5d635e !important;border-radius:12px !important;color:#ecebe6 !important;font-weight:600 !important;box-shadow:none;}'
+    'button:hover,.action-link:hover,.actions a:hover,.toolbar button:hover{background:#4a4f4b !important;}'
+    '.settings-link.notify-on{border-color:#35d07f !important;}'
+    '.settings-link.notify-blocked{border-color:#ff7a7a !important;}'
+    '.settings-link.notify-off{border-color:#ffd06a !important;}'
+    'button.danger,.danger,.delete-button{background:#4a2a2d !important;border-color:#8a4048 !important;}'
+    'input,select,textarea{background:#3a3e3b !important;border:1px solid #5d635e !important;border-radius:10px !important;color:#ecebe6 !important;}'
+    'input[type="checkbox"],input[type="radio"]{background:transparent !important;}'
+    'th,td{border-color:#4a4f4b !important;}'
+    'th{color:#b9bcb6 !important;background:transparent !important;}'
+    'a{color:inherit;}'
+    '</style>'
+)
+
+
 @app.after_request
 def inject_favicon(response):
     try:
@@ -181,8 +207,14 @@ def inject_favicon(response):
             response.headers["Expires"] = "0"
         if "text/html" in content_type and response.direct_passthrough is False:
             body = response.get_data(as_text=True)
+            changed = False
             if "<head>" in body and 'rel="icon"' not in body:
                 body = body.replace('<head>', '<head>' + FAVICON_HEAD_HTML, 1)
+                changed = True
+            if "</head>" in body and 'cdf-theme' not in body:
+                body = body.replace('</head>', OFFICE_THEME_HEAD + '</head>', 1)
+                changed = True
+            if changed:
                 response.set_data(body)
                 response.headers["Content-Length"] = str(len(response.get_data()))
     except Exception:
@@ -663,6 +695,50 @@ def office_environment_limits_map():
     return out
 
 
+CLIMATE_LIMIT_KEYS = ["temp_low_c", "temp_high_c", "temp_amber_margin_c", "rh_low_pct", "rh_high_pct", "rh_amber_margin_pct"]
+
+
+def office_climate_limits_ts(shed_no):
+    # When the office last changed this shed's temperature / humidity limits.
+    # 0 = an office override saved before change tracking existed; None = no override.
+    cfg = load_office_config()
+    raw = cfg.get("shed_environment_limits", {})
+    if not isinstance(raw, dict) or str(int(shed_no)) not in raw:
+        return None
+    stamps = cfg.get("shed_climate_limits_ts", {})
+    try:
+        return int((stamps if isinstance(stamps, dict) else {}).get(str(int(shed_no))) or 0)
+    except Exception:
+        return 0
+
+
+def adopt_controller_climate_limits(shed_no, meta):
+    # Temperature / humidity limits are kept the same on the office and the shed
+    # controller: whichever side changed them last wins. Called on every controller sync.
+    meta = meta if isinstance(meta, dict) else {}
+    try:
+        controller_ts = int(meta.get("climate_limits_updated_ts"))
+    except Exception:
+        return False
+    office_ts = office_climate_limits_ts(shed_no)
+    if office_ts is None or controller_ts <= office_ts:
+        return False
+    cfg = load_office_config()
+    raw = cfg.get("shed_environment_limits", {})
+    current = clean_environment_limits(raw.get(str(int(shed_no))))
+    for key in CLIMATE_LIMIT_KEYS:
+        if meta.get(key) is not None:
+            current[key] = meta.get(key)
+    raw[str(int(shed_no))] = clean_environment_limits(current)
+    stamps = cfg.get("shed_climate_limits_ts", {})
+    stamps = stamps if isinstance(stamps, dict) else {}
+    stamps[str(int(shed_no))] = controller_ts
+    cfg["shed_environment_limits"] = raw
+    cfg["shed_climate_limits_ts"] = stamps
+    save_office_config(cfg)
+    return True
+
+
 def environment_limits_for_shed(shed_no, office_limits_map=None, controller_meta=None):
     office_limits_map = office_limits_map if isinstance(office_limits_map, dict) else office_environment_limits_map()
     shed_key = str(int(shed_no))
@@ -712,6 +788,10 @@ def save_office_environment_settings_for_shed(shed_no, form):
         "feed_amber_buffer_kg": form.get("feed_amber_buffer_kg", DEFAULT_ENVIRONMENT_LIMITS["feed_amber_buffer_kg"]),
     })
     cfg["shed_environment_limits"] = raw
+    stamps = cfg.get("shed_climate_limits_ts", {})
+    stamps = stamps if isinstance(stamps, dict) else {}
+    stamps[str(shed_no)] = int(time.time())
+    cfg["shed_climate_limits_ts"] = stamps
     save_office_config(cfg)
 
 
@@ -1656,12 +1736,14 @@ def clean_controller_meta(meta):
     out = {
         "temp_c": meta.get("temp_c"),
         "rh_pct": meta.get("rh_pct"),
+        "climate_today": meta.get("climate_today") if isinstance(meta.get("climate_today"), dict) else None,
         "temp_low_c": meta.get("temp_low_c"),
         "temp_high_c": meta.get("temp_high_c"),
         "temp_amber_margin_c": meta.get("temp_amber_margin_c"),
         "rh_low_pct": meta.get("rh_low_pct"),
         "rh_high_pct": meta.get("rh_high_pct"),
         "rh_amber_margin_pct": meta.get("rh_amber_margin_pct"),
+        "climate_limits_updated_ts": meta.get("climate_limits_updated_ts"),
         "water_lpm": meta.get("water_lpm"),
         "water_low_lpm": meta.get("water_low_lpm"),
         "water_amber_buffer_lpm": meta.get("water_amber_buffer_lpm"),
@@ -1844,7 +1926,13 @@ def update_shed_hourly_metrics_from_meta(shed_no, meta):
         feed_sample_ts = int(meta.get("feed_kg_updated_ts"))
     except Exception:
         feed_sample_ts = sensor_ts
-    if water_total_litres is None and feed_kg is None:
+    climate = {}
+    for key, field in [("temp", "temp_c"), ("rh", "rh_pct")]:
+        try:
+            climate[key] = float(meta.get(field))
+        except Exception:
+            pass
+    if water_total_litres is None and feed_kg is None and not climate:
         return False
 
     shed_name = shed_name_from_number(shed_no)
@@ -1884,6 +1972,19 @@ def update_shed_hourly_metrics_from_meta(shed_no, meta):
         }
         rows.append(row)
         return row
+
+    if climate:
+        # Temperature and humidity low / high, kept per hour so each crop day's
+        # high and low can be looked back on.
+        row = hour_row((sensor_ts // 3600) * 3600)
+        for key, value in climate.items():
+            if row.get(key + "_min") is None or value < float(row.get(key + "_min")):
+                row[key + "_min"] = round(value, 2)
+            if row.get(key + "_max") is None or value > float(row.get(key + "_max")):
+                row[key + "_max"] = round(value, 2)
+        row["ts"] = int(time.time())
+        row["source"] = "controller_sync"
+        row["out_of_crop"] = False
 
     if water_total_litres is not None:
         row = hour_row((sensor_ts // 3600) * 3600)
@@ -1966,6 +2067,10 @@ def save_controller_meta_for_shed(shed_no, meta):
     all_meta = load_controller_meta()
     all_meta[str(int(shed_no))] = clean_controller_meta(meta)
     save_controller_meta(all_meta)
+    try:
+        adopt_controller_climate_limits(shed_no, meta)
+    except Exception:
+        pass
 
 
 def controller_sync_age(meta):
@@ -2281,9 +2386,36 @@ def log_crop_event(shed_name, rec, crop_active):
     append_named_json_line("crop.ndjson", payload)
 
 
-def log_mortality_event(shed_name, dest_shed, crop_id, bird_loss, note=""):
+def mortality_occurred_ts(date_text, placement_epoch=None):
+    # Turns a back-dated "YYYY-MM-DD" into the timestamp the loss is filed under.
+    # Today (or no date) means now; earlier days are filed at midday.
+    now_ts = int(time.time())
+    date_text = str(date_text or "").strip()
+    if not date_text:
+        return now_ts, ""
+    try:
+        day = datetime.strptime(date_text, "%Y-%m-%d").date()
+    except Exception:
+        return None, "Invalid mortality date"
+    today = datetime.fromtimestamp(now_ts).date()
+    if day > today:
+        return None, "Mortality date cannot be in the future"
+    if day == today:
+        return now_ts, ""
+    if placement_epoch not in [None, ""]:
+        try:
+            if day < datetime.fromtimestamp(int(placement_epoch)).date():
+                return None, "Mortality date is before the birds were placed"
+        except Exception:
+            pass
+    return int(datetime(day.year, day.month, day.day, 12, 0, 0).timestamp()), ""
+
+
+def log_mortality_event(shed_name, dest_shed, crop_id, bird_loss, note="", occurred_ts=None):
+    now_ts = int(time.time())
     payload = {
-        "ts": int(time.time()),
+        "ts": int(occurred_ts) if occurred_ts not in [None, ""] else now_ts,
+        "recorded_ts": now_ts,
         "shed": shed_name,
         "dest_shed": int(dest_shed),
         "dest_shed_label": entry_shed_label(dest_shed),
@@ -2376,6 +2508,15 @@ def mortality_payload_for_shed(shed_no):
             history_rows[i]["ts_label"] = datetime.fromtimestamp(int(history_rows[i].get("ts"))).strftime("%d %b %Y %H:%M")
         except Exception:
             history_rows[i]["ts_label"] = "--"
+        try:
+            recorded_ts = int(history_rows[i].get("recorded_ts"))
+            if datetime.fromtimestamp(recorded_ts).date() != datetime.fromtimestamp(int(history_rows[i].get("ts"))).date():
+                history_rows[i]["ts_label"] = "%s (entered %s)" % (
+                    datetime.fromtimestamp(int(history_rows[i].get("ts"))).strftime("%d %b %Y"),
+                    datetime.fromtimestamp(recorded_ts).strftime("%d %b %H:%M"),
+                )
+        except Exception:
+            pass
         i += 1
 
     active_entries = active_entries_for_tile(entries)
@@ -2391,7 +2532,7 @@ def mortality_payload_for_shed(shed_no):
     }
 
 
-def apply_mortality_to_shed(shed_no, dest_shed, bird_loss, note="", updated_by="dashboard"):
+def apply_mortality_to_shed(shed_no, dest_shed, bird_loss, note="", updated_by="dashboard", date_text=""):
     if shed_no not in SHED_NUMBERS or not valid_entry_shed(dest_shed):
         return False, "Invalid mortality entry"
     if bird_loss <= 0:
@@ -2405,6 +2546,9 @@ def apply_mortality_to_shed(shed_no, dest_shed, bird_loss, note="", updated_by="
         return False, "No active birds in that entry"
     if bird_loss > rec["bird_count"]:
         return False, "Mortality exceeds birds in entry"
+    occurred_ts, date_error = mortality_occurred_ts(date_text, rec.get("placement_epoch"))
+    if date_error:
+        return False, date_error
 
     crop_id = rec.get("crop_id")
     existing_mortality = mortality_total_for_entry(shed_name, crop_id, dest_shed)
@@ -2425,7 +2569,7 @@ def apply_mortality_to_shed(shed_no, dest_shed, bird_loss, note="", updated_by="
     else:
         entries[str(dest_shed)] = rec
 
-    log_mortality_event(shed_name, dest_shed, crop_id, bird_loss, note=note)
+    log_mortality_event(shed_name, dest_shed, crop_id, bird_loss, note=note, occurred_ts=occurred_ts)
     log_event("office", "mortality_recorded", "Mortality recorded", shed_no=shed_no, detail="%s Loss %d" % (entry_shed_label(dest_shed), bird_loss))
     save_shed_entries_state(state)
     refresh_farm_crop_current_id(state)
@@ -3333,10 +3477,18 @@ def shed_sync_payload(shed_no):
 
     sync_version = shed_sync_version_for_entries(entries)
 
+    climate_limits = None
+    office_ts = office_climate_limits_ts(shed_no)
+    if office_ts is not None:
+        limits = office_environment_limits_map().get(str(shed_no), {})
+        climate_limits = {key: limits.get(key) for key in CLIMATE_LIMIT_KEYS}
+        climate_limits["updated_ts"] = office_ts
+
     return {
         "shed_no": shed_no,
         "shed": shed_name,
         "entries": payload_entries,
+        "climate_limits": climate_limits,
         "current_crop_id": get_active_crop_id_for_shed(shed_name),
         "sync_version": sync_version,
         "source_updated_ts": sync_version,
@@ -3910,20 +4062,42 @@ def get_hourly_history_for_shed(shed_name, max_points=168, crop_id=None, include
         except Exception:
             feed_val = None
 
-        rows.append({
+        hour_row = {
             "epoch": hour_epoch,
             "label": label,
             "water": water_val,
             "feed": feed_val,
             "crop_id": p.get("crop_id"),
             "out_of_crop": bool(p.get("out_of_crop", False)),
-        })
+        }
+        for key in ["temp", "rh"]:
+            try:
+                hour_row[key + "_min"] = float(p[key + "_min"]) if p.get(key + "_min") is not None else None
+                hour_row[key + "_max"] = float(p[key + "_max"]) if p.get(key + "_max") is not None else None
+            except Exception:
+                hour_row[key + "_min"] = hour_row[key + "_max"] = None
+        rows.append(hour_row)
         i += 1
 
     rows.sort(key=lambda x: x["epoch"])
     if include_manual_feed and crop_id not in [None, ""]:
         manual_hour_map = feed_stock_feed_adjustment_hour_map_for_shed_crop(shed_name, crop_id)
         if manual_hour_map:
+            # A manual feed entry dated before the crop began (e.g. a missing or broken
+            # timestamp) is counted at the crop's start, so tables begin on placement day
+            # and the crop's feed total is unchanged.
+            crop_start_hour = None
+            placement_epoch = crop_start_epoch_for_state(load_shed_entries_state(), crop_id)
+            if placement_epoch not in [None, ""]:
+                crop_start_hour = (int(placement_epoch) // 3600) * 3600
+            elif rows:
+                crop_start_hour = int(rows[0]["epoch"])
+            if crop_start_hour is not None:
+                clamped = {}
+                for hour_epoch, delta in manual_hour_map.items():
+                    key = max(int(hour_epoch), crop_start_hour)
+                    clamped[key] = round(float(clamped.get(key) or 0.0) + float(delta or 0.0), 3)
+                manual_hour_map = clamped
             existing = {}
             i = 0
             while i < len(rows):
@@ -4044,6 +4218,9 @@ def get_daily_history_for_shed(shed_name, max_days=40, crop_id=None, include_man
     hourly_rows = get_hourly_history_for_shed(shed_name, max_points=0, crop_id=crop_id, include_manual_feed=include_manual_feed)
 
     day_totals = {}
+    # Temperature / humidity highs and lows run midnight to midnight, unlike feed and
+    # water which use the 6am-6am farm day. Keyed by calendar date.
+    climate_by_date = {}
     latest_epoch = None
 
     i = 0
@@ -4063,6 +4240,12 @@ def get_daily_history_for_shed(shed_name, max_days=40, crop_id=None, include_man
 
         if day_key not in day_totals:
             day_totals[day_key] = {"water": 0.0, "feed": 0.0}
+        totals = climate_by_date.setdefault(dt_obj.strftime("%Y-%m-%d"), {})
+        for key in ["temp", "rh"]:
+            if row.get(key + "_min") is not None:
+                totals[key + "_min"] = min(totals.get(key + "_min", row[key + "_min"]), row[key + "_min"])
+            if row.get(key + "_max") is not None:
+                totals[key + "_max"] = max(totals.get(key + "_max", row[key + "_max"]), row[key + "_max"])
 
         try:
             if row.get("water") is not None:
@@ -4098,12 +4281,18 @@ def get_daily_history_for_shed(shed_name, max_days=40, crop_id=None, include_man
             except Exception:
                 label = day_key
 
-            rows.append({
+            totals = day_totals[day_key]
+            climate = climate_by_date.get(day_key, {})
+            day_row = {
                 "key": day_key,
                 "label": label,
-                "water": day_totals[day_key]["water"],
-                "feed": day_totals[day_key]["feed"],
-            })
+                "water": totals["water"],
+                "feed": totals["feed"],
+            }
+            for key in ["temp", "rh"]:
+                day_row[key + "_min"] = climate.get(key + "_min")
+                day_row[key + "_max"] = climate.get(key + "_max")
+            rows.append(day_row)
         j += 1
 
     if max_days and len(rows) > max_days:
@@ -4784,7 +4973,7 @@ def build_crop_report_workbook(crop_id):
         ]
         rows.extend(crop_report_metric_rows(summary))
         rows.append([])
-        rows.append(["Day", "Water L", "Feed KG", "Running Water L", "Running Feed KG"])
+        rows.append(["Day", "Water L", "Feed KG", "Running Water L", "Running Feed KG", "Temp High C", "Temp Low C", "RH High %", "RH Low %"])
         daily_rows = summary.get("daily_rows", [])
         j = 0
         while j < len(daily_rows):
@@ -4795,6 +4984,10 @@ def build_crop_report_workbook(crop_id):
                 round(float(daily.get("feed") or 0.0), 2),
                 round(float(daily.get("running_water") or 0.0), 2),
                 round(float(daily.get("running_feed") or 0.0), 2),
+                round(daily["temp_max"], 1) if daily.get("temp_max") is not None else None,
+                round(daily["temp_min"], 1) if daily.get("temp_min") is not None else None,
+                round(daily["rh_max"]) if daily.get("rh_max") is not None else None,
+                round(daily["rh_min"]) if daily.get("rh_min") is not None else None,
             ])
             j += 1
         sheets.append({"name": "Shed %d" % row["shed_no"], "rows": rows})
@@ -5806,10 +5999,19 @@ def build_rows():
         lighting_visible = True
         lighting_on = bool(controller_meta.get("lighting_on", False))
 
+        # Today's high / low from the controller, only if it is for today's date.
+        climate_today = controller_meta.get("climate_today") if isinstance(controller_meta.get("climate_today"), dict) else {}
+        if climate_today.get("date") != datetime.now().strftime("%Y-%m-%d"):
+            climate_today = {}
+
         rows.append({
             "shed": shed_display,
             "shed_name": shed,
             "shed_no": shed_no,
+            "temp_hi": fmt_value(climate_today.get("temp_max"), "f1"),
+            "temp_lo": fmt_value(climate_today.get("temp_min"), "f1"),
+            "rh_hi": fmt_value(climate_today.get("rh_max"), "f0"),
+            "rh_lo": fmt_value(climate_today.get("rh_min"), "f0"),
             "has_data": bool(live) or bool(days) or bool(crop) or bool(active_entries),
             "has_active_entry": has_active_entry,
             "tile_state": tile_state,
@@ -6250,7 +6452,8 @@ HTML = """
         }
         .big-triple {
             display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
+            /* Temp and RH get the room for their high/low; lighting only needs icon + On/Off. */
+            grid-template-columns: minmax(0, 1.35fr) minmax(0, 1.35fr) minmax(0, 0.7fr);
             gap: 8px;
             margin-bottom: 8px;
         }
@@ -6391,6 +6594,10 @@ HTML = """
         .metric-big .metric-val {
             font-size: 34px;
         }
+        .metric-hilo-row { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
+        .metric-hilo-row .metric-val { white-space: nowrap; overflow-wrap: normal; word-break: normal; }
+        .metric-hilo { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; font-size: 12px; line-height: 1.2; color: #b9bcb6; white-space: nowrap; }
+        .metric-hilo b { color: #ecebe6; font-weight: 600; }
         .flow-green {
             border: 2px solid #35d07f;
             box-shadow:
@@ -6714,7 +6921,7 @@ HTML = """
             .topline { gap: 8px; }
             .mini-val { font-size: 18px; }
             .big-pair { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; }
-            .big-triple { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+            .big-triple { grid-template-columns: minmax(0, 1.35fr) minmax(0, 1.35fr) minmax(0, 0.7fr); gap: 6px; }
             .metric-grid { grid-template-columns: 1fr 1fr; }
             .metric-columns { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
             .metric-grid-2 { grid-template-columns: 1fr; }
@@ -6771,7 +6978,7 @@ HTML = """
                     <div class="head">
                         <div class="head-left">
                             <div class="shed">{{ s.shed }}</div>
-                            <div class="birds-top">Birds: <span id="shed-birds-remaining-{{ s.shed_no }}">{{ s.birds_remaining }}</span> (<span id="shed-birds-placed-{{ s.shed_no }}">{{ s.birds_placed }}</span>) • Age: <span id="shed-age-{{ s.shed_no }}">{{ s.bird_age }}</span></div>
+                            <div class="birds-top">Birds: <span id="shed-birds-placed-{{ s.shed_no }}">{{ s.birds_placed }}</span> (<span id="shed-birds-remaining-{{ s.shed_no }}">{{ s.birds_remaining }}</span>) • Age: <span id="shed-age-{{ s.shed_no }}">{{ s.bird_age }}</span></div>
                             {% if s.allocation_text %}
                             <div id="shed-alloc-{{ s.shed_no }}" class="alloc-top">{{ s.allocation_text }}</div>
                             {% endif %}
@@ -6800,11 +7007,23 @@ HTML = """
                     <div class="big-triple">
                         <div id="shed-temp-tile-{{ s.shed_no }}" class="metric metric-big {% if s.temp_glow %}{{ s.temp_glow }}{% endif %}">
                             <div class="metric-label">Temp C</div>
-                            <div id="shed-temp-{{ s.shed_no }}" class="metric-val">{{ s.temp_c }}</div>
+                            <div class="metric-hilo-row">
+                                <div id="shed-temp-{{ s.shed_no }}" class="metric-val">{{ s.temp_c }}</div>
+                                <div class="metric-hilo" aria-label="Today's high and low">
+                                    <span>H <b id="shed-temp-hi-{{ s.shed_no }}">{{ s.temp_hi }}</b></span>
+                                    <span>L <b id="shed-temp-lo-{{ s.shed_no }}">{{ s.temp_lo }}</b></span>
+                                </div>
+                            </div>
                         </div>
                         <div id="shed-rh-tile-{{ s.shed_no }}" class="metric metric-big {% if s.rh_glow %}{{ s.rh_glow }}{% endif %}">
                             <div class="metric-label">RH %</div>
-                            <div id="shed-rh-{{ s.shed_no }}" class="metric-val">{{ s.rh_pct }}</div>
+                            <div class="metric-hilo-row">
+                                <div id="shed-rh-{{ s.shed_no }}" class="metric-val">{{ s.rh_pct }}</div>
+                                <div class="metric-hilo" aria-label="Today's high and low">
+                                    <span>H <b id="shed-rh-hi-{{ s.shed_no }}">{{ s.rh_hi }}</b></span>
+                                    <span>L <b id="shed-rh-lo-{{ s.shed_no }}">{{ s.rh_lo }}</b></span>
+                                </div>
+                            </div>
                         </div>
                         <div id="shed-lighting-tile-{{ s.shed_no }}" class="metric metric-big metric-neutral metric-lighting metric-lighting-top {{ s.lighting_tile_class }}">
                             <div class="metric-label">Lighting</div>
@@ -7171,6 +7390,10 @@ function renderShed(s) {
     setDashText(`shed-farm-crop-${s.shed_no}`, s.farm_crop_id);
     setDashText(`shed-temp-${s.shed_no}`, s.temp_c);
     setDashText(`shed-rh-${s.shed_no}`, s.rh_pct);
+    setDashText(`shed-temp-hi-${s.shed_no}`, s.temp_hi);
+    setDashText(`shed-temp-lo-${s.shed_no}`, s.temp_lo);
+    setDashText(`shed-rh-hi-${s.shed_no}`, s.rh_hi);
+    setDashText(`shed-rh-lo-${s.shed_no}`, s.rh_lo);
     setDashText(`shed-water-${s.shed_no}`, s.water_lpm);
     setDashText(`shed-feed-${s.shed_no}`, s.feed_kg);
     setDashText(`shed-water7-${s.shed_no}`, s.water_7to7);
@@ -8921,7 +9144,7 @@ MORTALITY_HTML = """
         .card { background: #737373; border: 2px solid #8a8a8a; border-radius: 12px; padding: 14px; min-width:0; }
         .card h2 { margin-top: 0; font-size: 22px; }
         label { display: block; color: #f0f0f0; margin-bottom: 6px; font-size: 14px; }
-        input[type="number"], input[type="text"], select { width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 8px; border: 1px solid #8a8a8a; background: #686868; color: #ececec; margin-bottom: 12px; }
+        input[type="number"], input[type="text"], input[type="date"], select { width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 8px; border: 1px solid #8a8a8a; background: #686868; color: #ececec; margin-bottom: 12px; }
         button { background: #727272; color: #f2f2f2; border: 1px solid #8a8a8a; border-radius: 8px; padding: 10px 14px; cursor: pointer; }
         .collapse { margin-top: 14px; }
         .collapse summary { cursor: pointer; list-style: none; padding: 12px 14px; border: 1px solid #8a8a8a; border-radius: 10px; background: #686868; font-weight: 700; }
@@ -8963,6 +9186,8 @@ MORTALITY_HTML = """
                     </select>
                     <label for="bird_loss">Bird Loss</label>
                     <input id="bird_loss" type="number" name="bird_loss" min="1" step="1" value="">
+                    <label for="mortality_date">Day</label>
+                    <input id="mortality_date" type="date" name="mortality_date" value="{{ mortality_today }}" max="{{ mortality_today }}">
                     <label for="note">Note</label>
                     <input id="note" type="text" name="note" value="">
                     <button type="submit">Record Mortality</button>
@@ -9691,6 +9916,10 @@ CROP_SUMMARY_HTML = """
                                     <th>Feed KG</th>
                                     <th>Running Water L</th>
                                     <th>Running Feed KG</th>
+                                    <th>Temp High</th>
+                                    <th>Temp Low</th>
+                                    <th>RH High</th>
+                                    <th>RH Low</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -9701,6 +9930,10 @@ CROP_SUMMARY_HTML = """
                                     <td>{{ "%.2f"|format(r.feed) if r.feed is not none else "--" }}</td>
                                     <td>{{ "%.1f"|format(r.running_water) if r.running_water is not none else "--" }}</td>
                                     <td>{{ "%.2f"|format(r.running_feed) if r.running_feed is not none else "--" }}</td>
+                                    <td>{{ "%.1f"|format(r.temp_max) if r.temp_max is not none else "--" }}</td>
+                                    <td>{{ "%.1f"|format(r.temp_min) if r.temp_min is not none else "--" }}</td>
+                                    <td>{{ "%.0f"|format(r.rh_max) if r.rh_max is not none else "--" }}</td>
+                                    <td>{{ "%.0f"|format(r.rh_min) if r.rh_min is not none else "--" }}</td>
                                 </tr>
                                 {% endfor %}
                             </tbody>
@@ -11925,7 +12158,7 @@ def office_versions_view():
             "app_version": str(meta.get("app_version", "") or "--"),
             "pico_local": str(meta.get("pico_local_hash", "") or "--"),
             "pico_deployed": str(meta.get("pico_deployed_hash", "") or "--"),
-            "last_seen": fmt_ts(meta.get("received_ts")),
+            "last_seen": format_ts_label(meta.get("received_ts")),
             "state_version": str(meta.get("controller_sync_version", "") or "--"),
             "office_sync_version": str(meta.get("last_seen_office_sync_version", "") or "--"),
         })
@@ -11936,7 +12169,7 @@ def office_versions_view():
         "app_version": str(borehole_meta.get("app_version", "") or "--"),
         "pico_local": str(borehole_meta.get("pico_local_hash", "") or "--"),
         "pico_deployed": str(borehole_meta.get("pico_deployed_hash", "") or "--"),
-        "last_seen": fmt_ts(borehole_meta.get("received_ts")),
+        "last_seen": format_ts_label(borehole_meta.get("received_ts")),
         "state_version": str(borehole_meta.get("controller_sync_version", "") or "--"),
         "office_sync_version": str(borehole_meta.get("last_seen_office_sync_version", "") or "--"),
     })
@@ -12190,7 +12423,8 @@ def shed_thresholds_save_view(shed_no):
         abort(404)
     try:
         save_office_environment_settings_for_shed(shed_no, request.form)
-        return redirect(url_for("shed_thresholds_view", shed_no=shed_no, ok=1, msg="Tile thresholds saved"))
+        push_shed_state_to_controller_async(shed_no)
+        return redirect(url_for("shed_thresholds_view", shed_no=shed_no, ok=1, msg="Tile thresholds saved. Temperature and humidity limits are sent to the shed controller."))
     except Exception as exc:
         return redirect(url_for("shed_thresholds_view", shed_no=shed_no, ok=0, msg="Threshold save failed: %s" % exc))
 
@@ -12212,6 +12446,7 @@ def shed_mortality_view(shed_no):
         history_rows=payload["history_rows"],
         mortality_total=fmt_value(payload["mortality_total"], "i"),
         active_birds=fmt_value(payload["active_birds"], "i"),
+        mortality_today=datetime.now().strftime("%Y-%m-%d"),
         status_msg=status_msg,
         status_ok=status_ok,
     )
@@ -12231,7 +12466,7 @@ def shed_mortality_add(shed_no):
         return redirect(url_for("shed_mortality_view", shed_no=shed_no, ok=0, msg="Invalid mortality entry"))
 
     note = str(request.form.get("note", "") or "").strip()
-    ok, msg = apply_mortality_to_shed(shed_no, dest_shed, bird_loss, note=note, updated_by="dashboard")
+    ok, msg = apply_mortality_to_shed(shed_no, dest_shed, bird_loss, note=note, updated_by="dashboard", date_text=request.form.get("mortality_date", ""))
     return redirect(url_for("shed_mortality_view", shed_no=shed_no, ok=1 if ok else 0, msg=msg))
 
 
@@ -12278,7 +12513,7 @@ def shed_mortality_api_post(shed_no):
     if not valid_entry_shed(dest_shed) or bird_loss <= 0:
         return jsonify({"ok": False, "message": "Invalid mortality entry"}), 400
 
-    ok, msg = apply_mortality_to_shed(shed_no, dest_shed, bird_loss, note=note, updated_by="controller")
+    ok, msg = apply_mortality_to_shed(shed_no, dest_shed, bird_loss, note=note, updated_by="controller", date_text=payload.get("date", ""))
     if not ok:
         return jsonify({"ok": False, "message": msg}), 400
     return jsonify({
@@ -12767,6 +13002,27 @@ def shed_current_crop_hourly_api(shed_no):
         "shed": shed_name,
         "crop_id": active_crop_id,
         "crop_code": fmt_crop_code(active_crop_id, active_crop.get("placement_epoch")),
+        "rows": rows,
+    })
+
+
+@app.route("/api/shed/<int:shed_no>/current-crop/daily", methods=["GET"])
+def shed_current_crop_daily_api(shed_no):
+    # Completed days of the active crop: feed and water (6am-6am) and the temperature
+    # and humidity high and low (midnight to midnight). Foundation for the Trends page.
+    if shed_no not in SHED_NUMBERS:
+        abort(404)
+
+    shed_name = shed_name_from_number(shed_no)
+    active_crop_id = get_active_crop_id_for_shed(shed_name)
+    active_crop = active_crop_record_for_shed(shed_name)
+    rows = get_daily_history_for_shed(shed_name, max_days=0, crop_id=active_crop_id, include_manual_feed=True)
+    return jsonify({
+        "shed_no": shed_no,
+        "shed": shed_name,
+        "crop_id": active_crop_id,
+        "crop_code": fmt_crop_code(active_crop_id, active_crop.get("placement_epoch")),
+        "placement_epoch": active_crop.get("placement_epoch"),
         "rows": rows,
     })
 

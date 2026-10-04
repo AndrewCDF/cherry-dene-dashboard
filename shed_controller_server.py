@@ -12,7 +12,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import urlparse
 
 try:
@@ -63,20 +63,89 @@ TOUCH_OPTIMIZE_HEAD = (
     'a,.button-link,.metric-link,.settings-button{touch-action:pan-y;}'
     'button,input,select,textarea,label,summary{touch-action:manipulation;}'
     'input,textarea,select,.mono{-webkit-user-select:text;user-select:text;}'
-    '.cdf-number-pad{position:fixed;right:12px;bottom:12px;z-index:9999;width:min(420px,calc(100vw - 24px));padding:10px;background:rgba(54,54,54,0.96);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,0.14);border-radius:18px;box-shadow:0 18px 36px rgba(0,0,0,0.28);transform:translateY(calc(100% + 16px));transition:transform .12s ease-out;}'
+    '.cdf-number-pad{position:fixed;right:12px;bottom:12px;z-index:9999;width:min(420px,calc(100vw - 24px));padding:10px;background:rgba(43,46,44,0.97);backdrop-filter:blur(8px);border:1px solid #454a46;border-radius:18px;box-shadow:0 18px 36px rgba(0,0,0,0.28);transform:translateY(calc(100% + 16px));transition:transform .12s ease-out;}'
     '.cdf-number-pad.is-open{transform:translateY(0);}'
     '.cdf-number-pad__panel{max-width:none;margin:0;}'
-    '.cdf-number-pad__head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px;color:#ececec;font:700 15px/1 Arial,sans-serif;}'
-    '.cdf-number-pad__value{color:#d2d2d2;font:600 13px/1 Arial,sans-serif;min-height:14px;}'
+    '.cdf-number-pad__head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px;color:#ecebe6;font:600 15px/1 "Barlow","Helvetica Neue",Helvetica,sans-serif;}'
+    '.cdf-number-pad__value{color:#b9bcb6;font:600 13px/1 "Barlow","Helvetica Neue",Helvetica,sans-serif;min-height:14px;}'
     '.cdf-number-pad__grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;}'
-    '.cdf-number-pad__key{min-height:52px;border-radius:12px;border:1px solid #8a8a8a;background:linear-gradient(180deg,#7a7a7a,#676767);color:#ececec;font:700 22px/1 Arial,sans-serif;}'
+    '.cdf-number-pad__key{min-height:52px;border-radius:12px;border:1px solid #5d635e;background:#3a3e3b;color:#ecebe6;font:600 22px/1 "Barlow","Helvetica Neue",Helvetica,sans-serif;}'
     '.cdf-number-pad__key--wide{grid-column:span 2;}'
-    '.cdf-number-pad__key--action{background:linear-gradient(180deg,#6f6f6f,#5f5f5f);font-size:17px;}'
+    '.cdf-number-pad__key--action{background:#4a4f4b;font-size:17px;}'
     '.cdf-number-pad__key--url{font-size:18px;}'
     '.cdf-number-pad__key[hidden]{display:none;}'
     '@media (max-width:700px){.cdf-number-pad{left:10px;right:10px;bottom:10px;width:auto;padding:10px;}.cdf-number-pad__key{min-height:54px;}}'
     '</style>'
 )
+
+# Shared look for every page not already built on the overview's theme (those carry
+# the cdf-theme-native marker). Injected after each page's own styles so it wins.
+THEME_HEAD = (
+    '<link rel="preconnect" href="https://fonts.googleapis.com">'
+    '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@500;600&display=swap">'
+    '<style id="cdf-theme">'
+    ':root{--bg:#2b2e2c;--panel:#343835;--panel-2:#3a3e3b;--line:#454a46;--text:#ecebe6;--muted:#b9bcb6;'
+    '--green:#35d07f;--amber:#f0a53a;--red:#ff7777;--blue:#7aa7ff;}'
+    'html,body{background:#2b2e2c !important;color:#ecebe6;}'
+    'body,button,input,select,textarea{font-family:"Barlow","Helvetica Neue",Helvetica,sans-serif !important;}'
+    'h1,h2,h3,.current,.metric-val,.hero-birds-val,.hero-mortality-val,.hero-age-val{font-family:"Barlow Semi Condensed","Barlow","Helvetica Neue",Helvetica,sans-serif !important;font-weight:600 !important;}'
+    'h1{letter-spacing:0;}'
+    '.sub,.hint,.label,.empty,.muted,th{color:#b9bcb6 !important;}'
+    '.panel,.card,.allocation-card,.chart-wrap,.metric,.full-panel,.msg,.okbox{background:#343835 !important;box-shadow:none;}'
+    '.panel,.card,.allocation-card,.chart-wrap,.full-panel,.msg{border:1px solid #454a46 !important;border-radius:14px !important;}'
+    '.metric{border-radius:14px !important;}'
+    '.alarm{background:#3a3e3b !important;border-radius:12px !important;}'
+    '.pill{background:#3a3e3b !important;border-radius:12px !important;}'
+    '.hero-birds,.hero-mortality,.hero-age{background:#3a3e3b !important;border:1px solid #454a46 !important;border-radius:12px !important;}'
+    'button:not(.cdf-number-pad__key),.button-link,.action-link,.settings-button{background:#3a3e3b !important;border:1px solid #5d635e !important;border-radius:12px !important;color:#ecebe6 !important;font-weight:600 !important;box-shadow:none !important;}'
+    'button:not(.cdf-number-pad__key):active,.button-link:active,.action-link:active{background:#4a4f4b !important;}'
+    'button.danger,.danger{background:#4a2a2d !important;border-color:#8a4048 !important;}'
+    'button:disabled{opacity:0.45;}'
+    'input[type="number"],input[type="text"],input[type="date"],input[type="datetime-local"],input[type="password"],select,textarea{background:#3a3e3b !important;border:1px solid #5d635e !important;border-radius:10px !important;color:#ecebe6 !important;}'
+    'th,td,.detail,.history-table th,.history-table td{border-color:#4a4f4b !important;}'
+    '.topbar a,a.back,.back-link{color:#ecebe6;}'
+    'a{color:inherit;}'
+    '.page-nav{display:flex;gap:10px;margin:0 0 16px;}'
+    '.page-nav-btn{display:inline-flex;align-items:center;justify-content:center;min-height:48px;padding:0 18px;border-radius:12px;border:1px solid #5d635e;background:#343835;color:#ecebe6 !important;text-decoration:none;font-size:17px;font-weight:600;}'
+    '.page-nav-btn:active{background:#4a4f4b;}'
+    '.log-tabs{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:0 0 16px;}'
+    '.log-tab{display:flex;align-items:center;justify-content:center;min-height:56px;border-radius:12px;border:1px solid #5d635e;background:#343835;color:#ecebe6 !important;text-decoration:none;font-size:19px;font-weight:600;}'
+    '.log-tab.active{background:#ecebe6;color:#2b2e2c !important;border-color:#ecebe6;}'
+    '</style>'
+)
+
+# Back buttons (data-nav-back) return to the previous *different* page the viewer was on.
+# Visited paths are remembered per browser session; a form save that reloads the same page
+# doesn't count, so Back never lands on the page you just saved. The button's href is
+# the fallback when there is no history (e.g. first page after the kiosk starts).
+NAV_HISTORY_SCRIPT = """
+<script id="cdf-nav-history">
+(function () {
+  var KEY = 'cdfNavStack';
+  function load() { try { return JSON.parse(sessionStorage.getItem(KEY) || '[]'); } catch (e) { return []; } }
+  function save(stack) { try { sessionStorage.setItem(KEY, JSON.stringify(stack.slice(-30))); } catch (e) {} }
+  var stack = load();
+  var here = location.pathname;
+  if (stack.length && stack[stack.length - 1] === here) {
+    // reload / form save on the same page
+  } else if (stack.length > 1 && stack[stack.length - 2] === here) {
+    stack.pop();
+  } else {
+    stack.push(here);
+  }
+  save(stack);
+  document.addEventListener('click', function (event) {
+    var btn = event.target.closest ? event.target.closest('[data-nav-back]') : null;
+    if (!btn) return;
+    var current = load();
+    if (current.length > 1) {
+      event.preventDefault();
+      location.href = current[current.length - 2];
+    }
+  });
+})();
+</script>
+"""
 
 NUMBER_PAD_BODY = """
 <div id="cdfNumberPad" class="cdf-number-pad" aria-hidden="true">
@@ -318,8 +387,12 @@ def inject_favicon(response):
             body = response.get_data(as_text=True)
             if "<head>" in body and 'cdf-touch-optimize' not in body:
                 body = body.replace('<head>', '<head>' + TOUCH_OPTIMIZE_HEAD, 1)
+            if "</head>" in body and 'cdf-theme' not in body:
+                body = body.replace('</head>', THEME_HEAD + '</head>', 1)
             if "</body>" in body and 'cdf-number-pad-script' not in body:
                 body = body.replace("</body>", NUMBER_PAD_BODY + "</body>", 1)
+            if "</body>" in body and 'cdf-nav-history' not in body:
+                body = body.replace("</body>", NAV_HISTORY_SCRIPT + "</body>", 1)
             response.set_data(body)
             response.headers["Content-Length"] = str(len(response.get_data()))
     except Exception:
@@ -372,7 +445,14 @@ DEFAULT_CONFIG = {
     "auger_left_label": "Auger Left",
     "auger_right_label": "Auger Right",
     "lighting_label": "Lighting",
+    "climate_limits_updated_ts": None,
+    "layout_front_end": "left",
+    "layout_bin_corner": "top-left",
+    "layout_door_end": "left",
 }
+
+SHED_LAYOUT_ENDS = ["left", "right"]
+SHED_LAYOUT_CORNERS = ["top-left", "top-right", "bottom-left", "bottom-right"]
 
 SERIAL_THREAD = None
 MONITOR_THREAD = None
@@ -1078,6 +1158,12 @@ def load_config():
         cfg["feed_kg_per_raw_unit"] = float(raw_scale) if raw_scale not in [None, ""] else None
     except Exception:
         cfg["feed_kg_per_raw_unit"] = None
+    if cfg.get("layout_front_end") not in SHED_LAYOUT_ENDS:
+        cfg["layout_front_end"] = "left"
+    if cfg.get("layout_bin_corner") not in SHED_LAYOUT_CORNERS:
+        cfg["layout_bin_corner"] = "top-left"
+    if cfg.get("layout_door_end") not in SHED_LAYOUT_ENDS:
+        cfg["layout_door_end"] = "left"
     cfg["serial_enabled"] = bool(cfg.get("serial_enabled", True))
     cfg["sync_on_sensor_update"] = bool(cfg.get("sync_on_sensor_update", True))
     cfg["deployment_mode"] = str(cfg.get("deployment_mode", "commissioning") or "commissioning").strip().lower()
@@ -1514,6 +1600,7 @@ def default_sensor_state():
     return {
         "temp_c": None,
         "rh_pct": None,
+        "climate_days": [],
         "water_lpm": None,
         "water_lpm_raw": None,
         "water_last_pulse_delta": None,
@@ -2171,6 +2258,8 @@ def load_state():
         sensors["alarms"] = []
     if not isinstance(sensors.get("water_history_samples"), list):
         sensors["water_history_samples"] = []
+    if not isinstance(sensors.get("climate_days"), list):
+        sensors["climate_days"] = []
     if not isinstance(sensors.get("feed_raw_display_samples"), list):
         sensors["feed_raw_display_samples"] = []
     if sensors.get("feed_raw_display_units") in [""] and sensors.get("feed_raw_units") not in [None, ""]:
@@ -2513,15 +2602,26 @@ def sync_payload(state):
             water_total_litres = round(float(total_pulses) / pulses_per_litre, 3)
     except Exception:
         water_total_litres = None
+    climate_days = sensors.get("climate_days") or []
+    climate_today = climate_days[-1] if climate_days and climate_days[-1].get("date") == datetime.now().strftime("%Y-%m-%d") else {}
     payload["controller_meta"] = {
         "temp_c": sensors.get("temp_c"),
         "rh_pct": sensors.get("rh_pct"),
+        # Today's (midnight to midnight) high and low, for the office tiles.
+        "climate_today": {
+            "date": climate_today.get("date"),
+            "temp_max": climate_today.get("temp_max"),
+            "temp_min": climate_today.get("temp_min"),
+            "rh_max": climate_today.get("rh_max"),
+            "rh_min": climate_today.get("rh_min"),
+        } if climate_today else None,
         "temp_low_c": cfg.get("temp_low_c"),
         "temp_high_c": cfg.get("temp_high_c"),
         "temp_amber_margin_c": cfg.get("temp_amber_margin_c"),
         "rh_low_pct": cfg.get("rh_low_pct"),
         "rh_high_pct": cfg.get("rh_high_pct"),
         "rh_amber_margin_pct": cfg.get("rh_amber_margin_pct"),
+        "climate_limits_updated_ts": cfg.get("climate_limits_updated_ts"),
         "water_lpm": sensors.get("water_lpm"),
         "water_low_lpm": cfg.get("water_low_lpm"),
         "water_total_litres": water_total_litres,
@@ -2646,7 +2746,7 @@ def fetch_mortality_from_dashboard(shed_no):
         return {}
 
 
-def post_mortality_to_dashboard(shed_no, dest_shed, bird_loss, note=""):
+def post_mortality_to_dashboard(shed_no, dest_shed, bird_loss, note="", date_text=""):
     try:
         with dashboard_request(
             "/api/shed/%d/mortality" % shed_no,
@@ -2655,6 +2755,7 @@ def post_mortality_to_dashboard(shed_no, dest_shed, bird_loss, note=""):
                 "dest_shed": dest_shed,
                 "bird_loss": bird_loss,
                 "note": note,
+                "date": date_text,
             },
             timeout=6,
         ) as resp:
@@ -2668,6 +2769,42 @@ def post_mortality_to_dashboard(shed_no, dest_shed, bird_loss, note=""):
             return ok, (payload.get("message") if isinstance(payload, dict) else "")
     except Exception as exc:
         return False, "Mortality failed: %s" % exc
+
+
+CLIMATE_LIMIT_KEYS = ["temp_low_c", "temp_high_c", "temp_amber_margin_c", "rh_low_pct", "rh_high_pct", "rh_amber_margin_pct"]
+
+
+def adopt_office_climate_limits(limits):
+    # Temperature / humidity limits match the office's: whichever side changed them
+    # last wins. Applies the office's limits if they are newer than this controller's.
+    if not isinstance(limits, dict):
+        return False
+    try:
+        office_ts = int(limits.get("updated_ts"))
+    except Exception:
+        return False
+    cfg = load_config()
+    local_ts = cfg.get("climate_limits_updated_ts")
+    if local_ts not in [None, ""] and office_ts <= int(local_ts):
+        return False
+    try:
+        values = {key: float(limits.get(key)) for key in CLIMATE_LIMIT_KEYS}
+    except Exception:
+        return False
+    if values["temp_low_c"] >= values["temp_high_c"] or values["rh_low_pct"] >= values["rh_high_pct"]:
+        return False
+    if values["temp_amber_margin_c"] < 0 or values["rh_amber_margin_pct"] < 0:
+        return False
+    cfg.update(values)
+    cfg["climate_limits_updated_ts"] = office_ts
+    save_config(cfg)
+    record_controller_event("climate_limits_from_office", "Temperature / humidity limits updated from office", "")
+    return True
+
+
+def sync_climate_limits_to_office():
+    # Send changed limits to the office straight away, without holding up the page.
+    threading.Thread(target=lambda: auto_sync_if_changed(load_state()), daemon=True).start()
 
 
 def pull_from_dashboard(state):
@@ -2684,6 +2821,7 @@ def pull_from_dashboard(state):
                 return False, state["last_sync_status"]
 
             payload = json.loads(resp.read().decode("utf-8"))
+            adopt_office_climate_limits(payload.get("climate_limits"))
             incoming = payload.get("entries", {})
             if isinstance(incoming, dict):
                 state["entries"] = {}
@@ -3022,6 +3160,256 @@ def feed_movement_display_context(sensors, entries):
     }
 
 
+OVERVIEW_STAGE_WIDTH = 836
+
+
+def shed_plan_layout(cfg):
+    # Pixel positions for the overview's shed plan (836 px wide stage), worked out
+    # from the layout chosen in Controller Config. "left"/"right" are as seen on screen.
+    corner = cfg.get("layout_bin_corner", "top-left")
+    bin_left = corner.endswith("left")
+    bin_top = corner.startswith("top")
+    door_left = cfg.get("layout_door_end", "left") == "left"
+    front_left = cfg.get("layout_front_end", "left") == "left"
+
+    bin_margin, other_margin = 170, 72
+    shed_w = OVERVIEW_STAGE_WIDTH - bin_margin - other_margin
+    shed_x = bin_margin if bin_left else other_margin
+    shed_y, shed_h = 106, 330
+    shed_right = shed_x + shed_w
+
+    bin_size = 124
+    bin_x = 16 if bin_left else OVERVIEW_STAGE_WIDTH - 16 - bin_size
+    # Top-corner bins overhang the shed's top edge by 40px; bottom-corner bins mirror that
+    # below the bottom edge, with their label above instead of below.
+    bin_y = shed_y - 40 if bin_top else shed_y + shed_h - bin_size + 40
+    pipe_y = bin_y + 59
+    pipe_x = bin_x + bin_size - 2 if bin_left else shed_right - 4
+    bin_label_x = min(max(0, bin_x + bin_size // 2 - 78), OVERVIEW_STAGE_WIDTH - 156)
+    bin_label_y = bin_y + bin_size + 12 if bin_top else bin_y - 52
+
+    # The door is always centred on its end wall.
+    door_h = 100
+    door_y = shed_y + (shed_h - door_h) // 2
+    if door_left:
+        door_x = shed_x - 2
+        tick_x = shed_x - 18
+        label_x = shed_x - 24 - 126
+        label_align = "right"
+    else:
+        door_x = shed_right - 8
+        tick_x = shed_right + 8
+        label_x = shed_right + 24
+        label_align = "left"
+
+    cards_gap = 14
+    temp_w = 200
+    rh_w = 168
+    water_w = shed_w - temp_w - rh_w - 2 * cards_gap
+
+    return {
+        "front_left": front_left,
+        "shed_x": shed_x, "shed_y": shed_y, "shed_w": shed_w, "shed_h": shed_h,
+        "inner_w": shed_w - 12,
+        "bin_x": bin_x, "bin_y": bin_y,
+        "pipe_x": pipe_x, "pipe_y": pipe_y,
+        "bin_label_x": bin_label_x, "bin_label_y": bin_label_y,
+        "door_x": door_x, "door_y": door_y, "door_h": door_h,
+        "tick_x": tick_x, "label_x": label_x, "label_y": door_y + door_h // 2 - 11, "label_align": label_align,
+        "temp_x": shed_x, "temp_w": temp_w,
+        "rh_x": shed_x + temp_w + cards_gap, "rh_w": rh_w,
+        "water_x": shed_x + temp_w + rh_w + 2 * cards_gap, "water_w": water_w,
+        "front_label_x": shed_x + 6 if front_left else shed_right - 6 - 80,
+        "rear_label_x": shed_right - 6 - 80 if front_left else shed_x + 6,
+        "end_label_y": shed_y + shed_h + 8,
+    }
+
+
+def ordered_entry_keys(entries, pen_order):
+    # Pens keep the front-to-rear order they were added in; anything the office
+    # added without a position goes to the rear in shed-number order.
+    keys = [str(k) for k in (pen_order or []) if str(k) in entries]
+    rest = sorted([k for k in entries.keys() if str(k) not in keys], key=lambda k: int(k) if str(k).isdigit() else 0)
+    return keys + rest
+
+
+def overview_pens(cfg, entries, pen_order=None, layout=None):
+    layout = layout or shed_plan_layout(cfg)
+    pen_area = layout["inner_w"]
+    rows = []
+    for key in ordered_entry_keys(entries, pen_order):
+        try:
+            dest_shed = int(key)
+        except Exception:
+            continue
+        rec = clean_entry_record(entries.get(key, {}))
+        if rec["bird_count"] <= 0:
+            continue
+        rows.append({
+            "dest_shed": dest_shed,
+            "name": entry_shed_label(dest_shed),
+            # Shed number order for lists (Shed 6B sits straight after Shed 6).
+            "number_order": (entry_home_shed_no(dest_shed) or dest_shed) * 1000 + dest_shed,
+            "birds": rec["bird_count"],
+            "birds_text": fmt_value(rec["bird_count"], "i"),
+            "placed": max(int(rec.get("placed_bird_count") or 0), rec["bird_count"]),
+            "placed_text": fmt_value(max(int(rec.get("placed_bird_count") or 0), rec["bird_count"]), "i"),
+            "mortality_text": fmt_value(max(0, int(rec.get("placed_bird_count") or 0) - rec["bird_count"]), "i"),
+            "can_move": entry_home_shed_no(dest_shed) != cfg["shed_no"] and rec["crop_active"] == 1,
+        })
+    # Pens are sized by birds placed, so the split stays put as mortality comes off,
+    # and run wall to wall so each label sits in the middle of the pen you see.
+    total = sum(row["placed"] for row in rows)
+    x = 0.0
+    i = 0
+    while i < len(rows):
+        width = pen_area * rows[i]["placed"] / total if total > 0 else 0
+        left = x if layout["front_left"] else layout["inner_w"] - x - width
+        rows[i]["left"] = int(round(left))
+        rows[i]["width"] = int(round(width))
+        # Dashed divider on the right of every pen except the one against the right wall.
+        rows[i]["divided"] = i != (len(rows) - 1 if layout["front_left"] else 0)
+        x += width
+        i += 1
+    return rows
+
+
+def overview_pen_add_options(cfg, pens):
+    present = set(pen["dest_shed"] for pen in pens)
+    rows = []
+    for dest_shed in ENTRY_SHED_NUMBERS:
+        if dest_shed in present:
+            continue
+        rows.append({
+            "dest_shed": dest_shed,
+            "label": entry_shed_label(dest_shed),
+            "is_home": entry_home_shed_no(dest_shed) == cfg["shed_no"],
+        })
+    return rows
+
+
+def mortality_day_options(crop_epoch, now_ts=None):
+    now = datetime.fromtimestamp(now_ts or time.time())
+    today = now.date()
+    start = today
+    if crop_epoch not in [None, ""]:
+        try:
+            start = min(today, datetime.fromtimestamp(int(crop_epoch)).date())
+        except Exception:
+            start = today
+    rows = []
+    day = today
+    while day >= start:
+        offset = (today - day).days
+        if offset == 0:
+            label = "Today"
+        elif offset == 1:
+            label = "Yesterday"
+        else:
+            label = day.strftime("%a %d %b")
+        if crop_epoch not in [None, ""]:
+            label = "%s · day %d" % (label, (day - start).days)
+        rows.append({"value": "" if offset == 0 else day.strftime("%Y-%m-%d"), "label": label})
+        day = day - timedelta(days=1)
+    return rows
+
+
+def overview_climate(cfg, temp_c, sensors, now_ts):
+    low = float(cfg.get("temp_low_c", 18.0))
+    high = float(cfg.get("temp_high_c", 24.0))
+    scale_low = low - 5.0
+    scale_high = high + 5.0
+    span = max(0.1, scale_high - scale_low)
+    if temp_c is None:
+        status = "none"
+    elif temp_c < low:
+        status = "low"
+    elif temp_c > high:
+        status = "high"
+    else:
+        status = "ok"
+    dev = 0.0
+    if status == "low":
+        dev = low - temp_c
+    elif status == "high":
+        dev = temp_c - high
+    colors = {
+        "ok": ("#35d07f", "#6fe3a5"),
+        "low": ("#7aa7ff", "#a9c4ff"),
+        "high": ("#f0a53a", "#f6c27a"),
+        "none": ("#8a908b", "#b9bcb6"),
+    }
+    if status == "low":
+        short = "%.1f° low" % dev
+        advice = "%.1f °C below target. Check the heaters." % dev
+    elif status == "high":
+        short = "%.1f° high" % dev
+        advice = "%.1f °C above target. Check ventilation and heater settings." % dev
+    elif status == "ok":
+        short = "On target"
+        advice = "Sensor updated %s." % fmt_age_seconds(sensors.get("last_sensor_ts"))
+    else:
+        short = "No reading"
+        advice = "No temperature reading from the Pico."
+    return {
+        "temp_status": status,
+        "temp_status_color": colors[status][0],
+        "temp_status_text_color": colors[status][1],
+        "temp_status_short": short,
+        "temp_advice": advice,
+        "temp_advice_color": "#b9bcb6" if status == "ok" else colors[status][1],
+        "temp_scale_low": "%.0f °C" % scale_low,
+        "temp_scale_high": "%.0f °C" % scale_high,
+        "temp_target_text": "Target %s to %s °C" % (fmt_value(low, "f1"), fmt_value(high, "f1")),
+        "temp_band_left": round((low - scale_low) * 100.0 / span, 1),
+        "temp_band_width": round((high - low) * 100.0 / span, 1),
+        "temp_marker_pct": None if temp_c is None else round(max(0.0, min(100.0, (temp_c - scale_low) * 100.0 / span)), 1),
+    }
+
+
+def overview_rh_gauge(cfg, rh_pct):
+    low = float(cfg.get("rh_low_pct", 40.0))
+    high = float(cfg.get("rh_high_pct", 80.0))
+    scale_low = max(0.0, low - 15.0)
+    scale_high = min(100.0, high + 15.0)
+    span = max(0.1, scale_high - scale_low)
+    if rh_pct is None:
+        advice = ""
+        short, short_color = "No reading", "#b9bcb6"
+    elif rh_pct < low:
+        advice = "Humidity %.0f%% below target." % (low - rh_pct)
+        short, short_color = "%.0f%% low" % (low - rh_pct), "#a9c4ff"
+    elif rh_pct > high:
+        advice = "Humidity %.0f%% above target. Check ventilation." % (rh_pct - high)
+        short, short_color = "%.0f%% high" % (rh_pct - high), "#f6c27a"
+    else:
+        advice = ""
+        short, short_color = "On target", "#6fe3a5"
+    return {
+        "rh_status_short": short,
+        "rh_status_text_color": short_color,
+        "rh_ok": rh_pct is not None and low <= rh_pct <= high,
+        "rh_advice": advice,
+        "rh_scale_low": "%.0f%%" % scale_low,
+        "rh_scale_high": "%.0f%%" % scale_high,
+        "rh_target_text": "Target %.0f to %.0f%% RH" % (low, high),
+        "rh_band_left": round((low - scale_low) * 100.0 / span, 1),
+        "rh_band_width": round((high - low) * 100.0 / span, 1),
+        "rh_marker_pct": None if rh_pct is None else round(max(0.0, min(100.0, (rh_pct - scale_low) * 100.0 / span)), 1),
+    }
+
+
+def feed_fill_pct(feed_kg, capacity_kg):
+    try:
+        feed_kg = float(feed_kg)
+        capacity_kg = float(capacity_kg)
+    except Exception:
+        return None
+    if capacity_kg <= 0:
+        return None
+    return max(0.0, min(100.0, feed_kg * 100.0 / capacity_kg))
+
+
 def build_home_context():
     cfg = load_config()
     state = load_state()
@@ -3047,9 +3435,10 @@ def build_home_context():
         birds_placed_raw = birds_remaining_raw + mortality_total_raw
     birds_display = fmt_value(birds_remaining_raw if birds_remaining_raw > 0 else None, "i")
     if birds_placed_raw > 0:
+        # Always placed first, live in brackets.
         birds_display = "%s (%s)" % (
-            fmt_value(birds_remaining_raw, "i"),
             fmt_value(birds_placed_raw, "i"),
+            fmt_value(birds_remaining_raw, "i"),
         )
     sync_status = state.get("last_sync_status", "") or "No sync yet"
     sync_class = "ok" if "OK" in sync_status else ("warn" if "No sync" in sync_status else "bad")
@@ -3161,7 +3550,12 @@ def build_home_context():
     lighting_badge_class = "lighting-on" if lighting_on else "lighting-off"
     lighting_badge_text = "💡"
 
-    return {
+    layout = shed_plan_layout(cfg)
+    pens = overview_pens(cfg, state.get("entries", {}), state.get("pen_order", []), layout)
+    climate = overview_climate(cfg, temp_c_f, sensors, now_ts)
+    climate.update(overview_rh_gauge(cfg, rh_pct_f))
+
+    ctx = {
         "shed_no": cfg["shed_no"],
         "shed_display_name": shed_display_name_from_number(cfg["shed_no"]),
         "host_ips": host_ipv4_display(),
@@ -3170,7 +3564,8 @@ def build_home_context():
         "refresh_seconds": max(0.25, float(cfg["touch_refresh_seconds"])),
         "sync_status": sync_status,
         "sync_class": sync_class,
-        "sync_short": "%s • %s" % (short_status_text("sync", sync_status), fmt_age_seconds(state.get("last_sync_ts"))),
+        # Status only: the seconds-ago counter flickered on every poll. Sync timing is on the Health page.
+        "sync_short": short_status_text("sync", sync_status),
         "push_status": push_status,
         "push_class": push_class,
         "push_short": short_status_text("push", push_status),
@@ -3217,6 +3612,19 @@ def build_home_context():
         "auger_tiles": auger_tiles,
         "auger_count": len(auger_tiles),
         "lighting_tile": lighting_tile,
+        "pens": pens,
+        "pens_signature": ",".join("%s:%s" % (pen["dest_shed"], pen["can_move"]) for pen in pens),
+        "pen_add_options": overview_pen_add_options(cfg, pens),
+        "mortality_days": mortality_day_options(active_crop_epoch, now_ts),
+        "layout": layout,
+        "feed_kg_live_display": fmt_value(sensors.get("feed_kg_live") if sensors.get("feed_kg_live") is not None else sensors.get("feed_kg"), "f0"),
+        "feed_live_pct": feed_fill_pct(sensors.get("feed_kg_live") if sensors.get("feed_kg_live") is not None else feed_kg_f, cfg.get("feed_capacity_kg")),
+        "clock_hm": datetime.now().strftime("%H:%M"),
+        "crop_subtitle": ("%s birds · Day %s" % (birds_display, fmt_value(oldest_age_days, "i"))) if active_crop_id is not None else "No active crop",
+        "overview_chip_ok": not alarm_rows and climate["temp_status"] == "ok",
+        "overview_chip_text": ("Shed on target" if not alarm_rows and climate["temp_status"] == "ok" else ("%d alarm%s active" % (len(alarm_rows), "" if len(alarm_rows) == 1 else "s") if alarm_rows else "Shed needs a look")),
+        "climate_today": climate_today_display(sensors, now_ts),
+        "feed_capacity_kg": fmt_value(cfg.get("feed_capacity_kg"), "f0"),
         "controller_alerts": controller_alerts,
         "alarm_count": len(alarm_rows),
         "alarm_class": alarm_class,
@@ -3236,6 +3644,8 @@ def build_home_context():
         "last_seen_office_sync_at": fmt_ts(state.get("last_seen_office_sync_ts")),
         "last_seen_office_sync_age": fmt_age_seconds(state.get("last_seen_office_sync_ts")),
     }
+    ctx.update(climate)
+    return ctx
 
 
 def build_water_stream_payload():
@@ -4262,6 +4672,55 @@ def reset_feed_average_state(sensors, clear_published=True):
         sensors["feed_kg"] = None
 
 
+CLIMATE_DAYS_KEPT = 90
+
+
+def update_climate_extremes(sensors, now_ts):
+    day = datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d")
+    days = sensors.get("climate_days")
+    if not isinstance(days, list):
+        days = []
+    if not days or days[-1].get("date") != day:
+        days.append({"date": day})
+    rec = days[-1]
+    for metric, key in [("temp", "temp_c"), ("rh", "rh_pct")]:
+        try:
+            value = float(sensors.get(key))
+        except Exception:
+            continue
+        if rec.get(metric + "_min") is None or value < rec[metric + "_min"]:
+            rec[metric + "_min"] = value
+            rec[metric + "_min_ts"] = now_ts
+        if rec.get(metric + "_max") is None or value > rec[metric + "_max"]:
+            rec[metric + "_max"] = value
+            rec[metric + "_max_ts"] = now_ts
+    sensors["climate_days"] = days[-CLIMATE_DAYS_KEPT:]
+
+
+def climate_day_display(rec):
+    rec = rec or {}
+    return {
+        "date": rec.get("date", ""),
+        "date_label": datetime.strptime(rec["date"], "%Y-%m-%d").strftime("%a %d %b") if rec.get("date") else "--",
+        "temp_min": fmt_value(rec.get("temp_min"), "f1"),
+        "temp_min_at": fmt_clock_ts(rec.get("temp_min_ts")),
+        "temp_max": fmt_value(rec.get("temp_max"), "f1"),
+        "temp_max_at": fmt_clock_ts(rec.get("temp_max_ts")),
+        "rh_min": fmt_value(rec.get("rh_min"), "f0"),
+        "rh_min_at": fmt_clock_ts(rec.get("rh_min_ts")),
+        "rh_max": fmt_value(rec.get("rh_max"), "f0"),
+        "rh_max_at": fmt_clock_ts(rec.get("rh_max_ts")),
+    }
+
+
+def climate_today_display(sensors, now_ts):
+    day = datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d")
+    days = sensors.get("climate_days") or []
+    if days and days[-1].get("date") == day:
+        return climate_day_display(days[-1])
+    return climate_day_display({"date": day})
+
+
 def apply_sensor_packet(state, packet):
     sensors = state.get("sensors", default_sensor_state())
     now_ts = int(time.time())
@@ -4303,6 +4762,9 @@ def apply_sensor_packet(state, packet):
 
     if isinstance(packet.get("alarms"), list) and packet_kind != "checkpoint":
         sensors["alarms"] = packet.get("alarms")
+
+    if packet_kind != "checkpoint" and ("temp_c" in packet or "rh_pct" in packet):
+        update_climate_extremes(sensors, now_ts)
 
     sensors["pico_connected"] = True
     sensors["last_sensor_ts"] = now_ts
@@ -5268,6 +5730,11 @@ HTML = """
             font-size: 28px;
             line-height: 1;
         }
+        .home-buttons {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
         button {
             min-height: 78px;
             width: 100%;
@@ -5574,14 +6041,14 @@ HTML = """
                     <div id="tempTile" class="metric metric-mini {{ temp_glow }}">
                         <div class="metric-label">Temp</div>
                         <div class="metric-val" id="tempValue">{{ temp_c }}</div>
-                        <div class="metric-sub">C</div>
+                        <div class="metric-sub">C · <span id="tempHiLo">H {{ climate_today.temp_max }} / L {{ climate_today.temp_min }}</span></div>
                     </div>
                 </a>
                 <a class="metric-link" href="{{ url_for('rh_settings_view') }}">
                     <div id="rhTile" class="metric metric-mini {{ rh_glow }}">
                         <div class="metric-label">RH</div>
                         <div class="metric-val" id="rhValue">{{ rh_pct }}</div>
-                        <div class="metric-sub">%RH</div>
+                        <div class="metric-sub">%RH · <span id="rhHiLo">H {{ climate_today.rh_max }} / L {{ climate_today.rh_min }}</span></div>
                     </div>
                 </a>
             </div>
@@ -5639,7 +6106,11 @@ HTML = """
         </div>
 
         <div class="main-grid">
-            <div class="panel">
+            <div class="panel home-buttons">
+                <a class="button-link settings-button" href="{{ url_for('index') }}">
+                    <span class="settings-icon">&#9638;</span>
+                    <span>Overview</span>
+                </a>
                 <a class="button-link settings-button" href="{{ url_for('controller_settings_view') }}">
                     <span class="settings-icon">&#9881;</span>
                     <span>Settings</span>
@@ -5701,6 +6172,10 @@ HTML = """
             if (document.getElementById('alarmPill')) setPillClass('alarmPill', data.alarm_class);
             setText('tempValue', data.temp_c);
             setText('rhValue', data.rh_pct);
+            if (data.climate_today) {
+                setText('tempHiLo', 'H ' + data.climate_today.temp_max + ' / L ' + data.climate_today.temp_min);
+                setText('rhHiLo', 'H ' + data.climate_today.rh_max + ' / L ' + data.climate_today.rh_min);
+            }
             setText('waterValue', data.water_lpm);
             setText('feedValue', data.feed_kg);
             setText('water7to7Value', data.water_7to7);
@@ -5823,6 +6298,863 @@ HTML = """
 """
 
 
+OVERVIEW_HTML = """
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>{{ shed_display_name }} Overview</title>
+    <meta name="cdf-theme-native" content="1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@500;600&display=swap">
+    <style>
+        :root {
+            --page: #2b2e2c;
+            --card: #343835;
+            --card-2: #3a3e3b;
+            --rule: #454a46;
+            --track: #4a4f4b;
+            --text: #ecebe6;
+            --muted: #b9bcb6;
+            --soft: #d7d8d3;
+            --green: #35d07f;
+            --amber: #f0a53a;
+            --red: #ff7777;
+            --blue: #7aa7ff;
+            --water: #5fd0d8;
+            --feed: #d9b86a;
+            --steel: #b8bdb6;
+            --wall: #7a807a;
+        }
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: var(--page);
+            color: var(--text);
+            font-family: "Barlow", "Helvetica Neue", Helvetica, sans-serif;
+        }
+        .cond { font-family: "Barlow Semi Condensed", "Barlow", "Helvetica Neue", Helvetica, sans-serif; }
+        .page { display: flex; flex-direction: column; min-height: 100vh; }
+
+        .topbar {
+            min-height: 76px; padding: 10px 28px; display: flex; align-items: center;
+            justify-content: space-between; gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--rule);
+        }
+        .topbar-left { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+        .topbar-left .subtitle { line-height: 1; }
+        .shed-title { font-size: 30px; font-weight: 600; line-height: 1; }
+        .crop-badge {
+            padding: 8px 18px; border-radius: 12px; border: 2px solid var(--rule);
+            transition: border-color 0.4s, box-shadow 0.4s;
+        }
+        .crop-badge.active { border-color: #35d07f; box-shadow: 0 0 6px rgba(53,208,127,0.5), 0 0 14px rgba(53,208,127,0.25); }
+        .crop-badge.inactive { border-color: #ff5b5b; box-shadow: 0 0 6px rgba(255,91,91,0.5), 0 0 14px rgba(255,91,91,0.25); }
+        .subtitle { font-size: 18px; color: var(--muted); }
+        .topbar-right { display: flex; align-items: center; gap: 24px; }
+        .chip { padding: 8px 16px; border-radius: 999px; color: var(--page); font-size: 17px; font-weight: 600; white-space: nowrap; }
+        .chip.ok { background: var(--green); }
+        .chip.attention { background: var(--amber); }
+        .sync { display: flex; align-items: center; gap: 8px; font-size: 16px; color: var(--muted); white-space: nowrap; }
+        .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--amber); }
+        .dot.ok { background: var(--green); }
+        .dot.bad { background: var(--red); }
+        .clock { font-size: 30px; font-weight: 500; }
+
+        .banners { padding: 0 24px; }
+        .banner { margin-top: 12px; padding: 10px 14px; border-radius: 12px; background: var(--card); font-size: 16px; font-weight: 600; }
+        .banner.warn { color: #f6c27a; border: 1px solid var(--amber); }
+        .banner.error { color: #ffb0b0; border: 1px solid var(--red); }
+        .banner.info { color: var(--soft); border: 1px solid var(--rule); }
+
+        .body { flex: 1; padding: 20px 24px; display: flex; gap: 20px; align-items: stretch; }
+        .plan-wrap { flex: 0 1 836px; min-width: 0; }
+        .plan-stage-box { position: relative; width: 100%; }
+        .stage { position: absolute; left: 0; top: 0; width: 836px; height: 480px; transform-origin: 0 0; }
+        .abs { position: absolute; }
+
+
+        .climate-card {
+            top: 0; height: 86px; padding: 8px 14px; border-radius: 14px; background: var(--card);
+            border: 2px solid var(--rule); display: flex; flex-direction: column; justify-content: center; gap: 2px;
+            color: var(--text); text-decoration: none;
+        }
+        .climate-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+        .glowable { transition: border-color 0.3s, box-shadow 0.3s; }
+        .glowable.temp-green, .glowable.flow-green, .glowable.feed-green, .glowable.state-green {
+            border-color: #35d07f;
+            box-shadow: 0 0 8px rgba(53,208,127,0.75), 0 0 16px rgba(53,208,127,0.45), 0 0 28px rgba(53,208,127,0.22);
+        }
+        .glowable.temp-warn, .glowable.state-warn {
+            border-color: #ffd06a;
+            box-shadow: 0 0 8px rgba(255,208,106,0.75), 0 0 16px rgba(255,208,106,0.45), 0 0 28px rgba(255,208,106,0.22);
+        }
+        .glowable.temp-red, .glowable.flow-red, .glowable.feed-red, .glowable.state-red {
+            border-color: #ff5b5b;
+            box-shadow: 0 0 8px rgba(255,91,91,0.75), 0 0 16px rgba(255,91,91,0.45), 0 0 28px rgba(255,91,91,0.22);
+        }
+        .card-label { font-size: 15px; color: var(--soft); }
+        .temp-val { font-size: 44px; font-weight: 600; line-height: 1; }
+        .climate-body { display: flex; align-items: center; gap: 6px; }
+        .climate-body .unit { align-self: flex-end; margin-bottom: 4px; }
+        .hilo-stack { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; font-size: 14px; color: var(--muted); line-height: 1.15; }
+        .hilo-stack b { color: var(--text); font-weight: 600; }
+        .unit { font-size: 22px; color: var(--muted); }
+        .hilo { font-size: 14px; color: var(--muted); margin-top: 4px; }
+        .temp-right { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; text-align: right; }
+        .rh-val { font-size: 20px; font-weight: 600; color: var(--text); text-decoration: none; }
+        .temp-status { font-size: 14px; font-weight: 600; }
+
+        .water-card {
+            top: 0; height: 86px; padding: 8px 16px; border-radius: 14px;
+            background: var(--card); display: flex; flex-direction: column; justify-content: center; gap: 2px;
+            color: var(--text); text-decoration: none; border: 2px solid transparent;
+        }
+        .water-ring { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--water); }
+        .water-val { font-size: 36px; font-weight: 600; line-height: 1.05; }
+
+        .bin {
+            left: 16px; top: 150px; width: 124px; height: 124px; border-radius: 50%; border: 4px solid var(--steel);
+            background: var(--card-2); overflow: hidden; box-shadow: 6px 8px 0 rgba(0,0,0,0.3); display: block; color: var(--text); text-decoration: none;
+        }
+        .bin-fill { position: absolute; left: 0; right: 0; bottom: 0; background: rgba(217,184,106,0.38); transition: height 0.6s; }
+        .bin-cap { position: absolute; left: 50%; top: 30%; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: var(--steel); }
+        .bin-readout { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; padding-bottom: 14px; line-height: 1.05; }
+        .bin-kg { font-size: 22px; font-weight: 600; }
+        .bin-kg-unit { font-size: 14px; font-weight: 500; margin-left: 2px; }
+        .bin-pct { font-size: 17px; font-weight: 600; color: var(--soft); }
+        .bin-label-sub { font-size: 14px; color: var(--muted); }
+        .bin-label { width: 156px; text-align: center; }
+        .bin-label-name { font-size: 16px; font-weight: 600; }
+        .bin-label-kg { font-size: 22px; font-weight: 600; }
+        .feed-pipe { width: 36px; height: 6px; background: var(--feed); }
+
+        .shed {
+            left: 170px; top: 190px; width: 650px; height: 330px; border: 6px solid var(--wall); border-radius: 6px; overflow: hidden;
+            background-color: #c9a458;
+            background-image:
+                repeating-linear-gradient(28deg, rgba(255,236,170,0.35) 0px, rgba(255,236,170,0.35) 2px, transparent 2px, transparent 9px),
+                repeating-linear-gradient(-34deg, rgba(120,88,30,0.28) 0px, rgba(120,88,30,0.28) 2px, transparent 2px, transparent 13px),
+                repeating-linear-gradient(72deg, rgba(240,214,140,0.4) 0px, rgba(240,214,140,0.4) 1px, transparent 1px, transparent 17px),
+                repeating-linear-gradient(-80deg, rgba(150,112,44,0.22) 0px, rgba(150,112,44,0.22) 3px, transparent 3px, transparent 23px);
+            box-shadow: 8px 10px 0 rgba(0,0,0,0.3);
+        }
+        .shed.lights-off { filter: brightness(0.62) saturate(0.8); }
+        .pen { position: absolute; top: 0; height: 318px; display: flex; align-items: center; justify-content: center; }
+        .pen.divided { border-right: 3px dashed #5a4722; }
+        .pen-card {
+            max-width: calc(100% - 16px); padding: 14px 18px; border-radius: 12px; background: rgba(38,41,39,0.92);
+            display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center;
+        }
+        .pen-name { font-size: 30px; font-weight: 600; line-height: 1.05; color: var(--text); text-decoration: none; }
+        .pen-birds { font-size: 18px; color: var(--soft); }
+        .pen-card { color: var(--text); text-decoration: none; }
+        .pen-card:active { transform: scale(0.98); }
+        .shed-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; }
+        .add-corner { position: absolute; bottom: 12px; z-index: 2; }
+        .add-btn {
+            width: 52px; height: 52px; border-radius: 50%; border: 3px solid var(--text); background: rgba(38,41,39,0.92);
+            color: var(--text); font-family: inherit; font-size: 34px; font-weight: 500; line-height: 1; cursor: pointer;
+            display: flex; align-items: center; justify-content: center; padding: 0 0 4px; opacity: 0.5;
+        }
+        .add-btn:active { transform: scale(0.95); }
+        .add-btn-big { width: 96px; height: 96px; font-size: 64px; padding-bottom: 8px; }
+        .add-hint { padding: 8px 14px; border-radius: 10px; background: rgba(38,41,39,0.92); font-size: 16px; color: var(--soft); }
+
+        .modal { position: fixed; inset: 0; z-index: 50; background: rgba(20,22,21,0.72); display: none; align-items: center; justify-content: center; padding: 16px; }
+        .modal.open { display: flex; }
+        .modal-card { width: 100%; max-width: 560px; max-height: calc(100vh - 32px); overflow-y: auto; padding: 22px; border-radius: 16px; background: var(--card); border: 1px solid var(--rule); display: flex; flex-direction: column; gap: 16px; }
+        .modal-title { font-size: 28px; font-weight: 600; }
+        .modal-sub { font-size: 16px; color: var(--muted); margin-top: -10px; }
+        .field-label { font-size: 15px; color: var(--soft); margin-bottom: 8px; }
+        .shed-choices { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; }
+        .shed-choice input { position: absolute; opacity: 0; pointer-events: none; }
+        .shed-choice span {
+            display: flex; align-items: center; justify-content: center; min-height: 52px; border-radius: 10px;
+            border: 1px solid #5d635e; background: var(--card-2); font-size: 18px; font-weight: 600; cursor: pointer;
+        }
+        .shed-choice input:checked + span { background: var(--text); color: var(--page); border-color: var(--text); }
+        .shed-choice input:focus-visible + span { outline: 3px solid var(--text); outline-offset: 2px; }
+        .modal input[type="number"] {
+            width: 100%; min-height: 60px; padding: 0 16px; border-radius: 10px; border: 1px solid #5d635e;
+            background: var(--card-2); color: var(--text); font-family: inherit; font-size: 26px; font-weight: 600;
+        }
+        .modal-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .modal-actions button { min-height: 56px; border-radius: 12px; font-family: inherit; font-size: 18px; font-weight: 600; cursor: pointer; }
+        .btn-primary { border: 0; background: var(--text); color: var(--page); }
+        .btn-secondary { border: 1px solid #5d635e; background: var(--card-2); color: var(--text); }
+
+        .door { width: 10px; background: repeating-linear-gradient(45deg, var(--amber) 0px, var(--amber) 8px, var(--page) 8px, var(--page) 16px); }
+        .door-tick { background: var(--text); }
+        .door-label { width: 126px; }
+        .end-label { top: 528px; font-size: 14px; color: var(--muted); }
+
+        .panel {
+            flex: 1 1 360px; min-width: 300px; padding: 16px 20px; border-radius: 14px; background: var(--card);
+            display: flex; flex-direction: column; gap: 10px;
+        }
+        .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+        .panel-title { font-size: 24px; font-weight: 600; }
+        .panel-chip { padding: 5px 12px; border-radius: 999px; font-size: 15px; font-weight: 600; color: var(--page); white-space: nowrap; }
+        .gauge { position: relative; height: 22px; }
+        .gauge-track { position: absolute; left: 0; right: 0; top: 6px; height: 10px; border-radius: 5px; background: var(--track); }
+        .gauge-band { position: absolute; top: 6px; height: 10px; background: rgba(53,208,127,0.55); }
+        .gauge-marker { position: absolute; top: 0; width: 4px; height: 22px; margin-left: -2px; border-radius: 2px; background: var(--text); transition: left 0.6s; }
+        .gauge-scale { display: flex; justify-content: space-between; gap: 8px; font-size: 14px; color: var(--muted); }
+        .advice { font-size: 15px; line-height: 1.3; }
+        .gauge-block { display: flex; flex-direction: column; gap: 3px; }
+        .gauge-title { font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+        .rule { height: 1px; background: var(--track); }
+        .row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+        .row-label { font-size: 15px; color: var(--muted); }
+        .row-big { font-size: 28px; font-weight: 600; }
+        .row-mid { font-size: 24px; font-weight: 600; }
+        .row-small { font-size: 15px; }
+        .row-link { color: inherit; text-decoration: none; }
+        .pen-table { display: grid; grid-template-columns: 1fr auto auto; column-gap: 22px; row-gap: 4px; font-size: 15px; }
+        .pen-table > :nth-child(3n+2), .pen-table > :nth-child(3n+3) { text-align: right; }
+        .pen-table-head { font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+        .mort-select {
+            min-height: 42px; width: 100%; padding: 0 10px; border-radius: 10px; border: 1px solid #5d635e;
+            background: var(--card-2); color: var(--text); font-family: inherit; font-size: 16px; font-weight: 600;
+        }
+        .mort-open {
+            min-height: 52px; width: 100%; border: 1px solid #8a908b; border-radius: 12px; background: var(--card-2);
+            color: var(--text); font-family: inherit; font-size: 18px; font-weight: 600; cursor: pointer;
+        }
+        .note { font-size: 14px; color: var(--muted); }
+        .equip { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-top: 8px; }
+        .equip-item { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border-radius: 12px; background: var(--card); border: 2px solid var(--rule); color: var(--text); text-decoration: none; }
+        a.equip-item:active { background: var(--card-2); }
+        .panel .equip-item { background: var(--card-2); }
+        .equip-head { display: flex; align-items: center; gap: 8px; font-size: 16px; }
+        .equip-name { font-weight: 600; }
+        .equip-status { margin-left: auto; font-weight: 600; }
+        .equip-time { font-size: 14px; color: var(--muted); }
+        .equip-time:empty { display: none; }
+        .equip-item .dot { background: var(--amber); }
+        .equip-item.state-green .dot { background: var(--green); }
+        .equip-item.state-red .dot { background: var(--red); }
+
+        .nav { padding: 0 24px 16px; display: flex; gap: 12px; }
+        .nav a {
+            flex: 1 1 0; min-height: 56px; display: flex; align-items: center; justify-content: center; gap: 8px; text-align: center;
+            border: 1px solid #5d635e; border-radius: 12px; background: var(--card); color: var(--text);
+            font-size: 18px; font-weight: 500; text-decoration: none; padding: 0 8px;
+        }
+        .nav a[aria-current="page"] { background: var(--text); color: var(--page); border-color: var(--text); font-weight: 600; }
+        .nav-badge { min-width: 24px; padding: 1px 7px; border-radius: 999px; background: var(--red); color: var(--page); font-size: 14px; font-weight: 600; }
+        a:focus-visible, button:focus-visible { outline: 3px solid var(--text); outline-offset: 2px; }
+
+        @media (min-width: 901px) {
+            /* Kiosk layout: one screen, no page scroll. The shed plan scales to fill
+               whatever space the left column has; the panel scrolls if it ever overflows. */
+            .page { height: 100vh; min-height: 0; }
+            .body { min-height: 0; }
+            .plan-wrap { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+            .plan-stage-box { flex: 1 1 auto; min-height: 0; }
+            .panel { flex: 0 0 340px; min-width: 0; overflow-y: auto; padding: 14px 18px; gap: 8px; }
+            /* Compact right panel so it fits short kiosk screens without scrolling. */
+            .panel .panel-title { font-size: 21px; }
+            .panel .panel-chip { padding: 3px 10px; font-size: 14px; }
+            .panel .gauge { height: 18px; }
+            .panel .gauge-track, .panel .gauge-band { top: 5px; height: 8px; }
+            .panel .gauge-marker { height: 18px; }
+            .panel .gauge-scale { font-size: 12px; }
+            .panel .gauge-title { font-size: 11px; }
+            .panel .advice { font-size: 14px; }
+            .panel .row-label { font-size: 14px; }
+            .panel .row-big { font-size: 23px; }
+            .panel .row-mid { font-size: 19px; }
+            .panel .pen-table { font-size: 14px; row-gap: 2px; }
+            .panel .mort-open { min-height: 44px; font-size: 16px; }
+            .panel .equip-item { padding: 8px 12px; }
+        }
+        @media (max-width: 900px) {
+            .topbar { padding: 10px 16px; }
+            .shed-title { font-size: 28px; }
+            .clock { font-size: 24px; }
+            .body { flex-direction: column; padding: 16px; }
+            .plan-wrap, .panel { flex: none; width: 100%; min-width: 0; }
+            .nav { padding: 0 16px 16px; flex-wrap: wrap; }
+            .nav a { flex: 1 1 30%; font-size: 16px; }
+            .banners { padding: 0 16px; }
+        }
+    </style>
+</head>
+<body>
+<div class="page">
+    <header class="topbar">
+        <div class="topbar-left crop-badge {{ crop_class }}" id="shedTitle">
+            <div class="shed-title cond">{{ shed_display_name }}</div>
+            <div class="subtitle" id="cropSubtitle">{{ crop_subtitle }}</div>
+        </div>
+        <div class="topbar-right">
+            <div id="overviewChip" class="chip {% if overview_chip_ok %}ok{% else %}attention{% endif %}">{{ overview_chip_text }}</div>
+            <div class="sync"><span id="syncDot" class="dot {{ sync_class }}"></span><span id="syncValue">Office sync {{ sync_short }}</span></div>
+            <div class="clock cond" id="clockValue">{{ clock_hm }}</div>
+        </div>
+    </header>
+
+    <div class="banners">
+        {% if msg and not hide_home_alerts %}<div class="banner {% if ok %}info{% else %}error{% endif %} auto-dismiss">{{ msg }}</div>{% endif %}
+        {% if not hide_home_alerts %}
+        <div id="offlineBanner" class="banner warn" {% if not offline_banner %}style="display:none"{% endif %}>{{ offline_banner }}</div>
+        <div id="picoFreezeBanner" class="banner error" {% if not pico_warning_banner %}style="display:none"{% endif %}>{{ pico_warning_banner }}</div>
+        <div id="picoRecoveryBanner" class="banner warn" {% if not pico_recovery_banner %}style="display:none"{% endif %}>{{ pico_recovery_banner }}</div>
+        {% endif %}
+    </div>
+
+    <main class="body">
+        <section class="plan-wrap" aria-label="Shed plan">
+            <div class="plan-stage-box" id="stageBox">
+                <div class="stage" id="stage">
+                    <a class="abs climate-card glowable {{ temp_glow }}" id="tempCard" href="{{ url_for('temp_settings_view') }}" style="left: {{ layout.temp_x }}px; width: {{ layout.temp_w }}px">
+                        <div class="climate-head"><span class="card-label">Temperature</span><span class="temp-status" id="tempStatus" style="color: {{ temp_status_text_color }}">{{ temp_status_short }}</span></div>
+                        <div class="climate-body">
+                            <div class="temp-val cond" id="tempValue">{{ temp_c }}</div>
+                            <div class="unit">°C</div>
+                            <div class="hilo-stack" aria-label="Today's high and low">
+                                <span>H <b id="tempHi">{{ climate_today.temp_max }}</b></span>
+                                <span>L <b id="tempLo">{{ climate_today.temp_min }}</b></span>
+                            </div>
+                        </div>
+                    </a>
+
+                    <a class="abs climate-card glowable {{ rh_glow }}" id="rhCard" href="{{ url_for('rh_settings_view') }}" style="left: {{ layout.rh_x }}px; width: {{ layout.rh_w }}px">
+                        <div class="climate-head"><span class="card-label">Humidity</span><span class="temp-status" id="rhStatus" style="color: {{ rh_status_text_color }}">{{ rh_status_short }}</span></div>
+                        <div class="climate-body">
+                            <div class="temp-val cond" id="rhValue">{{ rh_pct }}</div>
+                            <div class="unit">%RH</div>
+                            <div class="hilo-stack" aria-label="Today's high and low">
+                                <span>H <b id="rhHi">{{ climate_today.rh_max }}</b></span>
+                                <span>L <b id="rhLo">{{ climate_today.rh_min }}</b></span>
+                            </div>
+                        </div>
+                    </a>
+
+                    <a class="abs water-card glowable {{ water_glow }}" id="waterCard" href="{{ url_for('water_settings_view') }}" style="left: {{ layout.water_x }}px; width: {{ layout.water_w }}px">
+                        <div style="display: flex; align-items: center; gap: 8px" class="card-label"><span class="water-ring"></span><span>Water now</span></div>
+                        <div class="water-val cond"><span id="waterValue">{{ water_lpm }}</span> L/min</div>
+                    </a>
+
+                    <div class="abs feed-pipe" style="left: {{ layout.pipe_x }}px; top: {{ layout.pipe_y }}px"></div>
+                    <a class="abs bin glowable {{ feed_glow }}" id="binCircle" href="{{ url_for('feed_settings_view') }}" aria-label="Feed bin {{ feed_kg }} kg" style="left: {{ layout.bin_x }}px; top: {{ layout.bin_y }}px">
+                        <div class="bin-fill" id="binFill" style="height: {{ (feed_live_pct or 0)|round(0) }}%"></div>
+                        <div class="bin-cap"></div>
+                        <div class="bin-readout">
+                            <div class="bin-kg cond"><span id="binLiveKg">{{ feed_kg_live_display }}</span><span class="bin-kg-unit">kg</span></div>
+                            <div class="bin-pct cond" id="binPct">{% if feed_live_pct is not none %}{{ feed_live_pct|round(0)|int }}%{% else %}--{% endif %}</div>
+                        </div>
+                    </a>
+                    <div class="abs bin-label" style="left: {{ layout.bin_label_x }}px; top: {{ layout.bin_label_y }}px">
+                        <div class="bin-label-name">Feed bin</div>
+                        <div class="bin-label-sub">Live weight</div>
+                    </div>
+
+                    <div class="abs shed {% if lighting_tile and not lighting_on %}lights-off{% endif %}" id="shedFloor" style="left: {{ layout.shed_x }}px; top: {{ layout.shed_y }}px; width: {{ layout.shed_w }}px; height: {{ layout.shed_h }}px">
+                        {% for pen in pens %}
+                        <div class="pen {% if pen.divided %}divided{% endif %}" style="left: {{ pen.left }}px; width: {{ pen.width }}px">
+                            <a class="pen-card" href="{{ url_for('allocation_view') }}" aria-label="{{ pen.name }}, open allocation">
+                                <span class="pen-name cond">{{ pen.name }}</span>
+                                <span class="pen-birds"><span data-pen-placed="{{ pen.dest_shed }}">{{ pen.placed_text }}</span> (<span data-pen-birds="{{ pen.dest_shed }}">{{ pen.birds_text }}</span>)</span>
+                            </a>
+                        </div>
+                        {% endfor %}
+                        {% if pens %}
+                        {% if pen_add_options %}
+                        <button type="button" class="add-btn add-corner" style="{{ 'left' if layout.front_left else 'right' }}: 12px" data-side="front" aria-label="Add a pen at the front end">+</button>
+                        <button type="button" class="add-btn add-corner" style="{{ 'right' if layout.front_left else 'left' }}: 12px" data-side="rear" aria-label="Add a pen at the rear end">+</button>
+                        {% endif %}
+                        {% else %}
+                        <div class="shed-empty">
+                            <button type="button" class="add-btn add-btn-big" data-side="rear" aria-label="Add the first pen">+</button>
+                            <div class="add-hint">Shed empty. Tap + to add the first pen.</div>
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    <div class="abs door" style="left: {{ layout.door_x }}px; top: {{ layout.door_y }}px; height: {{ layout.door_h }}px"></div>
+                    <div class="abs door-tick" style="left: {{ layout.tick_x }}px; top: {{ layout.door_y }}px; width: 10px; height: 2px"></div>
+                    <div class="abs door-tick" style="left: {{ layout.tick_x }}px; top: {{ layout.door_y + layout.door_h - 2 }}px; width: 10px; height: 2px"></div>
+                    <div class="abs door-tick" style="left: {{ layout.tick_x + 4 }}px; top: {{ layout.door_y }}px; width: 2px; height: {{ layout.door_h }}px"></div>
+                    <div class="abs door-label" style="left: {{ layout.label_x }}px; top: {{ layout.label_y }}px; text-align: {{ layout.label_align }}">
+                        <div style="font-size: 16px; font-weight: 600">Door</div>
+                    </div>
+                    <div class="abs end-label" style="left: {{ layout.front_label_x }}px; top: {{ layout.end_label_y }}px; width: 80px; text-align: {{ 'left' if layout.front_left else 'right' }}">Front end</div>
+                    <div class="abs end-label" style="left: {{ layout.rear_label_x }}px; top: {{ layout.end_label_y }}px; width: 80px; text-align: {{ 'right' if layout.front_left else 'left' }}">Rear end</div>
+                </div>
+            </div>
+            {% if auger_tiles %}
+            <div class="equip" aria-label="Augers">
+                {% for auger in auger_tiles %}
+                <a class="equip-item glowable {{ auger.glow }}" id="equip-{{ auger.key }}" href="{{ url_for('auger_runs_view') }}" aria-label="{{ auger.label }}, view auger runs">
+                    <div class="equip-head"><span class="dot"></span><span class="equip-name">{{ auger.label }}</span><span class="equip-status" data-equip-status>{{ auger.status }}</span></div>
+                    <div class="equip-time" data-equip-runtime>{{ auger.runtime or '' }}</div>
+                    <div class="equip-time" data-equip-last-run>{{ auger.last_run or '' }}</div>
+                </a>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </section>
+
+        <section class="panel" aria-label="Shed conditions">
+            <div class="panel-head">
+                <div class="panel-title cond">Shed conditions</div>
+                <div class="panel-chip" id="panelChip" style="background: {{ temp_status_color if temp_status != 'ok' or rh_ok else '#f0a53a' }}">{{ 'No reading' if temp_status == 'none' else ('On target' if temp_status == 'ok' and rh_ok else 'Needs a look') }}</div>
+            </div>
+
+            <div class="gauge-block">
+                <div class="gauge-title">Temperature</div>
+                <div class="gauge">
+                    <div class="gauge-track"></div>
+                    <div class="gauge-band" style="left: {{ temp_band_left }}%; width: {{ temp_band_width }}%"></div>
+                    <div class="gauge-marker" id="gaugeMarker" style="left: {{ temp_marker_pct if temp_marker_pct is not none else 0 }}%; {% if temp_marker_pct is none %}display: none{% endif %}"></div>
+                </div>
+                <div class="gauge-scale">
+                    <div>{{ temp_scale_low }}</div>
+                    <div>{{ temp_target_text }}</div>
+                    <div>{{ temp_scale_high }}</div>
+                </div>
+            </div>
+
+            <div class="gauge-block">
+                <div class="gauge-title">Humidity</div>
+                <div class="gauge">
+                    <div class="gauge-track"></div>
+                    <div class="gauge-band" style="left: {{ rh_band_left }}%; width: {{ rh_band_width }}%"></div>
+                    <div class="gauge-marker" id="rhGaugeMarker" style="left: {{ rh_marker_pct if rh_marker_pct is not none else 0 }}%; {% if rh_marker_pct is none %}display: none{% endif %}"></div>
+                </div>
+                <div class="gauge-scale">
+                    <div>{{ rh_scale_low }}</div>
+                    <div>{{ rh_target_text }}</div>
+                    <div>{{ rh_scale_high }}</div>
+                </div>
+            </div>
+
+            <div class="advice" id="tempAdvice" style="color: {{ temp_advice_color }}">{{ temp_advice }}</div>
+            <div class="advice" id="rhAdvice" style="color: #f6c27a; {% if not rh_advice %}display: none{% endif %}">{{ rh_advice }}</div>
+
+            <div class="rule"></div>
+
+            <div style="display: flex; flex-direction: column; gap: 8px">
+                <a class="row row-link" href="{{ url_for('allocation_view') }}">
+                    <div class="row-label">Birds in shed</div>
+                    <div class="row-big cond" id="birdsValue">{{ birds_display }}</div>
+                </a>
+                {% if pens %}
+                <div class="pen-table">
+                    <div class="pen-table-head"></div>
+                    <div class="pen-table-head">Live</div>
+                    <div class="pen-table-head">Mortality</div>
+                    {% for pen in pens|sort(attribute='number_order') %}
+                    <div style="color: var(--muted)">{{ pen.name }}</div>
+                    <a class="row-link" href="{{ url_for('allocation_view') }}" data-pen-birds="{{ pen.dest_shed }}">{{ pen.birds_text }}</a>
+                    <a class="row-link" href="{{ url_for('mortality_view') }}" data-pen-mortality="{{ pen.dest_shed }}">{{ pen.mortality_text }}</a>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+
+            <div class="rule"></div>
+
+            <a class="row row-link" href="{{ url_for('water_history_view') }}">
+                <div class="row-label">Water yesterday 6am to 6am</div>
+                <div class="row-mid cond"><span id="water7to7Value">{{ water_7to7 }}</span> L</div>
+            </a>
+
+            <a class="row row-link" href="{{ url_for('feed_history_view') }}">
+                <div class="row-label">Feed yesterday 6am to 6am</div>
+                <div class="row-mid cond"><span id="feed7to7Value">{{ feed_7to7 }}</span> kg</div>
+            </a>
+
+            <div class="rule"></div>
+
+            {% if pens %}
+            <button type="button" class="mort-open" id="mortOpen">Add mortality</button>
+            {% endif %}
+
+            {% if lighting_tile %}
+            <div class="equip-item glowable {{ lighting_tile.glow }}" id="equip-lighting" style="margin-top: auto">
+                <div class="equip-head"><span class="dot"></span><span class="equip-name">{{ lighting_tile.label }}</span><span class="equip-status" data-equip-status>{{ lighting_tile.status }}</span></div>
+            </div>
+            {% endif %}
+
+        </section>
+    </main>
+
+    <div class="modal" id="addPenModal" role="dialog" aria-modal="true" aria-labelledby="addPenTitle">
+        <form class="modal-card" method="post" action="{{ url_for('add_pen') }}">
+            <div class="modal-title cond" id="addPenTitle">Add pen</div>
+            <div class="modal-sub" id="addPenSub">At the rear end of the shed</div>
+            <input type="hidden" name="side" id="addPenSide" value="rear">
+            <input type="hidden" name="return_to" value="index">
+            <fieldset style="border: 0; margin: 0; padding: 0">
+                <legend class="field-label">Which shed are these birds for?</legend>
+                <div class="shed-choices">
+                    {% for opt in pen_add_options %}
+                    <label class="shed-choice">
+                        <input type="radio" name="dest_shed" value="{{ opt.dest_shed }}" required {% if opt.is_home %}checked{% endif %}>
+                        <span>{{ opt.label }}</span>
+                    </label>
+                    {% endfor %}
+                </div>
+            </fieldset>
+            <div>
+                <label class="field-label" for="addPenBirds" style="display: block">Birds placed</label>
+                <input type="number" id="addPenBirds" name="placed_bird_count" min="1" step="1" inputmode="numeric" required>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn-secondary" id="addPenCancel">Cancel</button>
+                <button type="submit" class="btn-primary">Add pen</button>
+            </div>
+        </form>
+    </div>
+
+    {% if pens %}
+    <div class="modal" id="mortModal" role="dialog" aria-modal="true" aria-labelledby="mortTitle">
+        <form class="modal-card" id="mortForm" method="post" action="{{ url_for('mortality_add_view') }}">
+            <div class="modal-title cond" id="mortTitle">Add mortality</div>
+            <div class="modal-sub"><a class="row-link" href="{{ url_for('mortality_view') }}">View mortality history</a></div>
+            <input type="hidden" name="return_to" value="index">
+            <fieldset style="border: 0; margin: 0; padding: 0">
+                <legend class="field-label">Which pen?</legend>
+                <div class="shed-choices">
+                    {% for pen in pens|sort(attribute='number_order') %}
+                    <label class="shed-choice">
+                        <input type="radio" name="dest_shed" value="{{ pen.dest_shed }}" required {% if loop.first %}checked{% endif %}>
+                        <span>{{ pen.name }}</span>
+                    </label>
+                    {% endfor %}
+                </div>
+            </fieldset>
+            <div>
+                <label class="field-label" for="mortDay" style="display: block">Day</label>
+                <select id="mortDay" name="mortality_date" class="mort-select">
+                    {% for day in mortality_days %}<option value="{{ day.value }}">{{ day.label }}</option>{% endfor %}
+                </select>
+            </div>
+            <div>
+                <label class="field-label" for="mortBirds" style="display: block">Birds lost</label>
+                <input type="number" id="mortBirds" name="bird_loss" min="1" step="1" inputmode="numeric" required>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn-secondary" id="mortCancel">Cancel</button>
+                <button type="submit" class="btn-primary">Record</button>
+            </div>
+        </form>
+    </div>
+    {% endif %}
+
+    <nav class="nav" aria-label="Controller pages">
+        <a href="{{ url_for('index') }}" aria-current="page">Overview</a>
+        <a href="{{ url_for('controller_alarms_view') }}">Alarms <span class="nav-badge" id="alarmBadge" {% if not alarm_count %}style="display:none"{% endif %}>{{ alarm_count }}</span></a>
+        <a href="{{ url_for('climate_history_view') }}">Trends</a>
+        <a href="{{ url_for('feed_history_view') }}">Feed and water log</a>
+        <a href="{{ url_for('classic_view') }}">Classic view</a>
+        <a href="{{ url_for('controller_settings_view') }}">Settings</a>
+    </nav>
+</div>
+<script>
+    const controllerPollMs = {{ refresh_seconds * 1000 }};
+    const pensSignature = {{ pens_signature|tojson }};
+    const glowClasses = ['temp-green', 'temp-warn', 'temp-red', 'flow-green', 'flow-red', 'feed-green', 'feed-red', 'state-green', 'state-warn', 'state-red'];
+
+    const mortModal = document.getElementById('mortModal');
+    if (mortModal) {
+        document.getElementById('mortOpen').addEventListener('click', () => mortModal.classList.add('open'));
+        document.getElementById('mortCancel').addEventListener('click', () => mortModal.classList.remove('open'));
+        mortModal.addEventListener('click', (event) => { if (event.target === mortModal) mortModal.classList.remove('open'); });
+        document.getElementById('mortForm').addEventListener('submit', (event) => {
+            const day = document.getElementById('mortDay');
+            if (day.value) {
+                const pen = document.querySelector('#mortForm input[name="dest_shed"]:checked');
+                const penName = pen ? pen.parentElement.textContent.trim() : '';
+                const birds = document.getElementById('mortBirds').value;
+                if (!confirm('Record ' + birds + ' mortality in ' + penName + ' for ' + day.options[day.selectedIndex].text + '?')) event.preventDefault();
+            }
+        });
+    }
+
+    const addPenModal = document.getElementById('addPenModal');
+    function openAddPen(side) {
+        document.getElementById('addPenSide').value = side;
+        document.getElementById('addPenSub').textContent = {{ (not pens)|tojson }}
+            ? 'First pen in the shed'
+            : (side === 'front' ? 'At the front end of the shed, before ' : 'At the rear end of the shed, after ') + (side === 'front' ? {{ (pens[0].name if pens else '')|tojson }} : {{ (pens[-1].name if pens else '')|tojson }});
+        addPenModal.classList.add('open');
+    }
+    function closeAddPen() {
+        addPenModal.classList.remove('open');
+    }
+    document.querySelectorAll('.add-btn').forEach(btn => btn.addEventListener('click', () => openAddPen(btn.dataset.side)));
+    document.getElementById('addPenCancel').addEventListener('click', closeAddPen);
+    addPenModal.addEventListener('click', (event) => { if (event.target === addPenModal) closeAddPen(); });
+
+    function fitStage() {
+        const box = document.getElementById('stageBox');
+        const stage = document.getElementById('stage');
+        if (window.innerWidth > 900) {
+            box.style.height = '';
+            const scale = Math.max(0.4, Math.min(box.clientWidth / 836, box.clientHeight / 480));
+            const left = Math.max(0, (box.clientWidth - 836 * scale) / 2);
+            const top = Math.max(0, (box.clientHeight - 480 * scale) / 2);
+            stage.style.transform = 'translate(' + left + 'px, ' + top + 'px) scale(' + scale + ')';
+            return;
+        }
+        const scale = Math.min(1.4, box.clientWidth / 836);
+        stage.style.transform = 'scale(' + scale + ')';
+        box.style.height = (480 * scale) + 'px';
+    }
+    window.addEventListener('resize', fitStage);
+    fitStage();
+
+    function setText(id, value) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = (value === undefined || value === null) ? '--' : value;
+    }
+    function setClass(el, cls, options) {
+        if (!el) return;
+        options.forEach(name => el.classList.remove(name));
+        if (cls) el.classList.add(cls);
+    }
+    function toggleBanner(id, text) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.style.display = text ? '' : 'none';
+        el.textContent = text || '';
+    }
+
+    function render(d) {
+        if ((d.pens_signature || '') !== pensSignature && !addPenModal.classList.contains('open') && !(mortModal && mortModal.classList.contains('open'))) {
+            window.location.reload();
+            return;
+        }
+        setText('cropSubtitle', d.crop_subtitle);
+        setClass(document.getElementById('shedTitle'), d.crop_class, ['active', 'inactive']);
+        setText('clockValue', d.clock_hm);
+        setText('syncValue', 'Office sync ' + (d.sync_short || '--'));
+        setClass(document.getElementById('syncDot'), d.sync_class, ['ok', 'warn', 'bad']);
+        const chip = document.getElementById('overviewChip');
+        setClass(chip, d.overview_chip_ok ? 'ok' : 'attention', ['ok', 'attention']);
+        setText('overviewChip', d.overview_chip_text);
+
+        setText('tempValue', d.temp_c);
+        setText('rhValue', d.rh_pct);
+        if (d.climate_today) {
+            setText('tempHi', d.climate_today.temp_max);
+            setText('tempLo', d.climate_today.temp_min);
+            setText('rhHi', d.climate_today.rh_max);
+            setText('rhLo', d.climate_today.rh_min);
+        }
+        setClass(document.getElementById('tempCard'), d.temp_glow, glowClasses);
+        setClass(document.getElementById('rhCard'), d.rh_glow, glowClasses);
+        const status = document.getElementById('tempStatus');
+        status.textContent = d.temp_status_short;
+        status.style.color = d.temp_status_text_color;
+        const rhStatus = document.getElementById('rhStatus');
+        rhStatus.textContent = d.rh_status_short;
+        rhStatus.style.color = d.rh_status_text_color;
+        const panelChip = document.getElementById('panelChip');
+        panelChip.style.background = (d.temp_status === 'ok' && !d.rh_ok) ? '#f0a53a' : d.temp_status_color;
+        panelChip.textContent = d.temp_status === 'none' ? 'No reading' : ((d.temp_status === 'ok' && d.rh_ok) ? 'On target' : 'Needs a look');
+        const rhMarker = document.getElementById('rhGaugeMarker');
+        if (d.rh_marker_pct === null || d.rh_marker_pct === undefined) {
+            rhMarker.style.display = 'none';
+        } else {
+            rhMarker.style.display = '';
+            rhMarker.style.left = d.rh_marker_pct + '%';
+        }
+        const rhAdvice = document.getElementById('rhAdvice');
+        rhAdvice.style.display = d.rh_advice ? '' : 'none';
+        rhAdvice.textContent = d.rh_advice || '';
+        const marker = document.getElementById('gaugeMarker');
+        if (d.temp_marker_pct === null || d.temp_marker_pct === undefined) {
+            marker.style.display = 'none';
+        } else {
+            marker.style.display = '';
+            marker.style.left = d.temp_marker_pct + '%';
+        }
+        const advice = document.getElementById('tempAdvice');
+        advice.textContent = d.temp_advice;
+        advice.style.color = d.temp_advice_color;
+
+        setText('waterValue', d.water_lpm);
+        setClass(document.getElementById('waterCard'), d.water_glow, glowClasses);
+
+        setText('binLiveKg', d.feed_kg_live_display);
+        const livePct = d.feed_live_pct === null || d.feed_live_pct === undefined ? null : d.feed_live_pct;
+        setText('binPct', livePct === null ? '--' : Math.round(livePct) + '%');
+        document.getElementById('binFill').style.height = (livePct || 0) + '%';
+        setClass(document.getElementById('binCircle'), d.feed_glow, glowClasses);
+        setText('water7to7Value', d.water_7to7);
+        setText('feed7to7Value', d.feed_7to7);
+
+        setText('birdsValue', d.birds_display || d.total_birds);
+        setText('mortalityValue', d.mortality_total);
+        (d.pens || []).forEach(pen => {
+            document.querySelectorAll('[data-pen-birds="' + pen.dest_shed + '"]').forEach(el => { el.textContent = pen.birds_text; });
+            document.querySelectorAll('[data-pen-placed="' + pen.dest_shed + '"]').forEach(el => { el.textContent = pen.placed_text; });
+            document.querySelectorAll('[data-pen-mortality="' + pen.dest_shed + '"]').forEach(el => { el.textContent = pen.mortality_text; });
+        });
+
+        const shed = document.getElementById('shedFloor');
+        if (d.lighting_tile) setClass(shed, d.lighting_on ? '' : 'lights-off', ['lights-off']);
+
+        (d.auger_tiles || []).forEach(auger => {
+            const item = document.getElementById('equip-' + auger.key);
+            setClass(item, auger.glow, glowClasses);
+            if (item) {
+                item.querySelector('[data-equip-status]').textContent = auger.status;
+                item.querySelector('[data-equip-runtime]').textContent = auger.runtime || '';
+                item.querySelector('[data-equip-last-run]').textContent = auger.last_run || '';
+            }
+        });
+        if (d.lighting_tile) {
+            const item = document.getElementById('equip-lighting');
+            setClass(item, d.lighting_tile.glow, glowClasses);
+            if (item) item.querySelector('[data-equip-status]').textContent = d.lighting_tile.status;
+        }
+
+        const badge = document.getElementById('alarmBadge');
+        badge.style.display = d.alarm_count ? '' : 'none';
+        badge.textContent = d.alarm_count;
+
+        toggleBanner('offlineBanner', d.offline_banner);
+        toggleBanner('picoFreezeBanner', d.pico_warning_banner);
+        toggleBanner('picoRecoveryBanner', d.pico_recovery_banner);
+    }
+
+    setTimeout(() => {
+        document.querySelectorAll('.auto-dismiss').forEach(el => { el.style.display = 'none'; });
+    }, 10000);
+
+    async function poll() {
+        try {
+            const resp = await fetch('/api/home-state', { cache: 'no-store' });
+            if (!resp.ok) return;
+            render(await resp.json());
+        } catch (err) {
+        }
+    }
+    setInterval(poll, controllerPollMs);
+
+    if (window.EventSource) {
+        const waterSource = new EventSource('/api/water-stream');
+        waterSource.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                setText('waterValue', data.water_lpm);
+                setClass(document.getElementById('waterCard'), data.water_glow, glowClasses);
+            } catch (err) {
+            }
+        };
+    }
+</script>
+</body>
+</html>
+"""
+
+
+CLIMATE_HISTORY_HTML = """
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Shed {{ shed_no }} Daily High Low</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <style>
+        :root {
+            --bg: #5b5b5b;
+            --panel: rgba(115, 115, 115, 0.96);
+            --panel-2: rgba(104, 104, 104, 0.98);
+            --line: #858585;
+            --text: #ececec;
+            --muted: #d2d2d2;
+            --red: #ff7777;
+            --blue: #84d0ff;
+        }
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        body { margin: 0; min-height: 100vh; color: var(--text); background: var(--bg); font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; }
+        .wrap { width: 100%; max-width: 1024px; margin: 0 auto; padding: 16px; }
+        .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 20px; padding: 16px; margin-bottom: 14px; }
+        h1 { margin: 0 0 4px; font-size: 30px; }
+        .sub { color: var(--muted); font-size: 15px; }
+        table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+        th, td { padding: 10px 8px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+        th:first-child, td:first-child { text-align: left; }
+        th { font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+        td { font-size: 19px; font-weight: 700; }
+        .hi { color: var(--red); }
+        .lo { color: var(--blue); }
+        .at { display: block; font-size: 12px; font-weight: 400; color: var(--muted); }
+        .group { text-align: center !important; }
+        .scroll { overflow-x: auto; }
+        .button-link {
+            display: flex; align-items: center; justify-content: center; min-height: 72px; border-radius: 16px;
+            border: 1px solid #8a8a8a; background: linear-gradient(180deg, #7a7a7a, #676767);
+            color: var(--text); font-size: 22px; font-weight: 700; text-decoration: none;
+        }
+        .nav { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <nav class="page-nav" aria-label="Page navigation"><a class="page-nav-btn" href="{{ url_for('index') }}" data-nav-back>← Back</a><a class="page-nav-btn" href="{{ url_for('index') }}">⌂ Overview</a></nav>
+        <div class="panel">
+            <h1>Daily High / Low</h1>
+            <div class="sub">Shed {{ shed_no }} · midnight to midnight · last {{ rows|length }} day{% if rows|length != 1 %}s{% endif %} recorded</div>
+        </div>
+        <div class="panel scroll">
+            {% if rows %}
+            <table>
+                <thead>
+                    <tr><th></th><th class="group" colspan="2">Temp °C</th><th class="group" colspan="2">RH %</th></tr>
+                    <tr><th>Day</th><th>High</th><th>Low</th><th>High</th><th>Low</th></tr>
+                </thead>
+                <tbody>
+                    {% for r in rows %}
+                    <tr>
+                        <td>{{ r.date_label }}{% if r.date == today %}<span class="at">Today so far</span>{% endif %}</td>
+                        <td class="hi">{{ r.temp_max }}<span class="at">{{ r.temp_max_at }}</span></td>
+                        <td class="lo">{{ r.temp_min }}<span class="at">{{ r.temp_min_at }}</span></td>
+                        <td class="hi">{{ r.rh_max }}<span class="at">{{ r.rh_max_at }}</span></td>
+                        <td class="lo">{{ r.rh_min }}<span class="at">{{ r.rh_min_at }}</span></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="sub">No readings recorded yet. Highs and lows start filling in as soon as the Pico sends temperature and humidity.</div>
+            {% endif %}
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+
+EXIT_KIOSK_HTML = """
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Closing Shed Screen</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body>
+    <div class="wrap" style="max-width: 720px; margin: 0 auto; padding: 40px 24px;">
+        <div class="panel" style="padding: 24px;">
+            <h1>Closing the shed screen</h1>
+            <div class="sub">Returning to the Raspberry Pi desktop. The controller keeps running in the background, so sensors, alarms and office sync carry on. Reboot the Pi to bring the shed screen back.</div>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+
 SETTINGS_HTML = """
 <!doctype html>
 <html lang="en">
@@ -5830,283 +7162,171 @@ SETTINGS_HTML = """
     <meta charset="utf-8">
     <title>Shed {{ shed_no }} Settings</title>
     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <meta name="cdf-theme-native" content="1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@500;600&display=swap">
     <style>
         :root {
-            --bg: #5b5b5b;
-            --panel: rgba(115, 115, 115, 0.96);
-            --panel-2: rgba(104, 104, 104, 0.98);
-            --line: #8a8a8a;
-            --text: #ececec;
-            --muted: #d2d2d2;
+            --page: #2b2e2c; --card: #343835; --card-2: #3a3e3b; --rule: #454a46; --track: #4a4f4b;
+            --text: #ecebe6; --muted: #b9bcb6; --soft: #d7d8d3;
+            --green: #35d07f; --amber: #f0a53a; --red: #ff7777;
         }
-        body {
-            margin: 0;
-            color: var(--text);
-            font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-            background: #5b5b5b;
-        }
-        .wrap {
-            max-width: 1024px;
-            margin: 0 auto;
-            padding: 18px;
-        }
-        .topbar {
-            margin-bottom: 16px;
-        }
-        .topbar a {
-            color: var(--text);
-            text-decoration: none;
-            font-size: 18px;
-        }
-        .grid {
-            display: grid;
-            grid-template-columns: 1.05fr 0.95fr;
-            gap: 16px;
-        }
-        .panel {
-            background: var(--panel);
-            border: 1px solid var(--line);
-            border-radius: 20px;
-            padding: 18px;
-        }
-        h1 {
-            margin: 0 0 8px 0;
-            font-size: 38px;
-        }
-        .sub {
-            color: var(--muted);
-            margin-bottom: 16px;
-            font-size: 18px;
-        }
-        .action-grid {
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 12px;
-        }
-        .action-form {
-            margin: 0;
-        }
-        .button-link {
-            display: block;
-            min-height: 74px;
-            width: 100%;
-            border-radius: 16px;
-            border: 1px solid #8a8a8a;
-            background: linear-gradient(180deg, #7a7a7a, #676767);
-            color: var(--text);
-            font-size: 20px;
-            font-weight: 700;
-            text-decoration: none;
-            text-align: center;
-            line-height: 74px;
-            white-space: nowrap;
-        }
-        .button-icon {
-            margin-right: 10px;
-        }
-        .full-panel {
-            margin-top: 16px;
-        }
-        .detail-list {
-            display: grid;
-            gap: 10px;
-        }
-        .detail {
-            display: flex;
-            justify-content: space-between;
-            gap: 12px;
-            padding: 12px 0;
-            border-bottom: 1px solid #818181;
-            font-size: 18px;
-        }
-        .detail:last-child {
-            border-bottom: 0;
-        }
-        .label {
-            color: var(--muted);
-        }
-        .status-note {
-            margin: 12px 0 0;
-            color: var(--muted);
-            font-size: 16px;
-        }
-        .status-note.is-busy {
-            color: var(--text);
-        }
-        .msg {
-            margin-bottom: 16px;
-            padding: 12px 14px;
-            border-radius: 14px;
-            border: 1px solid #8a8a8a;
-            background: rgba(115, 115, 115, 0.96);
-            font-size: 18px;
-        }
-        .button-row {
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 12px;
-            margin-top: 14px;
-            max-width: 560px;
-            margin-left: auto;
-            margin-right: auto;
-        }
-        .update-split {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 16px;
-            margin-top: 12px;
-        }
-        .update-box {
-            background: var(--panel-2);
-            border: 1px solid var(--line);
-            border-radius: 16px;
-            padding: 16px;
-        }
-        .update-box h2 {
-            margin: 0 0 10px 0;
-            font-size: 24px;
-        }
-        .collapse {
-            margin-top: 14px;
-        }
-        .collapse summary {
-            cursor: pointer;
-            list-style: none;
-            padding: 12px 14px;
-            border: 1px solid var(--line);
-            border-radius: 12px;
-            background: rgba(86, 86, 86, 0.96);
-            font-weight: 700;
-        }
-        .collapse summary::-webkit-details-marker {
-            display: none;
-        }
-        .collapse[open] summary {
-            margin-bottom: 12px;
-        }
-        .button-row form {
-            width: 100%;
-            margin: 0;
-        }
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        body { margin: 0; min-height: 100vh; background: var(--page); color: var(--text); font-family: "Barlow", "Helvetica Neue", Helvetica, sans-serif; }
+        .cond { font-family: "Barlow Semi Condensed", "Barlow", "Helvetica Neue", Helvetica, sans-serif; }
+        .topbar { min-height: 64px; padding: 10px 28px; display: flex; align-items: center; gap: 18px; flex-wrap: wrap; border-bottom: 1px solid var(--rule); }
+        .back { display: flex; align-items: center; justify-content: center; min-height: 48px; padding: 0 16px; border-radius: 12px; border: 1px solid #5d635e; background: var(--card); color: var(--text); text-decoration: none; font-size: 17px; font-weight: 600; }
+        .title { font-size: 34px; font-weight: 600; }
+        .chips { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+        .chip { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; background: var(--card); font-size: 15px; color: var(--soft); }
+        .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--amber); }
+        .dot.ok { background: var(--green); }
+        .dot.bad { background: var(--red); }
+        .wrap { max-width: 1200px; margin: 0 auto; padding: 14px 24px 20px; }
+        .msg { margin-bottom: 16px; padding: 12px 14px; border-radius: 12px; background: var(--card); border: 1px solid var(--rule); font-weight: 600; }
+        .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+        .col { display: flex; flex-direction: column; gap: 14px; }
+        .section-title { margin: 0 0 6px 4px; font-size: 14px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+        .list { border-radius: 14px; background: var(--card); overflow: hidden; }
+        .item { display: flex; align-items: center; gap: 12px; min-height: 50px; padding: 0 18px; color: var(--text); text-decoration: none; font-size: 18px; font-weight: 500; border-top: 1px solid var(--track); }
+        .item:first-child { border-top: 0; }
+        .item:active { background: var(--card-2); }
+        .item-sub { margin-left: auto; font-size: 15px; color: var(--muted); }
+        .chev { color: var(--muted); font-size: 22px; line-height: 1; }
+        .badge { margin-left: auto; min-width: 26px; padding: 2px 8px; border-radius: 999px; background: var(--red); color: var(--page); font-size: 14px; font-weight: 600; text-align: center; }
+        .card { border-radius: 14px; background: var(--card); padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+        .row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 16px; }
+        .row-label { color: var(--muted); }
+        .status { font-size: 18px; font-weight: 600; }
+        .status.is-busy { color: var(--amber); }
+        .hint { font-size: 14px; color: var(--muted); line-height: 1.35; }
+        .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .btns form { margin: 0; }
         button {
-            min-height: 74px;
-            width: 100%;
-            border-radius: 16px;
-            border: 1px solid #8a8a8a;
-            background: linear-gradient(180deg, #7a7a7a, #676767);
-            color: var(--text);
-            font-size: 20px;
-            font-weight: 700;
-            cursor: pointer;
+            width: 100%; min-height: 56px; border-radius: 12px; border: 1px solid #5d635e; background: var(--card-2);
+            color: var(--text); font-family: inherit; font-size: 17px; font-weight: 600; cursor: pointer;
         }
-        button.secondary {
-            background: linear-gradient(180deg, #737373, #626262);
+        button:active { background: var(--track); }
+        button:disabled { opacity: 0.5; }
+        button.primary { background: var(--text); color: var(--page); border-color: var(--text); }
+        button.danger { background: #4a2a2d; border-color: #8a4048; }
+        input[type="number"] {
+            width: 100%; min-height: 56px; padding: 0 14px; border-radius: 12px; border: 1px solid #5d635e;
+            background: var(--card-2); color: var(--text); font-family: inherit; font-size: 20px; font-weight: 600;
         }
-        @media (max-width: 900px) {
-            .grid {
-                grid-template-columns: 1fr;
-            }
-            .update-split {
-                grid-template-columns: 1fr;
-            }
+        .mode-chip { padding: 4px 12px; border-radius: 999px; font-size: 15px; font-weight: 600; color: var(--page); background: var(--amber); }
+        .mode-chip.live { background: var(--green); }
+        details summary { cursor: pointer; color: var(--muted); font-size: 15px; min-height: 32px; display: flex; align-items: center; }
+        details .row { margin-top: 6px; font-size: 15px; }
+        .mono { font-family: ui-monospace, Menlo, monospace; font-size: 14px; }
+        a:focus-visible, button:focus-visible, input:focus-visible { outline: 3px solid var(--text); outline-offset: 2px; }
+        @media (max-width: 860px) {
+            .topbar { padding: 10px 16px; }
+            .title { font-size: 28px; }
+            .chips { margin-left: 0; width: 100%; }
+            .wrap { padding: 16px; }
+            .cols { grid-template-columns: 1fr; }
         }
     </style>
 </head>
 <body>
+    <header class="topbar">
+        <a class="back" href="{{ url_for('index') }}">← Overview</a>
+        <div class="title cond">Settings</div>
+        <div class="chips">
+            <div class="chip"><span class="dot {{ sync_class }}"></span>Office sync {{ sync_short }}</div>
+            <div class="chip"><span class="dot {{ sensor_class }}"></span>Pico {{ sensor_status_short }}</div>
+        </div>
+    </header>
+
     <div class="wrap">
         {% if msg %}<div class="msg">{{ msg }}</div>{% endif %}
-        <div class="topbar"><a href="{{ url_for('index') }}">← Back</a></div>
-        <div class="grid">
-            <div class="panel">
-                <h1>Shed {{ shed_no }} Settings</h1>
-                <div class="sub">Controller tools, alarms, logs, config, and commissioning.</div>
-                <div class="action-grid">
-                    <a class="button-link" href="{{ url_for('allocation_view') }}">Shed Allocation</a>
-                    <a class="button-link" href="{{ url_for('controller_alarms_view') }}">Alarms{% if alarm_count %} ({{ alarm_count }}){% endif %}</a>
-                    <a class="button-link" href="{{ url_for('commissioning_view') }}">Commissioning</a>
-                    <a class="button-link" href="{{ url_for('hx711_diagnostics_view') }}">HX711 Diagnostics</a>
-                    <a class="button-link" href="{{ url_for('controller_config_view') }}">Controller Config</a>
-                    <a class="button-link" href="{{ url_for('controller_health_view') }}">Controller Health</a>
-                    <form class="action-form" method="post" action="{{ url_for('controller_reboot_view') }}" onsubmit="return confirm('Reboot this controller Pi now?');">
-                        <button class="secondary" type="submit"><span class="button-icon">↻</span>Reboot</button>
-                    </form>
-                    <form class="action-form" method="post" action="{{ url_for('controller_shutdown_view') }}" onsubmit="return confirm('Shut down this controller Pi now?');">
-                        <button class="secondary" type="submit"><span class="button-icon">⏻</span>Shutdown</button>
-                    </form>
-                </div>
+        <div class="cols">
+            <div class="col">
+                <section>
+                    <h2 class="section-title">Shed</h2>
+                    <nav class="list" aria-label="Shed settings">
+                        <a class="item" href="{{ url_for('allocation_view') }}"><span>Shed allocation</span><span class="item-sub">{{ birds_display }}</span><span class="chev">›</span></a>
+                        <a class="item" href="{{ url_for('mortality_view') }}"><span>Mortality</span><span class="chev" style="margin-left: auto">›</span></a>
+                        <a class="item" href="{{ url_for('controller_alarms_view') }}"><span>Alarms</span>{% if alarm_count %}<span class="badge">{{ alarm_count }}</span>{% else %}<span class="item-sub">None active</span>{% endif %}<span class="chev">›</span></a>
+                        <a class="item" href="{{ url_for('temp_settings_view') }}"><span>Temperature range</span><span class="chev" style="margin-left: auto">›</span></a>
+                        <a class="item" href="{{ url_for('rh_settings_view') }}"><span>Humidity range</span><span class="chev" style="margin-left: auto">›</span></a>
+                        <a class="item" href="{{ url_for('water_settings_view') }}"><span>Water meter</span><span class="chev" style="margin-left: auto">›</span></a>
+                        <a class="item" href="{{ url_for('feed_settings_view') }}"><span>Feed bin</span><span class="chev" style="margin-left: auto">›</span></a>
+                    </nav>
+                </section>
+
+                <section>
+                    <h2 class="section-title">Controller</h2>
+                    <nav class="list" aria-label="Controller tools">
+                        <a class="item" href="{{ url_for('controller_health_view') }}"><span>Health</span><span class="chev" style="margin-left: auto">›</span></a>
+                        <a class="item" href="{{ url_for('controller_events_view') }}"><span>Event log</span><span class="chev" style="margin-left: auto">›</span></a>
+                        <a class="item" href="{{ url_for('controller_config_view') }}"><span>Config</span><span class="chev" style="margin-left: auto">›</span></a>
+                        <a class="item" href="{{ url_for('commissioning_view') }}"><span>Commissioning</span><span class="chev" style="margin-left: auto">›</span></a>
+                        <a class="item" href="{{ url_for('hx711_diagnostics_view') }}"><span>Feed scale diagnostics</span><span class="chev" style="margin-left: auto">›</span></a>
+                    </nav>
+                </section>
             </div>
-            <div class="panel">
-                <h1>Current State</h1>
-                <div class="sub">Current shed state and latest controller heartbeat.</div>
-                <div class="detail-list">
-                    <div class="detail"><span class="label">Crop Active</span><span>{{ "Yes" if entry.crop_active == 1 else "No" }}</span></div>
-                    <div class="detail"><span class="label">Started</span><span>{{ started_at }}</span></div>
-                    <div class="detail"><span class="label">Updated By</span><span>{{ entry.updated_by }}</span></div>
-                    <div class="detail"><span class="label">Updated At</span><span>{{ updated_at }}</span></div>
-                    <div class="detail"><span class="label">Sync</span><span>{{ sync_short }}</span></div>
-                    <div class="detail"><span class="label">Pico</span><span>{{ sensor_status_short }}</span></div>
-                </div>
-            </div>
-        </div>
-        <div class="panel full-panel">
-            <h1 style="font-size:28px;">Software Update</h1>
-            <div class="sub">Check for a newer controller version. When the pulled update includes Pico firmware changes, they are deployed automatically too.</div>
-            <div class="update-split">
-                <div class="update-box">
-                    <h2>Controller Update</h2>
-                    <div class="detail-list">
-                        <div class="detail"><span class="label">Last Check</span><span id="controllerUpdateChecked">{{ update_checked_at }}</span></div>
-                    </div>
-                    <div id="controllerUpdateStatus" class="status-note">{{ update_status.status }}</div>
-                    <div class="button-row">
-                        <form id="controllerUpdateCheckForm" method="post" action="{{ url_for('check_update_view') }}">
-                            <button id="controllerUpdateCheckButton" class="secondary" type="submit">Check for Update</button>
-                        </form>
-                        <form id="controllerUpdateApplyForm" method="post" action="{{ url_for('apply_update_view') }}" {% if not update_status.update_available %}style="display:none;"{% endif %}>
-                            <button type="submit">Update Controller</button>
-                        </form>
-                    </div>
-                    {% if update_status.restart_required %}
-                    <div class="status-note">Latest code has been pulled. A controller restart is required to run the new version.</div>
-                    {% endif %}
-                    <details class="collapse">
-                        <summary>Show Version Details</summary>
-                        <div class="detail-list">
-                            <div class="detail"><span class="label">Branch</span><span id="controllerUpdateBranch">{{ update_status.branch }}</span></div>
-                            <div class="detail"><span class="label">Current Version</span><span id="controllerUpdateCurrent">{{ update_status.local_commit }}</span></div>
-                            <div class="detail"><span class="label">Latest Version</span><span id="controllerUpdateLatest">{{ update_status.remote_commit }}</span></div>
+
+            <div class="col">
+                <section>
+                    <h2 class="section-title">Software</h2>
+                    <div class="card">
+                        <div class="row"><span class="status" id="controllerUpdateStatus">{{ update_status.status }}</span></div>
+                        <div class="row"><span class="row-label">Last checked</span><span id="controllerUpdateChecked">{{ update_checked_at }}</span></div>
+                        {% if update_status.restart_required %}
+                        <div class="hint">Latest code has been pulled. Restart the controller to run the new version.</div>
+                        {% endif %}
+                        <div class="btns">
+                            <form id="controllerUpdateCheckForm" method="post" action="{{ url_for('check_update_view') }}">
+                                <button id="controllerUpdateCheckButton" type="submit">Check for update</button>
+                            </form>
+                            <form id="controllerUpdateApplyForm" method="post" action="{{ url_for('apply_update_view') }}" {% if not update_status.update_available %}style="display:none;"{% endif %}>
+                                <button class="primary" type="submit">Install update</button>
+                            </form>
                         </div>
-                    </details>
-                </div>
-            </div>
-            <div class="update-split" style="margin-top:16px;">
-                <div class="update-box">
-                    <h2>Mode Lock</h2>
-                    <div class="detail-list">
-                        <div class="detail"><span class="label">Current Mode</span><span>{{ current_mode }}</span></div>
-                        <div class="detail"><span class="label">Next Mode</span><span>{{ next_mode_label }}</span></div>
+                        <details>
+                            <summary>Version details</summary>
+                            <div class="row"><span class="row-label">Branch</span><span class="mono" id="controllerUpdateBranch">{{ update_status.branch }}</span></div>
+                            <div class="row"><span class="row-label">Installed</span><span class="mono" id="controllerUpdateCurrent">{{ update_status.local_commit }}</span></div>
+                            <div class="row"><span class="row-label">Latest</span><span class="mono" id="controllerUpdateLatest">{{ update_status.remote_commit }}</span></div>
+                        </details>
+                        <div class="hint">Pico firmware changes in an update are deployed automatically.</div>
                     </div>
-                    <div class="status-note">A PIN is required before this controller can leave commissioning mode or return to it.</div>
-                    <div class="button-row">
-                        <form method="post" action="{{ url_for('switch_controller_mode_view') }}">
+                </section>
+
+                <section>
+                    <h2 class="section-title">Mode</h2>
+                    <div class="card">
+                        <div class="row"><span class="row-label">Current mode</span><span class="mode-chip {% if current_mode_key == 'live' %}live{% endif %}">{{ current_mode }}</span></div>
+                        <div class="hint">Use commissioning while wiring and proving sensors. Go live once the shed is ready for normal alarms. Switching needs the mode PIN.</div>
+                        <form method="post" action="{{ url_for('switch_controller_mode_view') }}" class="btns">
                             <input type="hidden" name="target_mode" value="{{ next_mode_key }}">
-                            <input type="number" name="mode_pin" inputmode="numeric" enterkeyhint="done" placeholder="Enter mode PIN" style="width:100%; min-height:64px; border-radius:14px; border:1px solid #8a8a8a; background:#686868; color:#ececec; font-size:22px; padding:10px 14px; box-sizing:border-box; margin-bottom:12px;">
-                            <button type="submit">{{ "Go Live" if next_mode_key == "live" else "Return to Commissioning" }}</button>
+                            <input type="number" name="mode_pin" inputmode="numeric" enterkeyhint="done" placeholder="Mode PIN" aria-label="Mode PIN">
+                            <button type="submit">{{ "Go live" if next_mode_key == "live" else "Back to commissioning" }}</button>
                         </form>
                     </div>
-                </div>
-                <div class="update-box">
-                    <h2>Mode Notes</h2>
-                    <div class="detail-list">
-                        <div class="detail"><span class="label">Commissioning</span><span>Setup safeguards on</span></div>
-                        <div class="detail"><span class="label">Live</span><span>Production behavior on</span></div>
+                </section>
+
+                <section>
+                    <h2 class="section-title">Power</h2>
+                    <div class="card">
+                        <div class="btns">
+                            <form method="post" action="{{ url_for('controller_exit_kiosk_view') }}" onsubmit="return confirm('Close the shed screen and go to the Raspberry Pi desktop? The controller keeps running in the background.');" style="grid-column: 1 / -1">
+                                <button type="submit">⇱ Exit to desktop</button>
+                            </form>
+                            <form method="post" action="{{ url_for('controller_reboot_view') }}" onsubmit="return confirm('Reboot this controller Pi now?');">
+                                <button type="submit">↻ Reboot</button>
+                            </form>
+                            <form method="post" action="{{ url_for('controller_shutdown_view') }}" onsubmit="return confirm('Shut down this controller Pi now? It will need power cycling to start again.');">
+                                <button class="danger" type="submit">⏻ Shut down</button>
+                            </form>
+                        </div>
                     </div>
-                    <div class="status-note">Use commissioning while wiring and proving sensors. Switch to live once the shed is ready for normal alarms and behavior.</div>
-                </div>
+                </section>
             </div>
         </div>
     </div>
-</body>
 <script>
 (function () {
     const form = document.getElementById('controllerUpdateCheckForm');
@@ -6141,11 +7361,7 @@ SETTINGS_HTML = """
             latestEl.textContent = data.remote_commit || '--';
             checkedEl.textContent = data.checked_at_label || '--';
             statusEl.textContent = data.status || '--';
-            if (data.update_available) {
-                applyForm.style.display = '';
-            } else {
-                applyForm.style.display = 'none';
-            }
+            applyForm.style.display = data.update_available ? '' : 'none';
         } catch (err) {
             statusEl.textContent = 'Update check failed';
         } finally {
@@ -6156,6 +7372,7 @@ SETTINGS_HTML = """
     });
 })();
 </script>
+</body>
 </html>
 """
 
@@ -6250,7 +7467,7 @@ HEALTH_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
+        <nav class="page-nav" aria-label="Page navigation"><a class="page-nav-btn" href="{{ url_for('controller_settings_view') }}" data-nav-back>← Back</a><a class="page-nav-btn" href="{{ url_for('index') }}">⌂ Overview</a></nav>
         <div class="panel">
             <h1>Shed {{ shed_no }} Controller Health</h1>
             <div class="sub">Dashboard connection, sync status, serial state, and controller diagnostics.</div>
@@ -6312,7 +7529,7 @@ CONFIG_HTML = """
         .field { margin-bottom:14px; }
         .group-title { margin:18px 0 10px 0; font-size:18px; color:var(--text); }
         label { display:block; color:var(--muted); margin-bottom:8px; font-size:15px; }
-        input[type="text"], input[type="number"] { width:100%; min-height:64px; border-radius:16px; border:1px solid var(--line); background:#686868; color:var(--text); font-size:24px; padding:10px 14px; box-sizing:border-box; }
+        input[type="text"], input[type="number"], select { width:100%; min-height:64px; border-radius:16px; border:1px solid var(--line); background:#686868; color:var(--text); font-size:24px; padding:10px 14px; box-sizing:border-box; }
         .value-readout { min-height:64px; border-radius:16px; border:1px solid var(--line); background:#5f5f5f; color:var(--text); font-size:22px; padding:14px; box-sizing:border-box; display:flex; align-items:center; word-break:break-word; }
         .check { display:flex; align-items:center; justify-content:space-between; padding:12px 0; border-bottom:1px solid #818181; font-size:18px; }
         .check:last-child { border-bottom:0; }
@@ -6331,7 +7548,7 @@ CONFIG_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
+        <nav class="page-nav" aria-label="Page navigation"><a class="page-nav-btn" href="{{ url_for('controller_settings_view') }}" data-nav-back>← Back</a><a class="page-nav-btn" href="{{ url_for('index') }}">⌂ Overview</a></nav>
         <div class="grid">
             <div class="panel">
                 <h1>Shed {{ shed_no }} Controller Config</h1>
@@ -6348,6 +7565,28 @@ CONFIG_HTML = """
                     <div class="field"><label for="touch_refresh_seconds">Home Poll Seconds</label><input id="touch_refresh_seconds" type="number" name="touch_refresh_seconds" step="0.05" min="0.25" inputmode="decimal" value="{{ cfg.touch_refresh_seconds }}"></div>
                     <div class="check"><span>Serial Enabled</span><input type="checkbox" name="serial_enabled" {% if cfg.serial_enabled %}checked{% endif %}></div>
                     <div class="check"><span>Auto Sync On Change</span><input type="checkbox" name="sync_on_sensor_update" {% if cfg.sync_on_sensor_update %}checked{% endif %}></div>
+                    <div class="group-title">Shed Layout</div>
+                    <div class="sub" style="margin-bottom:10px;">How the shed plan on the overview is drawn, as seen on this screen.</div>
+                    <div class="field"><label for="layout_front_end">Front end of shed</label>
+                        <select id="layout_front_end" name="layout_front_end">
+                            <option value="left" {% if cfg.layout_front_end == 'left' %}selected{% endif %}>Left side of screen</option>
+                            <option value="right" {% if cfg.layout_front_end == 'right' %}selected{% endif %}>Right side of screen</option>
+                        </select>
+                    </div>
+                    <div class="field"><label for="layout_bin_corner">Feed bin position</label>
+                        <select id="layout_bin_corner" name="layout_bin_corner">
+                            <option value="top-left" {% if cfg.layout_bin_corner == 'top-left' %}selected{% endif %}>Top left corner</option>
+                            <option value="top-right" {% if cfg.layout_bin_corner == 'top-right' %}selected{% endif %}>Top right corner</option>
+                            <option value="bottom-left" {% if cfg.layout_bin_corner == 'bottom-left' %}selected{% endif %}>Bottom left corner</option>
+                            <option value="bottom-right" {% if cfg.layout_bin_corner == 'bottom-right' %}selected{% endif %}>Bottom right corner</option>
+                        </select>
+                    </div>
+                    <div class="field"><label for="layout_door_end">Door</label>
+                        <select id="layout_door_end" name="layout_door_end">
+                            <option value="left" {% if cfg.layout_door_end == 'left' %}selected{% endif %}>Left end wall</option>
+                            <option value="right" {% if cfg.layout_door_end == 'right' %}selected{% endif %}>Right end wall</option>
+                        </select>
+                    </div>
                     <div class="group-title">Augers</div>
                     <div class="sub" style="margin-bottom:10px;">Rename each auger tile and decide whether it should appear and be monitored on this shed.</div>
                     <div class="auger-grid">
@@ -6428,7 +7667,7 @@ ALARMS_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
+        <nav class="page-nav" aria-label="Page navigation"><a class="page-nav-btn" href="{{ url_for('controller_settings_view') }}" data-nav-back>← Back</a><a class="page-nav-btn" href="{{ url_for('index') }}">⌂ Overview</a></nav>
         <div class="panel">
             <h1>Shed {{ shed_no }} Alarms</h1>
             <div class="sub">Stale sensor checks, office link checks, push failures, and controller alarms.</div>
@@ -6502,7 +7741,7 @@ CONTROLLER_EVENTS_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
+        <nav class="page-nav" aria-label="Page navigation"><a class="page-nav-btn" href="{{ url_for('controller_settings_view') }}" data-nav-back>← Back</a><a class="page-nav-btn" href="{{ url_for('index') }}">⌂ Overview</a></nav>
         <div class="panel">
             <h1>Shed {{ shed_no }} Event Log</h1>
             <div class="sub">Recent local controller events and sync actions.</div>
@@ -6547,7 +7786,7 @@ COMMISSIONING_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
+        <nav class="page-nav" aria-label="Page navigation"><a class="page-nav-btn" href="{{ url_for('controller_settings_view') }}" data-nav-back>← Back</a><a class="page-nav-btn" href="{{ url_for('index') }}">⌂ Overview</a></nav>
         <div class="panel" style="margin-bottom:16px;">
             <h1>Shed {{ shed_no }} Commissioning</h1>
             <div class="sub">Raw sensor values, sync versions, and wiring diagnostics.</div>
@@ -6691,38 +7930,39 @@ HISTORY_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
+        <nav class="page-nav" aria-label="Page navigation"><a class="page-nav-btn" href="{{ url_for('controller_settings_view') }}" data-nav-back>← Back</a><a class="page-nav-btn" href="{{ url_for('index') }}">⌂ Overview</a></nav>
+        {% if log_tab in ['feed', 'water'] %}
+        <div class="log-tabs" role="tablist" aria-label="Log type">
+            <a class="log-tab {% if log_tab == 'feed' %}active{% endif %}" role="tab" aria-selected="{{ 'true' if log_tab == 'feed' else 'false' }}" href="{{ url_for('feed_history_view') }}">Feed</a>
+            <a class="log-tab {% if log_tab == 'water' %}active{% endif %}" role="tab" aria-selected="{{ 'true' if log_tab == 'water' else 'false' }}" href="{{ url_for('water_history_view') }}">Water</a>
+        </div>
+        {% endif %}
         <div class="panel">
             <h1>Shed {{ shed_no }} {{ metric_title }}</h1>
-            <div class="sub">Current crop {{ crop_code }} hourly {{ metric_title|lower }} history.</div>
-            {% if extra_link_href %}
-            <div class="action-row">
-                <a class="action-link" href="{{ extra_link_href }}">{{ extra_link_label }}</a>
-            </div>
-            {% endif %}
+            <div class="sub">Current crop {{ crop_code }}, {{ metric_title|lower }} in 6-hour blocks.</div>
             {% if rows %}
             <div class="chart-wrap">
                 <div class="chart-box"><canvas id="historyChart"></canvas></div>
             </div>
             {% else %}
-            <div class="empty">No hourly history available for the current crop.</div>
+            <div class="empty">No history available for the current crop yet.</div>
             {% endif %}
         </div>
         <div class="panel">
-            <h1 style="font-size:26px;">Hourly Table</h1>
+            <h1 style="font-size:26px;">6-Hour Table</h1>
             {% if rows %}
             <table>
                 <thead>
                     <tr>
-                        <th>Hour</th>
-                        <th>{{ y_axis_title }}</th>
+                        <th>6 hours from</th>
+                        {% for item in series %}<th>{{ item.axis_title }}</th>{% endfor %}
                     </tr>
                 </thead>
                 <tbody>
                     {% for row in table_rows %}
                     <tr class="paged-row">
                         <td>{{ row.label }}</td>
-                        <td>{{ row.value }}</td>
+                        {% for value in row["values"] %}<td>{{ value }}</td>{% endfor %}
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -6738,7 +7978,7 @@ HISTORY_HTML = """
     </div>
     <script>
     const labels = {{ labels|tojson }};
-    const values = {{ values|tojson }};
+    const series = {{ series|tojson }};
 
     function setupPagedTable(buttonId, infoId, initialCount = 20, step = 20) {
         const rows = Array.from(document.querySelectorAll('.paged-row'));
@@ -6780,25 +8020,29 @@ HISTORY_HTML = """
             type: 'line',
             data: {
                 labels: labels,
-                datasets: [{
-                    label: {{ metric_title|tojson }},
-                    data: values,
+                datasets: series.map((item, idx) => ({
+                    label: item.label + (series.length > 1 ? ' (' + item.axis_title.split(' ').pop() + ')' : ''),
+                    data: item.values,
+                    yAxisID: idx === 0 ? 'y' : 'y1',
                     borderWidth: 2,
                     pointRadius: 2,
                     tension: 0.2,
-                    borderColor: {{ color|tojson }},
-                    backgroundColor: {{ color|tojson }}
-                }]
+                    borderColor: item.color,
+                    backgroundColor: item.color
+                }))
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
                 animation: false,
-                plugins: { legend: { labels: { color: '#f1f8fb' } } },
-                scales: {
-                    x: { ticks: { color: '#d2d2d2' }, grid: { color: '#818181' } },
-                    y: { ticks: { color: '#d2d2d2' }, grid: { color: '#818181' } }
-                }
+                interaction: { mode: 'index', intersect: false },
+                plugins: { legend: { labels: { color: '#ecebe6' } } },
+                scales: Object.assign({
+                    x: { ticks: { color: '#b9bcb6' }, grid: { color: '#4a4f4b' } },
+                    y: { position: 'left', title: { display: series.length > 1, text: series[0].axis_title, color: series[0].color }, ticks: { color: '#b9bcb6' }, grid: { color: '#4a4f4b' } }
+                }, series.length > 1 ? {
+                    y1: { position: 'right', title: { display: true, text: series[1].axis_title, color: series[1].color }, ticks: { color: '#b9bcb6' }, grid: { drawOnChartArea: false } }
+                } : {})
             }
         });
     }
@@ -6839,7 +8083,7 @@ AUGER_RUNS_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('feed_history_view') }}">← Back to Feed History</a></div>
+        <nav class="page-nav" aria-label="Page navigation"><a class="page-nav-btn" href="{{ url_for('index') }}" data-nav-back>← Back</a><a class="page-nav-btn" href="{{ url_for('index') }}">⌂ Overview</a></nav>
         <div class="panel">
             <h1>Shed {{ shed_no }} Auger Runs</h1>
             <div class="sub">Completed auger run timestamps and durations recorded by this controller.</div>
@@ -7045,7 +8289,7 @@ RANGE_SETTINGS_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
+        <nav class="page-nav" aria-label="Page navigation"><a class="page-nav-btn" href="{{ url_for('controller_settings_view') }}" data-nav-back>← Back</a><a class="page-nav-btn" href="{{ url_for('index') }}">⌂ Overview</a></nav>
         <div class="panel">
             <h1>Shed {{ shed_no }} {{ title }}</h1>
             <div class="sub">{{ subtitle }}</div>
@@ -7125,7 +8369,7 @@ WATER_SETTINGS_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
+        <nav class="page-nav" aria-label="Page navigation"><a class="page-nav-btn" href="{{ url_for('controller_settings_view') }}" data-nav-back>← Back</a><a class="page-nav-btn" href="{{ url_for('index') }}">⌂ Overview</a></nav>
         <div class="panel">
             <h1>Shed {{ shed_no }} Water Settings</h1>
             <div class="sub">Adjust the low-flow threshold and calibrate pulses per litre against the shed water meter.</div>
@@ -7282,7 +8526,7 @@ FEED_SETTINGS_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
+        <nav class="page-nav" aria-label="Page navigation"><a class="page-nav-btn" href="{{ url_for('controller_settings_view') }}" data-nav-back>← Back</a><a class="page-nav-btn" href="{{ url_for('index') }}">⌂ Overview</a></nav>
         <div class="panel">
             <h1>Shed {{ shed_no }} Feed Settings</h1>
             <div class="sub">Low-feed warning plus feed bin calibration using tare, bin capacity, and a known weight.</div>
@@ -7542,7 +8786,7 @@ HX711_DIAGNOSTICS_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('feed_settings_view') }}">← Back to Feed</a></div>
+        <nav class="page-nav" aria-label="Page navigation"><a class="page-nav-btn" href="{{ url_for('feed_settings_view') }}" data-nav-back>← Back</a><a class="page-nav-btn" href="{{ url_for('index') }}">⌂ Overview</a></nav>
         <div class="grid">
             <div class="panel">
                 <h1>Shed {{ shed_no }} HX711 Diagnostics</h1>
@@ -7779,7 +9023,7 @@ ALLOCATION_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('index') }}">← Back</a></div>
+        <nav class="page-nav" aria-label="Page navigation"><a class="page-nav-btn" href="{{ url_for('controller_settings_view') }}" data-nav-back>← Back</a><a class="page-nav-btn" href="{{ url_for('index') }}">⌂ Overview</a></nav>
         <div class="panel">
             <h1>{{ shed_display_name }} Allocation</h1>
             <div class="sub">Birds physically in this shed, grouped by their destination shed.</div>
@@ -7947,7 +9191,7 @@ MORTALITY_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('index') }}">← Back</a></div>
+        <nav class="page-nav" aria-label="Page navigation"><a class="page-nav-btn" href="{{ url_for('controller_settings_view') }}" data-nav-back>← Back</a><a class="page-nav-btn" href="{{ url_for('index') }}">⌂ Overview</a></nav>
         <h1>{{ shed_display_name }} Mortality</h1>
         <div class="sub">Current crop {{ active_crop_code }}. Record losses against an active entry shed.</div>
         {% if status_msg %}
@@ -7966,6 +9210,10 @@ MORTALITY_HTML = """
                     </select>
                     <label for="bird_loss">Bird Loss</label>
                     <input id="bird_loss" type="number" name="bird_loss" min="1" step="1" inputmode="numeric" enterkeyhint="done" value="">
+                    <label for="mortality_date">Day</label>
+                    <select id="mortality_date" name="mortality_date">
+                        {% for day in mortality_days %}<option value="{{ day.value }}">{{ day.label }}</option>{% endfor %}
+                    </select>
                     <label for="note">Note</label>
                     <input id="note" type="text" name="note" value="">
                     <button type="submit">Record Mortality</button>
@@ -8033,7 +9281,36 @@ def index():
     ctx["msg"] = msg
     ctx["ok"] = ok
     ctx["hide_home_alerts"] = HIDE_HOME_ALERTS_DURING_SETUP and commissioning_mode_enabled(cfg)
+    return render_template_string(OVERVIEW_HTML, **ctx)
+
+
+@app.route("/classic")
+def classic_view():
+    maybe_refresh_from_dashboard()
+    maybe_heartbeat_to_dashboard()
+    ctx = build_home_context()
+    cfg = load_config()
+    msg = request.args.get("msg", "")
+    ok = request.args.get("ok", "1") == "1"
+    ctx["msg"] = msg
+    ctx["ok"] = ok
+    ctx["hide_home_alerts"] = HIDE_HOME_ALERTS_DURING_SETUP and commissioning_mode_enabled(cfg)
     return render_template_string(HTML, **ctx)
+
+
+@app.route("/history/climate")
+def climate_history_view():
+    cfg = load_config()
+    state = load_state()
+    sensors = state.get("sensors", default_sensor_state())
+    days = list(sensors.get("climate_days") or [])
+    days.reverse()
+    return render_template_string(
+        CLIMATE_HISTORY_HTML,
+        shed_no=cfg["shed_no"],
+        today=datetime.now().strftime("%Y-%m-%d"),
+        rows=[climate_day_display(rec) for rec in days],
+    )
 
 
 @app.route("/settings")
@@ -8194,6 +9471,38 @@ def switch_controller_mode_view():
     return redirect(url_for("controller_settings_view", msg="Controller switched to %s mode" % current_mode_label(cfg)))
 
 
+KIOSK_BROWSER_PATTERN = r"chromium.*--kiosk"
+
+
+def kiosk_browser_running():
+    try:
+        return subprocess.run(["pgrep", "-f", KIOSK_BROWSER_PATTERN], capture_output=True, timeout=5).returncode == 0
+    except Exception:
+        return False
+
+
+def close_kiosk_browser_delayed(delay_seconds=1.5):
+    # Closes only the full-screen Chromium the kiosk launcher started; the controller
+    # service keeps running. Delayed so this response reaches the screen first.
+    def worker():
+        time.sleep(delay_seconds)
+        try:
+            subprocess.run(["pkill", "-f", KIOSK_BROWSER_PATTERN], capture_output=True, timeout=5)
+        except Exception:
+            pass
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+@app.route("/settings/system/exit-kiosk", methods=["POST"])
+def controller_exit_kiosk_view():
+    if not kiosk_browser_running():
+        return redirect(url_for("controller_settings_view", msg="The shed screen is not running in kiosk mode on this controller"))
+    record_controller_event("kiosk_closed", "Closed shed screen", "Returned to the Raspberry Pi desktop")
+    close_kiosk_browser_delayed()
+    return render_template_string(EXIT_KIOSK_HTML)
+
+
 @app.route("/settings/system/reboot", methods=["POST"])
 def controller_reboot_view():
     ok, detail = run_system_action("reboot")
@@ -8318,6 +9627,7 @@ def mortality_view():
         history_rows=history_rows,
         mortality_total=fmt_value(payload.get("mortality_total"), "i"),
         active_birds=fmt_value(payload.get("active_birds"), "i"),
+        mortality_days=mortality_day_options(active_crop_epoch_from_entries(state.get("entries", {}), active_crop_id_from_entries(state.get("entries", {})))),
         status_msg=status_msg,
         status_ok=status_ok,
     )
@@ -8332,14 +9642,15 @@ def mortality_add_view():
         if not valid_entry_shed(dest_shed) or bird_loss <= 0:
             raise ValueError()
     except Exception:
-        return redirect(url_for("mortality_view", ok=0, msg="Invalid mortality entry"))
+        return redirect_back_with_status("mortality_view", False, "Invalid mortality entry")
 
     note = str(request.form.get("note", "") or "").strip()
-    ok, msg = post_mortality_to_dashboard(cfg["shed_no"], dest_shed, bird_loss, note=note)
+    date_text = str(request.form.get("mortality_date", "") or "").strip()
+    ok, msg = post_mortality_to_dashboard(cfg["shed_no"], dest_shed, bird_loss, note=note, date_text=date_text)
     if ok:
         pull_from_dashboard(load_state())
-        record_controller_event("mortality_recorded", "Recorded mortality", "%s Loss %d" % (entry_shed_label(dest_shed), bird_loss), push_to_office=True)
-    return redirect(url_for("mortality_view", ok=1 if ok else 0, msg=msg if msg else ("Mortality recorded" if ok else "Mortality failed")))
+        record_controller_event("mortality_recorded", "Recorded mortality", "%s Loss %d%s" % (entry_shed_label(dest_shed), bird_loss, (" for %s" % date_text) if date_text else ""), push_to_office=True)
+    return redirect_back_with_status("mortality_view", ok, msg if msg else ("Mortality recorded" if ok else "Mortality failed"))
 
 
 @app.route("/health")
@@ -8494,6 +9805,12 @@ def save_controller_config_view():
     cfg["auger_left_label"] = str(request.form.get("auger_left_label", cfg["auger_left_label"]) or "").strip() or "Auger Left"
     cfg["auger_right_label"] = str(request.form.get("auger_right_label", cfg["auger_right_label"]) or "").strip() or "Auger Right"
     cfg["lighting_label"] = str(request.form.get("lighting_label", cfg["lighting_label"]) or "").strip() or "Lighting"
+    if request.form.get("layout_front_end") in SHED_LAYOUT_ENDS:
+        cfg["layout_front_end"] = request.form.get("layout_front_end")
+    if request.form.get("layout_bin_corner") in SHED_LAYOUT_CORNERS:
+        cfg["layout_bin_corner"] = request.form.get("layout_bin_corner")
+    if request.form.get("layout_door_end") in SHED_LAYOUT_ENDS:
+        cfg["layout_door_end"] = request.form.get("layout_door_end")
     save_config(cfg)
     return redirect(url_for("controller_config_view"))
 
@@ -8604,7 +9921,9 @@ def save_temp_settings():
     cfg["temp_low_c"] = temp_low_c
     cfg["temp_high_c"] = temp_high_c
     cfg["temp_amber_margin_c"] = temp_amber_margin_c
+    cfg["climate_limits_updated_ts"] = int(time.time())
     save_config(cfg)
+    sync_climate_limits_to_office()
     return redirect(url_for("temp_settings_view"))
 
 
@@ -8652,7 +9971,9 @@ def save_rh_settings():
     cfg["rh_low_pct"] = rh_low_pct
     cfg["rh_high_pct"] = rh_high_pct
     cfg["rh_amber_margin_pct"] = rh_amber_margin_pct
+    cfg["climate_limits_updated_ts"] = int(time.time())
     save_config(cfg)
+    sync_climate_limits_to_office()
     return redirect(url_for("rh_settings_view"))
 
 
@@ -9221,28 +10542,31 @@ def undo_feed_calibration():
     return redirect(url_for("feed_settings_view"))
 
 
-def render_metric_history(metric_key, metric_title, y_axis_title, color, fmt):
+def render_metric_history(metric_key, metric_title, y_axis_title, color, fmt, series_defs=None):
+    # series_defs: [(metric_key, label, axis_title, color, fmt), ...]; one entry draws a
+    # single-metric page, several draw them together on their own axes.
+    series_defs = series_defs or [(metric_key, metric_title, y_axis_title, color, fmt)]
     shed_no = load_config()["shed_no"]
     payload = fetch_current_crop_hourly_history(shed_no)
     rows = payload.get("rows", []) if isinstance(payload, dict) else []
     crop_id = payload.get("crop_id") if isinstance(payload, dict) else None
     crop_code = payload.get("crop_code") if isinstance(payload, dict) else fmt_crop_code(crop_id)
 
+    labels = [row.get("label") for row in rows]
+    series = []
+    for key, label, axis_title, series_color, series_fmt in series_defs:
+        series.append({
+            "label": label,
+            "axis_title": axis_title,
+            "color": series_color,
+            "values": [row.get(key) for row in rows],
+        })
     view_rows = []
-    labels = []
-    values = []
-
-    i = 0
-    while i < len(rows):
-        row = rows[i]
-        raw_val = row.get(metric_key)
-        labels.append(row.get("label"))
-        values.append(raw_val)
+    for row in rows:
         view_rows.append({
             "label": row.get("label"),
-            "value": fmt_value(raw_val, fmt),
+            "values": [fmt_value(row.get(d[0]), d[4]) for d in series_defs],
         })
-        i += 1
 
     return render_template_string(
         HISTORY_HTML,
@@ -9250,14 +10574,11 @@ def render_metric_history(metric_key, metric_title, y_axis_title, color, fmt):
         crop_id=crop_id,
         crop_code=crop_code,
         metric_title=metric_title,
-        y_axis_title=y_axis_title,
-        color=color,
+        series=series,
         rows=view_rows,
         table_rows=list(reversed(view_rows)),
         labels=labels,
-        values=values,
-        extra_link_href=url_for("auger_runs_view") if metric_key == "feed" else None,
-        extra_link_label="Auger Run Timestamps" if metric_key == "feed" else "",
+        log_tab=metric_key,
     )
 
 
@@ -9275,12 +10596,13 @@ def redirect_back_with_status(default_endpoint, ok, msg):
 
 @app.route("/history/water")
 def water_history_view():
-    return render_metric_history("water", "Water History", "Water L", "#4db6ff", "f1")
+    return render_metric_history("water", "Water History", "Water L", "#5fd0d8", "f1")
 
 
 @app.route("/history/feed")
 def feed_history_view():
-    return render_metric_history("feed", "Feed History", "Feed KG", "#7be1aa", "f1")
+    return render_metric_history("feed", "Feed History", "Feed KG", "#d9b86a", "f1")
+
 
 
 @app.route("/history/feed/augers")
@@ -9397,6 +10719,41 @@ def start_entry_for_dest_impl(dest_shed, placed_bird_count_override=None):
     return push_to_dashboard(state, pull_back=False)
 
 
+@app.route("/pen/add", methods=["POST"])
+def add_pen():
+    side = str(request.form.get("side", "rear") or "rear").strip().lower()
+    try:
+        dest_shed = int(request.form.get("dest_shed", ""))
+    except Exception:
+        return redirect_back_with_status("index", False, "Pick which shed the birds are for")
+    if not valid_entry_shed(dest_shed):
+        return redirect_back_with_status("index", False, "Invalid shed")
+    try:
+        placed_bird_count = int(str(request.form.get("placed_bird_count", "") or "").strip())
+        if placed_bird_count <= 0:
+            raise ValueError()
+    except Exception:
+        return redirect_back_with_status("index", False, "Enter how many birds were placed")
+    if get_entry_for_dest(load_state(), dest_shed)["bird_count"] > 0:
+        return redirect_back_with_status("index", False, "%s already has a pen in this shed" % entry_shed_label(dest_shed))
+
+    ok, sync_msg = start_entry_for_dest_impl(dest_shed, placed_bird_count_override=placed_bird_count)
+
+    def mutator(state):
+        if get_entry_for_dest(state, dest_shed)["bird_count"] <= 0:
+            return
+        entries = state.get("entries", {})
+        order = [k for k in ordered_entry_keys(entries, state.get("pen_order", [])) if k != str(dest_shed)]
+        if side == "front":
+            order.insert(0, str(dest_shed))
+        else:
+            order.append(str(dest_shed))
+        state["pen_order"] = order
+
+    mutate_state(mutator)
+    return redirect_back_with_status("index", ok, sync_msg if sync_msg else "Pen added")
+
+
 @app.route("/entry/<int:dest_shed>/start", methods=["POST"])
 def start_entry_for_dest(dest_shed):
     placed_bird_count_override = None
@@ -9506,6 +10863,8 @@ def dashboard_sync():
 
     if incoming_shed_no != cfg["shed_no"]:
         return jsonify({"ok": False, "error": "Shed number mismatch"}), 400
+
+    adopt_office_climate_limits(payload.get("climate_limits"))
 
     def mutator(state):
         incoming_entries = payload.get("entries", {})
