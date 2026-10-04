@@ -446,6 +446,7 @@ DEFAULT_CONFIG = {
     "auger_right_label": "Auger Right",
     "lighting_label": "Lighting",
     "climate_limits_updated_ts": None,
+    "auto_update_enabled": False,
     "layout_front_end": "left",
     "layout_bin_corner": "top-left",
     "layout_door_end": "left",
@@ -1164,6 +1165,7 @@ def load_config():
         cfg["layout_bin_corner"] = "top-left"
     if cfg.get("layout_door_end") not in SHED_LAYOUT_ENDS:
         cfg["layout_door_end"] = "left"
+    cfg["auto_update_enabled"] = bool(cfg.get("auto_update_enabled", False))
     cfg["serial_enabled"] = bool(cfg.get("serial_enabled", True))
     cfg["sync_on_sensor_update"] = bool(cfg.get("sync_on_sensor_update", True))
     cfg["deployment_mode"] = str(cfg.get("deployment_mode", "commissioning") or "commissioning").strip().lower()
@@ -5119,6 +5121,59 @@ def start_monitor_thread():
 BACKGROUND_SYNC_THREAD = None
 
 
+AUTO_UPDATE_WINDOW_MINUTES = 30
+AUTO_UPDATE_THREAD = None
+
+
+def auto_update_status_path():
+    return os.path.join(DATA_DIR, "auto_update_status.json")
+
+
+def load_auto_update_status():
+    data = read_json_file(auto_update_status_path(), {})
+    return data if isinstance(data, dict) else {}
+
+
+def auto_update_loop():
+    # Once a night, in the first half hour after midnight, check GitHub and install the
+    # update if this controller is on a different commit to its branch on GitHub.
+    while True:
+        try:
+            now = datetime.now()
+            today = now.strftime("%Y-%m-%d")
+            in_window = now.hour == 0 and now.minute < AUTO_UPDATE_WINDOW_MINUTES
+            status = load_auto_update_status()
+            if in_window and load_config().get("auto_update_enabled", False) and status.get("last_run_date") != today:
+                status = {"last_run_date": today, "last_run_ts": int(time.time())}
+                write_json_file_atomic(auto_update_status_path(), status)
+                check = check_for_update()
+                if not check.get("ok"):
+                    status["result"] = "Check failed: %s" % (check.get("status") or "unknown error")
+                elif not check.get("update_available"):
+                    status["result"] = "Already on latest version"
+                else:
+                    status["result"] = "Updating %s -> %s" % (check.get("local_commit"), check.get("remote_commit"))
+                write_json_file_atomic(auto_update_status_path(), status)
+                if check.get("ok") and check.get("update_available"):
+                    install_controller_update("nightly auto update")
+        except Exception as exc:
+            try:
+                status = load_auto_update_status()
+                status["result"] = "Auto update error: %s" % exc
+                write_json_file_atomic(auto_update_status_path(), status)
+            except Exception:
+                pass
+        time.sleep(60)
+
+
+def start_auto_update_thread():
+    global AUTO_UPDATE_THREAD
+    if AUTO_UPDATE_THREAD and AUTO_UPDATE_THREAD.is_alive():
+        return
+    AUTO_UPDATE_THREAD = threading.Thread(target=auto_update_loop, daemon=True)
+    AUTO_UPDATE_THREAD.start()
+
+
 def start_background_sync_thread():
     global BACKGROUND_SYNC_THREAD
     if BACKGROUND_SYNC_THREAD is not None and BACKGROUND_SYNC_THREAD.is_alive():
@@ -7214,6 +7269,8 @@ SETTINGS_HTML = """
             width: 100%; min-height: 56px; padding: 0 14px; border-radius: 12px; border: 1px solid #5d635e;
             background: var(--card-2); color: var(--text); font-family: inherit; font-size: 20px; font-weight: 600;
         }
+        button.mode-toggle { width: auto; min-height: 40px; padding: 0 18px; font-size: 15px; }
+        button.mode-toggle.on { background: var(--green); border-color: var(--green); color: var(--page); }
         .mode-chip { padding: 4px 12px; border-radius: 999px; font-size: 15px; font-weight: 600; color: var(--page); background: var(--amber); }
         .mode-chip.live { background: var(--green); }
         details summary { cursor: pointer; color: var(--muted); font-size: 15px; min-height: 32px; display: flex; align-items: center; }
@@ -7291,7 +7348,14 @@ SETTINGS_HTML = """
                             <div class="row"><span class="row-label">Installed</span><span class="mono" id="controllerUpdateCurrent">{{ update_status.local_commit }}</span></div>
                             <div class="row"><span class="row-label">Latest</span><span class="mono" id="controllerUpdateLatest">{{ update_status.remote_commit }}</span></div>
                         </details>
-                        <div class="hint">Pico firmware changes in an update are deployed automatically.</div>
+                        <div class="row"><span class="row-label">Nightly auto update</span>
+                            <form method="post" action="{{ url_for('toggle_auto_update_view') }}" style="margin: 0">
+                                <input type="hidden" name="enabled" value="{{ '0' if auto_update_enabled else '1' }}">
+                                <button type="submit" class="mode-toggle {% if auto_update_enabled %}on{% endif %}" aria-pressed="{{ 'true' if auto_update_enabled else 'false' }}">{{ 'On' if auto_update_enabled else 'Off' }}</button>
+                            </form>
+                        </div>
+                        <div class="row"><span class="row-label">Last nightly check</span><span style="text-align: right">{{ auto_update_last }}</span></div>
+                        <div class="hint">Shortly after midnight the controller checks GitHub and, if it is on a different version, installs the update and restarts. Pico firmware changes are deployed automatically.</div>
                     </div>
                 </section>
 
@@ -9332,6 +9396,9 @@ def controller_settings_view():
     checked_at = update_status.get("checked_at")
     ctx["update_status"] = update_status
     ctx["update_checked_at"] = fmt_ts(checked_at) if checked_at else "--"
+    ctx["auto_update_enabled"] = cfg.get("auto_update_enabled", False)
+    auto_status = load_auto_update_status()
+    ctx["auto_update_last"] = ("%s · %s" % (fmt_ts(auto_status.get("last_run_ts")), auto_status.get("result") or "--")) if auto_status.get("last_run_ts") else "Not run yet"
     ctx["msg"] = request.args.get("msg", "")
     ctx["current_mode"] = current_mode_label(cfg)
     ctx["current_mode_key"] = cfg.get("deployment_mode", "commissioning")
@@ -9352,14 +9419,17 @@ def check_update_view():
     return redirect(url_for("controller_settings_view"))
 
 
-@app.route("/settings/update/apply", methods=["POST"])
-def apply_update_view():
+def install_controller_update(trigger="manual"):
+    # Pull the latest code for this controller's branch, deploy Pico firmware if it
+    # changed, then restart. Returns (installed, pico_message). Used by the Install
+    # update button and the nightly auto update.
     status = check_for_update()
     if not status.get("update_available"):
-        return redirect(url_for("controller_settings_view"))
+        return False, ""
 
     branch = status.get("branch") or "main"
     remote_commit = status.get("remote_commit") or "--"
+    previous_commit = status.get("local_commit") or "--"
     code, stdout, stderr = run_git_command(["pull", "--ff-only", "origin", branch], timeout=60)
     save_update_status({
         "checked_at": int(time.time()),
@@ -9373,7 +9443,11 @@ def apply_update_view():
     })
 
     if code != 0:
-        return redirect(url_for("controller_settings_view"))
+        try:
+            record_controller_event("controller_update_failed", "Controller update failed (%s)" % trigger, stderr or stdout or "", push_to_office=True)
+        except Exception:
+            pass
+        return False, ""
 
     pico_message = "Pico firmware already current."
     pico_status_ok = True
@@ -9402,6 +9476,15 @@ def apply_update_view():
         "local_commit": remote_commit,
         "remote_commit": remote_commit,
     })
+    try:
+        record_controller_event(
+            "controller_updated",
+            "Controller updated (%s)" % trigger,
+            "%s -> %s. %s" % (previous_commit, remote_commit, pico_message),
+            push_to_office=True,
+        )
+    except Exception:
+        pass
 
     restart_delay_seconds = 2.5
     if pico_deployed:
@@ -9423,6 +9506,23 @@ def apply_update_view():
             pass
 
     restart_service_or_self(restart_delay_seconds)
+    return True, pico_message
+
+
+@app.route("/settings/update/auto", methods=["POST"])
+def toggle_auto_update_view():
+    cfg = load_config()
+    cfg["auto_update_enabled"] = request.form.get("enabled") == "1"
+    save_config(cfg)
+    record_controller_event("auto_update_toggled", "Nightly auto update %s" % ("on" if cfg["auto_update_enabled"] else "off"), "")
+    return redirect(url_for("controller_settings_view"))
+
+
+@app.route("/settings/update/apply", methods=["POST"])
+def apply_update_view():
+    installed, pico_message = install_controller_update("manual")
+    if not installed:
+        return redirect(url_for("controller_settings_view"))
     return render_template_string(
         """
 <!doctype html>
@@ -10942,4 +11042,5 @@ if __name__ == "__main__":
     start_serial_thread()
     start_monitor_thread()
     start_background_sync_thread()
+    start_auto_update_thread()
     app.run(host="0.0.0.0", port=cfg["listen_port"])
