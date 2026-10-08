@@ -7713,7 +7713,10 @@ OFFICE_HOME_HTML = """
   .ss-nav a.primary { background: var(--navy); border-color: var(--navy); color: #ffffff; }
   .ss-clock { font-size: 40px; font-weight: 700; color: var(--navy); }
 
-  main { max-width: 1400px; margin: 0 auto; padding: 20px 24px 32px; display: flex; flex-direction: column; gap: 18px; }
+  main { max-width: none; margin: 0; padding: 20px 24px 32px; display: flex; flex-direction: column; gap: 18px; }
+  /* Wide PC screens: use the whole width with more shed columns. */
+  @media (min-width: 1600px) { body:not(.tv) .ss-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+  @media (min-width: 2100px) { body:not(.tv) .ss-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
 
   /* Farm summary */
   .ss-summary { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
@@ -7876,6 +7879,49 @@ OFFICE_HOME_HTML = """
   body.tv .ss-card.kind-offline .ss-big, body.tv .ss-card.kind-offline .ss-mid,
   body.tv .ss-card.kind-empty .ss-big, body.tv .ss-card.kind-empty .ss-mid { color: var(--grey); }
   body.tv .ss-card-note { border-radius: 8px; padding: 5px 8px; background: #eceff3; color: var(--muted); font-size: 13px; font-weight: 600; }
+  /* TV readability: a bigger header with the date beside the farm name, and larger,
+     darker small print in the cards (they have the room). */
+  body.tv { --muted: #2c3f54; }
+  body.tv .ss-header { padding: 8px 32px; gap: 28px; }
+  body.tv .ss-logo { height: 70px; }
+  body.tv .ss-farmblock { flex-direction: row; align-items: baseline; gap: 22px; padding-left: 28px; border-left-width: 3px; }
+  body.tv .ss-farm { font-size: 44px; }
+  body.tv .ss-when { font-size: 30px; font-weight: 600; color: var(--text); }
+  body.tv .ss-farmblock { gap: 16px; }
+  body.tv .ss-farm-sep { font-size: 40px; font-weight: 700; color: var(--muted); }
+  body.tv .ss-clock { font-size: 64px; }
+  body.tv .ss-sum-label { font-size: 15px; color: var(--muted); }
+  body.tv .ss-sum-value { font-size: 32px; }
+  body.tv .ss-alarms { font-size: 21px; }
+  body.tv .ss-name { font-size: 28px; }
+  body.tv .ss-status, body.tv .ss-pill { font-size: 15px; }
+  body.tv .ss-birds { font-size: 17px; font-weight: 600; color: var(--text); }
+  body.tv .ss-tile-label { font-size: 15px; font-weight: 600; color: var(--muted); }
+  body.tv .ss-big { font-size: 34px; line-height: 1.05; }
+  body.tv .ss-mid { font-size: 27px; line-height: 1.1; }
+  body.tv .ss-mid small { font-size: 16px; color: var(--muted); }
+  body.tv .ss-hilo { font-size: 15px; line-height: 1.2; color: var(--muted); }
+  body.tv .ss-alloc { font-size: 15px; color: var(--text); }
+  body.tv .ss-auger-name { font-size: 15px; font-weight: 700; }
+  body.tv .ss-auger-state { font-size: 15px; color: var(--text); }
+  body.tv .ss-stat span { font-size: 14px; font-weight: 600; color: var(--muted); }
+  body.tv .ss-stat b { font-size: 17px; white-space: nowrap; }
+  body.tv .ss-grid .ss-stats { grid-template-columns: repeat(4, auto); justify-content: space-between; gap: 2px 8px; padding-top: 4px; }
+  body.tv .ss-card-alarm, body.tv .ss-card-note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  body.tv .ss-card-alarm { font-size: 16px; }
+  body.tv .ss-card-note { font-size: 15px; color: var(--text); }
+  body.tv .ss-grid .ss-foot { display: none; }
+  body.tv .ss-card > *, body.tv .ss-more > * { flex-shrink: 0; }
+  body.tv .ss-grid .ss-alloc { display: none; }
+  body.tv .ss-card-alarm + .ss-card-note { display: none; }
+  body.tv .ss-header { padding-top: 6px; padding-bottom: 6px; }
+  body.tv main { padding-top: 10px; padding-bottom: 10px; gap: 10px; }
+  body.tv #ssCards { gap: 10px; }
+  body.tv .ss-sum { padding: 6px 14px; }
+  body.tv .ss-alarms { padding: 6px 16px; }
+  body.tv .ss-idle { font-size: 22px; }
+  body.tv .ss-card.kind-offline .ss-big, body.tv .ss-card.kind-offline .ss-mid,
+  body.tv .ss-card.kind-empty .ss-big, body.tv .ss-card.kind-empty .ss-mid { color: #6b7d90; }
 </style>
 </head>
 <body class="{{ 'tv' if tv else '' }}">
@@ -7884,6 +7930,7 @@ OFFICE_HOME_HTML = """
     <img class="ss-logo" src="/static/stocksense-logo.png" alt="StockSense, Smarter Livestock Monitoring">
     <div class="ss-farmblock">
       <div class="ss-farm">{{ farm_name }}</div>
+      {% if tv %}<span class="ss-farm-sep" aria-hidden="true">·</span>{% endif %}
       <div class="ss-when"><span id="ssDate">--</span>{% if not tv %} · Office {{ host_ips }}{% endif %}</div>
     </div>
     {% if tv %}
@@ -12402,7 +12449,7 @@ def office_home_context(tv=False):
 
     farm_name = farm_identity()[0]
     if farm_name in ["", "Farm"]:
-        farm_name = "Cherry Dene Farm"
+        farm_name = "Cherry Dene Farm Ltd."
     return {
         "tv": tv,
         "farm_name": farm_name,
