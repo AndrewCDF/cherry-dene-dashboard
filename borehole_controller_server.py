@@ -279,6 +279,14 @@ def apple_touch_icon_view():
     return send_file(CDF_APP_ICON_PATH, mimetype="image/png", max_age=300)
 
 
+# Shared StockSense theme (static/stocksense-theme.css), linked after each page's own styles.
+THEME_HEAD = (
+    '<link rel="preconnect" href="https://fonts.googleapis.com">'
+    '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Semi+Condensed:wght@500;600;700&display=swap">'
+    '<link id="cdf-theme" rel="stylesheet" href="/static/stocksense-theme.css?v=1">'
+)
+
+
 @app.after_request
 def inject_favicon(response):
     try:
@@ -289,6 +297,8 @@ def inject_favicon(response):
                 body = body.replace('<head>', '<head>' + TOUCH_OPTIMIZE_HEAD, 1)
             if "</body>" in body and 'cdf-number-pad-script' not in body:
                 body = body.replace("</body>", NUMBER_PAD_BODY + "</body>", 1)
+            if "</head>" in body and 'cdf-theme' not in body:
+                body = body.replace("</head>", THEME_HEAD + "</head>", 1)
             response.set_data(body)
             response.headers["Content-Length"] = str(len(response.get_data()))
     except Exception:
@@ -755,16 +765,109 @@ def list_backup_files():
     return rows
 
 
-def prune_backup_files():
-    keep = int(load_config().get("backup_keep", 6) or 6)
-    rows = list_backup_files()
-    i = keep
-    while i < len(rows):
+BACKUP_KEEP_ALL_HOURS = 24
+BACKUP_KEEP_DAILY_DAYS = 14
+BACKUP_KEEP_WEEKLY_WEEKS = 8
+BACKUP_KEEP_MANUAL = 10
+BACKUP_KEEP_NEWEST = 6
+BACKUP_RETENTION_TEXT = "Hourly for 24 hours, then one a day for 14 days, then one a week for 8 weeks"
+
+
+def backup_is_healthy(path):
+    # A backup only counts as good if the zip opens cleanly and every JSON file in it parses.
+    try:
+        with zipfile.ZipFile(path) as zf:
+            if zf.testzip() is not None:
+                return False
+            for name in zf.namelist():
+                if name.endswith(".json"):
+                    json.loads(zf.read(name).decode("utf-8") or "null")
+        return True
+    except Exception:
+        return False
+
+
+def backups_to_keep(paths, now_ts=None):
+    # Layered retention: everything from the last 24 hours, the newest backup of each day
+    # for 14 days, the newest of each week for 8 weeks, and the newest 10 manual backups.
+    # Suspect (failed check) backups never count as a day's or week's keeper. The newest 6
+    # good automatic backups are always kept, however old, so a Pi that has been switched
+    # off for months doesn't lose them all on its first backup back.
+    now_ts = int(now_ts or time.time())
+    rows = []
+    for path in paths:
         try:
-            os.remove(rows[i])
+            rows.append((int(os.path.getmtime(path)), path))
         except Exception:
-            pass
-        i += 1
+            continue
+    rows.sort(reverse=True)
+    keep = set()
+    days_seen = set()
+    weeks_seen = set()
+    manual_kept = 0
+    newest_kept = 0
+    for ts, path in rows:
+        name = os.path.basename(path)
+        age = now_ts - ts
+        if "manual" in name:
+            if manual_kept < BACKUP_KEEP_MANUAL:
+                keep.add(path)
+                manual_kept += 1
+            continue
+        if age <= BACKUP_KEEP_ALL_HOURS * 3600:
+            keep.add(path)
+            if "suspect" not in name:
+                newest_kept += 1
+            continue
+        if "suspect" in name:
+            continue
+        if newest_kept < BACKUP_KEEP_NEWEST:
+            newest_kept += 1
+            keep.add(path)
+            continue
+        dt_obj = datetime.fromtimestamp(ts)
+        day_key = dt_obj.strftime("%Y-%m-%d")
+        week_key = dt_obj.strftime("%G-W%V")
+        if age <= BACKUP_KEEP_DAILY_DAYS * 86400:
+            if day_key not in days_seen:
+                days_seen.add(day_key)
+                keep.add(path)
+            continue
+        if age <= BACKUP_KEEP_WEEKLY_WEEKS * 7 * 86400 and week_key not in weeks_seen:
+            weeks_seen.add(week_key)
+            keep.add(path)
+    return keep
+
+
+def prune_backups_layered(paths, newest_path=None):
+    # Never delete anything when the backup just made failed its check: an overnight
+    # corruption must not push the last good copies out.
+    if newest_path is not None and not backup_is_healthy(newest_path):
+        return False
+    keep = backups_to_keep(paths)
+    for path in paths:
+        if path not in keep:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+    return True
+
+
+def mark_backup_suspect_if_bad(path):
+    # Renames a backup that fails its check to *_suspect.zip and returns the new path.
+    if backup_is_healthy(path):
+        return path, True
+    suspect = path[:-4] + "_suspect.zip"
+    try:
+        os.replace(path, suspect)
+        return suspect, False
+    except Exception:
+        return path, False
+
+
+def prune_backup_files(newest_path=None):
+    prune_backups_layered(list_backup_files(), newest_path=newest_path)
 
 
 def create_backup_zip(tag="auto"):
@@ -777,10 +880,12 @@ def create_backup_zip(tag="auto"):
             src = os.path.join(DATA_DIR, filename)
             if os.path.exists(src):
                 zf.write(src, arcname=filename)
-    prune_backup_files()
+    path, healthy = mark_backup_suspect_if_bad(path)
+    if healthy:
+        prune_backup_files()
     mutate_state(lambda state: state.update({
         "last_backup_ts": int(time.time()),
-        "last_backup_status": "Backup OK: %s" % os.path.basename(path),
+        "last_backup_status": ("Backup OK: %s" if healthy else "Backup failed check, older backups kept: %s") % os.path.basename(path),
     }))
     return path
 
@@ -1089,42 +1194,42 @@ HOME_HTML = """
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
   <style>
     :root { --bg:#5b5b5b; --panel:rgba(115,115,115,0.96); --panel2:rgba(104,104,104,0.98); --line:#8a8a8a; --text:#ececec; --muted:#d2d2d2; }
-    body { margin:0; background:var(--bg); color:var(--text); font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; }
+    body { margin:0; background: var(--bg); color: var(--text); font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; }
     .wrap { max-width:1024px; margin:0 auto; padding:18px; }
-    .panel { background:var(--panel); border:1px solid var(--line); border-radius:20px; padding:18px; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius:20px; padding:18px; }
     h1 { margin:0; font-size:40px; line-height:1; }
     h1.active {
-      text-shadow:0 0 10px rgba(53,208,127,0.95),0 0 20px rgba(53,208,127,0.65),0 0 34px rgba(53,208,127,0.35);
+      text-shadow: 0 0 10px rgba(47,158,58,0.52),0 0 20px rgba(47,158,58,0.36),0 0 34px rgba(47,158,58,0.19);
     }
     h1.inactive {
-      text-shadow:0 0 10px rgba(255,91,91,0.95),0 0 20px rgba(255,91,91,0.65),0 0 34px rgba(255,91,91,0.35);
+      text-shadow: 0 0 10px rgba(214,69,69,0.52),0 0 20px rgba(214,69,69,0.36),0 0 34px rgba(214,69,69,0.19);
     }
     .title-row { display:flex; align-items:center; justify-content:space-between; gap:16px; }
     .hero-datetime { font-size:18px; font-weight:700; }
     .hero-datetime.active {
-      text-shadow:0 0 10px rgba(53,208,127,0.95),0 0 20px rgba(53,208,127,0.65),0 0 34px rgba(53,208,127,0.35);
+      text-shadow: 0 0 10px rgba(47,158,58,0.52),0 0 20px rgba(47,158,58,0.36),0 0 34px rgba(47,158,58,0.19);
     }
     .hero-datetime.inactive {
-      text-shadow:0 0 10px rgba(255,91,91,0.95),0 0 20px rgba(255,91,91,0.65),0 0 34px rgba(255,91,91,0.35);
+      text-shadow: 0 0 10px rgba(214,69,69,0.52),0 0 20px rgba(214,69,69,0.36),0 0 34px rgba(214,69,69,0.19);
     }
     .hero-pills { margin-top:14px; }
     .pill-grid { display:grid; grid-template-columns:repeat(6, minmax(0,1fr)); gap:8px; }
-    .pill { border-radius:14px; border:1px solid var(--line); background:var(--panel2); padding:7px 8px; min-height:44px; display:flex; flex-direction:column; justify-content:center; align-items:center; }
-    .pill-label { font-size:9px; letter-spacing:0.08em; text-transform:uppercase; color:var(--muted); }
-    .pill-value { font-size:12px; font-weight:700; color:var(--text); }
-    .pill.ok { border-color:#35d07f; box-shadow:0 0 10px rgba(53,208,127,0.28); }
-    .pill.bad { border-color:#ff5b5b; box-shadow:0 0 10px rgba(255,91,91,0.24); }
+    .pill { border-radius:14px; border: 1px solid var(--line); background: var(--panel2); padding:7px 8px; min-height:44px; display:flex; flex-direction:column; justify-content:center; align-items:center; }
+    .pill-label { font-size:9px; letter-spacing:0.08em; text-transform:uppercase; color: var(--muted); }
+    .pill-value { font-size:12px; font-weight:700; color: var(--text); }
+    .pill.ok { border-color: #2f9e3a; box-shadow: 0 0 10px rgba(47,158,58,0.15); }
+    .pill.bad { border-color: #d64545; box-shadow: 0 0 10px rgba(214,69,69,0.13); }
     .top-grid { margin-top:16px; display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-    .metric-link { color:inherit; text-decoration:none; display:block; }
-    .metric { min-height:188px; border-radius:20px; padding:16px; background:var(--panel); border:1px solid var(--line); }
-    .metric-label { color:var(--muted); font-size:14px; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:12px; }
+    .metric-link { color: inherit; text-decoration:none; display:block; }
+    .metric { min-height:188px; border-radius:20px; padding:16px; background: var(--panel); border: 1px solid var(--line); }
+    .metric-label { color: var(--muted); font-size:14px; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:12px; }
     .metric-val { font-size:42px; font-weight:700; line-height:1; }
-    .metric-sub { margin-top:10px; font-size:15px; color:var(--muted); }
-    .metric.flow-green { border-color:#35d07f; box-shadow:0 0 10px rgba(53,208,127,0.95),0 0 20px rgba(53,208,127,0.65),0 0 34px rgba(53,208,127,0.35); }
-    .metric.flow-red { border-color:#ff5b5b; box-shadow:0 0 10px rgba(255,91,91,0.95),0 0 20px rgba(255,91,91,0.65),0 0 34px rgba(255,91,91,0.35); }
+    .metric-sub { margin-top:10px; font-size:15px; color: var(--muted); }
+    .metric.flow-green { border-color: #2f9e3a; box-shadow: 0 0 10px rgba(47,158,58,0.52),0 0 20px rgba(47,158,58,0.36),0 0 34px rgba(47,158,58,0.19); }
+    .metric.flow-red { border-color: #d64545; box-shadow: 0 0 10px rgba(214,69,69,0.52),0 0 20px rgba(214,69,69,0.36),0 0 34px rgba(214,69,69,0.19); }
     .settings-row { margin-top:16px; }
-    .settings-button { display:flex; align-items:center; justify-content:center; gap:14px; min-height:98px; border-radius:16px; border:1px solid var(--line); background:linear-gradient(180deg, #7a7a7a, #676767); color:var(--text); text-decoration:none; font-size:26px; font-weight:700; }
-    .msg { margin-bottom:14px; padding:10px 12px; border-radius:12px; background:var(--panel); border:1px solid var(--line); }
+    .settings-button { display:flex; align-items:center; justify-content:center; gap:14px; min-height:98px; border-radius:16px; border: 1px solid var(--line); background: #ffffff; color: var(--text); text-decoration:none; font-size:26px; font-weight:700; }
+    .msg { margin-bottom:14px; padding:10px 12px; border-radius:12px; background: var(--panel); border: 1px solid var(--line); }
     @media (min-width: 901px) and (max-width: 1100px) and (max-height: 700px) {
       .wrap { padding:10px 12px 12px; }
       .panel { border-radius:16px; padding:12px; }
@@ -1152,7 +1257,10 @@ HOME_HTML = """
     {% if msg and not hide_home_alerts %}<div class="msg">{{ msg }}</div>{% endif %}
     <div class="panel">
       <div class="title-row">
-        <h1 id="headerTitle" class="{{ header_class }}">CDF - BORE HOLE</h1>
+        <div style="display: flex; align-items: center; gap: 16px">
+            <img src="/static/stocksense-logo.png" alt="StockSense, Smarter Livestock Monitoring" style="height: 52px; width: auto; display: block">
+            <h1 id="headerTitle" class="{{ header_class }}" style="padding-left: 16px; border-left: 1px solid #d5dde6">Bore Hole</h1>
+        </div>
         <div id="dateTime" class="hero-datetime {{ header_class }}">{{ current_datetime }}</div>
       </div>
       <div class="hero-pills">
@@ -1254,9 +1362,9 @@ SETTINGS_HTML = """
     }
     body {
       margin:0;
-      color:var(--text);
+      color: var(--text);
       font-family:"Helvetica Neue", Helvetica, Arial, sans-serif;
-      background:#5b5b5b;
+      background: #5b5b5b;
     }
     .wrap {
       max-width:1024px;
@@ -1267,7 +1375,7 @@ SETTINGS_HTML = """
       margin-bottom:16px;
     }
     .topbar a {
-      color:var(--text);
+      color: var(--text);
       text-decoration:none;
       font-size:18px;
     }
@@ -1277,8 +1385,8 @@ SETTINGS_HTML = """
       gap:16px;
     }
     .panel {
-      background:var(--panel);
-      border:1px solid var(--line);
+      background: var(--panel);
+      border: 1px solid var(--line);
       border-radius:20px;
       padding:18px;
     }
@@ -1287,7 +1395,7 @@ SETTINGS_HTML = """
       font-size:38px;
     }
     .sub {
-      color:var(--muted);
+      color: var(--muted);
       margin-bottom:16px;
       font-size:18px;
     }
@@ -1304,9 +1412,9 @@ SETTINGS_HTML = """
       min-height:74px;
       width:100%;
       border-radius:16px;
-      border:1px solid #8a8a8a;
-      background:linear-gradient(180deg, #7a7a7a, #676767);
-      color:var(--text);
+      border: 1px solid #d5dde6;
+      background: #ffffff;
+      color: var(--text);
       font-size:20px;
       font-weight:700;
       text-decoration:none;
@@ -1329,29 +1437,29 @@ SETTINGS_HTML = """
       justify-content:space-between;
       gap:12px;
       padding:12px 0;
-      border-bottom:1px solid #818181;
+      border-bottom: 1px solid #d5dde6;
       font-size:18px;
     }
     .detail:last-child {
-      border-bottom:0;
+      border-bottom: 0;
     }
     .label {
-      color:var(--muted);
+      color: var(--muted);
     }
     .status-note {
       margin:12px 0 0;
-      color:var(--muted);
+      color: var(--muted);
       font-size:16px;
     }
     .status-note.is-busy {
-      color:var(--text);
+      color: var(--text);
     }
     .msg {
       margin-bottom:16px;
       padding:12px 14px;
       border-radius:14px;
-      border:1px solid #8a8a8a;
-      background:rgba(115,115,115,0.96);
+      border: 1px solid #d5dde6;
+      background: #ffffff;
       font-size:18px;
     }
     .button-row {
@@ -1370,8 +1478,8 @@ SETTINGS_HTML = """
       margin-top:12px;
     }
     .update-box {
-      background:var(--panel-2);
-      border:1px solid var(--line);
+      background: var(--panel-2);
+      border: 1px solid var(--line);
       border-radius:16px;
       padding:16px;
     }
@@ -1387,15 +1495,15 @@ SETTINGS_HTML = """
       min-height:74px;
       width:100%;
       border-radius:16px;
-      border:1px solid #8a8a8a;
-      background:linear-gradient(180deg, #7a7a7a, #676767);
-      color:var(--text);
+      border: 1px solid #d5dde6;
+      background: #ffffff;
+      color: var(--text);
       font-size:20px;
       font-weight:700;
       cursor:pointer;
     }
     button.secondary {
-      background:linear-gradient(180deg, #737373, #626262);
+      background: #ffffff;
     }
     @media (max-width:900px) {
       .grid {
@@ -1494,7 +1602,7 @@ SETTINGS_HTML = """
           <div class="button-row">
             <form method="post" action="{{ url_for('switch_mode_view') }}">
               <input type="hidden" name="target_mode" value="{{ next_mode_key }}">
-              <input type="number" name="mode_pin" inputmode="numeric" enterkeyhint="done" placeholder="Enter mode PIN" style="width:100%; min-height:64px; border-radius:14px; border:1px solid #8a8a8a; background:#686868; color:#ececec; font-size:22px; padding:10px 14px; box-sizing:border-box; margin-bottom:12px;">
+              <input type="number" name="mode_pin" inputmode="numeric" enterkeyhint="done" placeholder="Enter mode PIN" style="width:100%; min-height:64px; border-radius:14px; border: 1px solid #d5dde6; background: #f5f8fb; color: #0d2b4a; font-size:22px; padding:10px 14px; box-sizing:border-box; margin-bottom:12px;">
               <button type="submit">{{ "Go Live" if next_mode_key == "live" else "Return to Commissioning" }}</button>
             </form>
           </div>
@@ -1571,7 +1679,7 @@ SETTINGS_HTML = """
 
 SIMPLE_PAGE_HTML = """
 <!doctype html><html><head><meta charset="utf-8"><title>{{ title }}</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>
-body{margin:0;background:#5b5b5b;color:#ececec;font-family:Arial,sans-serif}.wrap{max-width:1100px;margin:0 auto;padding:18px}.panel{background:rgba(115,115,115,0.96);border:1px solid #8a8a8a;border-radius:20px;padding:18px}.topbar{margin-bottom:14px}.topbar a{color:#ececec;text-decoration:none}.detail{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid #818181}.detail:last-child{border-bottom:0}.label{color:#d2d2d2}.alarm{padding:10px 12px;border-radius:12px;border:1px solid rgba(255,119,119,0.35);background:rgba(84,34,34,0.38);margin-top:10px}.mono{font-family:ui-monospace, monospace; color:#d2d2d2; word-break:break-word}.button-link,button,input,textarea{border-radius:14px;border:1px solid #8a8a8a}.button-link,button{display:flex;align-items:center;justify-content:center;min-height:58px;width:100%;background:linear-gradient(180deg,#7a7a7a,#676767);color:#ececec;text-decoration:none;font-size:20px;font-weight:700;cursor:pointer}input{width:100%;box-sizing:border-box;min-height:58px;background:rgba(104,104,104,0.98);color:#ececec;font-size:20px;padding:12px 14px;margin-bottom:12px}table{width:100%;border-collapse:collapse}th,td{padding:10px 8px;border-bottom:1px solid #818181;text-align:left}th{color:#d2d2d2}
+body{margin:0;background: #5b5b5b;color: #0d2b4a;font-family:Arial,sans-serif}.wrap{max-width:1100px;margin:0 auto;padding:18px}.panel{background: #ffffff;border: 1px solid #d5dde6;border-radius:20px;padding:18px}.topbar{margin-bottom:14px}.topbar a{color: #0d2b4a;text-decoration:none}.detail{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom: 1px solid #d5dde6}.detail:last-child{border-bottom: 0}.label{color: #0d2b4a}.alarm{padding:10px 12px;border-radius:12px;border: 1px solid rgba(214,69,69,0.35);background: #fdecec;margin-top:10px}.mono{font-family:ui-monospace, monospace; color: #0d2b4a; word-break:break-word}.button-link,button,input,textarea{border-radius:14px;border: 1px solid #d5dde6}.button-link,button{display:flex;align-items:center;justify-content:center;min-height:58px;width:100%;background: #ffffff;color: #0d2b4a;text-decoration:none;font-size:20px;font-weight:700;cursor:pointer}input{width:100%;box-sizing:border-box;min-height:58px;background: #ffffff;color: #0d2b4a;font-size:20px;padding:12px 14px;margin-bottom:12px}table{width:100%;border-collapse:collapse}th,td{padding:10px 8px;border-bottom: 1px solid #d5dde6;text-align:left}th{color: #0d2b4a}
 </style></head><body><div class="wrap"><div class="topbar"><a href="{{ back_url }}">← Back</a></div><div class="panel">{{ body|safe }}</div></div></body></html>
 """
 
@@ -1585,21 +1693,21 @@ WATER_SETTINGS_HTML = """
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
   <style>
     :root { --bg:#5b5b5b; --panel:rgba(115,115,115,0.96); --line:#8a8a8a; --text:#ececec; --muted:#d2d2d2; }
-    body { margin:0; color:var(--text); font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; background:var(--bg); }
+    body { margin:0; color: var(--text); font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; background: var(--bg); }
     .wrap { max-width:860px; margin:0 auto; padding:18px; }
     .topbar { margin-bottom:16px; }
-    .topbar a { color:var(--text); text-decoration:none; font-size:18px; }
-    .panel { background:var(--panel); border:1px solid var(--line); border-radius:20px; padding:18px; margin-bottom:16px; }
+    .topbar a { color: var(--text); text-decoration:none; font-size:18px; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius:20px; padding:18px; margin-bottom:16px; }
     h1 { margin:0 0 8px 0; font-size:38px; }
-    .sub { color:var(--muted); margin-bottom:16px; font-size:18px; }
+    .sub { color: var(--muted); margin-bottom:16px; font-size:18px; }
     .current { font-size:34px; font-weight:700; }
-    label { display:block; color:var(--muted); font-size:16px; margin-bottom:8px; }
-    input[type="number"] { width:100%; min-height:72px; border-radius:16px; border:1px solid var(--line); background:#686868; color:var(--text); font-size:30px; padding:12px 16px; box-sizing:border-box; }
-    button { min-height:72px; width:100%; border-radius:16px; border:1px solid #8a8a8a; background:linear-gradient(180deg, #7d7d7d, #696969); color:var(--text); font-size:22px; font-weight:700; padding:0 18px; cursor:pointer; margin-top:14px; }
-    .hint { color:var(--muted); font-size:16px; margin-top:12px; }
-    .detail { display:flex; justify-content:space-between; gap:12px; padding:10px 0; border-bottom:1px solid #818181; }
-    .detail:last-child { border-bottom:0; }
-    .label { color:var(--muted); }
+    label { display:block; color: var(--muted); font-size:16px; margin-bottom:8px; }
+    input[type="number"] { width:100%; min-height:72px; border-radius:16px; border: 1px solid var(--line); background: #f5f8fb; color: var(--text); font-size:30px; padding:12px 16px; box-sizing:border-box; }
+    button { min-height:72px; width:100%; border-radius:16px; border: 1px solid #d5dde6; background: #ffffff; color: var(--text); font-size:22px; font-weight:700; padding:0 18px; cursor:pointer; margin-top:14px; }
+    .hint { color: var(--muted); font-size:16px; margin-top:12px; }
+    .detail { display:flex; justify-content:space-between; gap:12px; padding:10px 0; border-bottom: 1px solid #d5dde6; }
+    .detail:last-child { border-bottom: 0; }
+    .label { color: var(--muted); }
     .grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
     @media (max-width:900px) { .grid { grid-template-columns:1fr; } }
   </style>
@@ -1663,16 +1771,16 @@ BOREHOLE_COMMISSIONING_HTML = """
   <title>Bore Hole Commissioning</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
-    body { margin:0; font-family:Arial,sans-serif; background:#5b5b5b; color:#ececec; }
+    body { margin:0; font-family:Arial,sans-serif; background: #5b5b5b; color: #0d2b4a; }
     .wrap { max-width:1040px; margin:0 auto; padding:24px; }
-    .topbar a { color:#ececec; text-decoration:none; }
+    .topbar a { color: #0d2b4a; text-decoration:none; }
     .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:16px; }
-    .panel { background:#737373; border:1px solid #8a8a8a; border-radius:14px; padding:16px; }
-    .detail { display:flex; justify-content:space-between; gap:12px; padding:10px 0; border-bottom:1px solid #818181; }
-    .detail:last-child { border-bottom:0; }
-    .label { color:#d2d2d2; }
+    .panel { background: #f5f8fb; border: 1px solid #d5dde6; border-radius:14px; padding:16px; }
+    .detail { display:flex; justify-content:space-between; gap:12px; padding:10px 0; border-bottom: 1px solid #d5dde6; }
+    .detail:last-child { border-bottom: 0; }
+    .label { color: #0d2b4a; }
     .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-all; }
-    pre { background:#656565; border:1px solid #8a8a8a; border-radius:12px; padding:12px; white-space:pre-wrap; word-break:break-word; }
+    pre { background: #656565; border: 1px solid #d5dde6; border-radius:12px; padding:12px; white-space:pre-wrap; word-break:break-word; }
     @media (max-width:900px) { .grid { grid-template-columns:1fr; } }
   </style>
 </head>
@@ -1716,19 +1824,19 @@ HISTORY_HTML = """
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
   <style>
     :root { --bg:#5b5b5b; --panel:rgba(115,115,115,0.96); --line:#8a8a8a; --text:#ececec; --muted:#d2d2d2; }
-    body { margin:0; color:var(--text); font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; background:var(--bg); }
+    body { margin:0; color: var(--text); font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; background: var(--bg); }
     .wrap { max-width:1100px; margin:0 auto; padding:18px; }
     .topbar { margin-bottom:16px; }
-    .topbar a { color:var(--text); text-decoration:none; font-size:18px; }
-    .panel { background:var(--panel); border:1px solid var(--line); border-radius:20px; padding:18px; margin-bottom:16px; }
+    .topbar a { color: var(--text); text-decoration:none; font-size:18px; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius:20px; padding:18px; margin-bottom:16px; }
     h1 { margin:0 0 8px 0; font-size:38px; }
-    .sub { color:var(--muted); margin-bottom:16px; font-size:18px; }
+    .sub { color: var(--muted); margin-bottom:16px; font-size:18px; }
     .chart-wrap { margin-top:10px; }
     .chart-box { position:relative; height:340px; }
     table { width:100%; border-collapse:collapse; }
-    th, td { padding:10px 8px; border-bottom:1px solid #818181; text-align:left; }
-    th { color:var(--muted); }
-    .empty { color:var(--muted); font-size:18px; }
+    th, td { padding:10px 8px; border-bottom: 1px solid #d5dde6; text-align:left; }
+    th { color: var(--muted); }
+    .empty { color: var(--muted); font-size:18px; }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -1785,10 +1893,10 @@ HISTORY_HTML = """
           responsive: true,
           maintainAspectRatio: false,
           animation: false,
-          plugins: { legend: { labels: { color: '#ececec' } } },
+          plugins: { legend: { labels: { color: '#0d2b4a'} } },
           scales: {
-            x: { ticks: { color: '#d2d2d2' }, grid: { color: '#818181' } },
-            y: { ticks: { color: '#d2d2d2' }, grid: { color: '#818181' } }
+            x: { ticks: { color: '#4a6078'}, grid: { color: '#0d2b4a'} },
+            y: { ticks: { color: '#4a6078'}, grid: { color: '#0d2b4a'} }
           }
         }
       });
@@ -2237,11 +2345,11 @@ def apply_update_view():
   <meta http-equiv="refresh" content="6; url={{ url_for('settings_view') }}">
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
   <style>
-    body { margin:0; background:#5b5b5b; color:#ececec; font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; }
+    body { margin:0; background: #5b5b5b; color: #0d2b4a; font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; }
     .wrap { max-width:760px; margin:0 auto; padding:32px 18px; }
-    .panel { background:rgba(115,115,115,0.96); border:1px solid #8a8a8a; border-radius:20px; padding:24px; }
+    .panel { background: #ffffff; border: 1px solid #d5dde6; border-radius:20px; padding:24px; }
     h1 { margin:0 0 12px 0; font-size:34px; }
-    .sub { color:#d2d2d2; font-size:18px; }
+    .sub { color: #0d2b4a; font-size:18px; }
   </style>
 </head>
 <body>
