@@ -7592,7 +7592,7 @@ OFFICE_CARDS_HTML = """
   {% for s in sheds %}
   <article class="ss-card kind-{{ s.kind }}" data-shed="{{ s.shed_no }}">
     {% set off = not s.live %}
-    {% if tv %}<div class="ss-card-head ss-static">{% else %}<button type="button" class="ss-card-head" aria-expanded="false" data-toggle="{{ s.shed_no }}">{% endif %}
+    {% if tv and pc %}<a class="ss-card-head ss-static ss-card-link" href="{{ url_for('shed_detail', shed_no=s.shed_no) }}">{% elif tv %}<div class="ss-card-head ss-static">{% else %}<button type="button" class="ss-card-head" aria-expanded="false" data-toggle="{{ s.shed_no }}">{% endif %}
       <span class="ss-row">
         <span class="ss-name">{{ s.name }}</span>
         <span class="ss-pill sync-{{ s.sync_kind }}"><span class="ss-dot"></span>{{ s.sync_label }}</span>
@@ -7608,7 +7608,7 @@ OFFICE_CARDS_HTML = """
         </span>
         {% endif %}
       </span>
-    {% if tv %}</div>{% else %}</button>{% endif %}
+    {% if tv and pc %}</a>{% elif tv %}</div>{% else %}</button>{% endif %}
 
     {% if s.live or tv %}
     <div class="ss-tiles">
@@ -7655,10 +7655,10 @@ OFFICE_CARDS_HTML = """
 
   {% if tv %}
   <article class="ss-card kind-water">
-    <div class="ss-card-head ss-static">
+    {% if pc %}<a class="ss-card-head ss-static ss-card-link" href="{{ url_for('borehole_detail') }}">{% else %}<div class="ss-card-head ss-static">{% endif %}
       <span class="ss-row"><span class="ss-name">Bore hole</span><span class="ss-status kind-{{ borehole.kind }}">{{ borehole.status }}</span></span>
       <span class="ss-row"><span class="ss-birds">Flow now {{ borehole.water }} L/min</span></span>
-    </div>
+    {% if pc %}</a>{% else %}</div>{% endif %}
     <div class="ss-idle"><b>{{ borehole.daily }} L</b> today<br>Last 7 days {{ borehole.weekly }} L</div>
     <div class="ss-foot"><span>Updated {{ borehole.updated }}</span></div>
   </article>
@@ -7914,6 +7914,12 @@ OFFICE_HOME_HTML = """
   body.tv .ss-card > *, body.tv .ss-more > * { flex-shrink: 0; }
   body.tv .ss-grid .ss-alloc { display: none; }
   body.tv .ss-card-alarm + .ss-card-note { display: none; }
+  /* PC wall: same as the TV, plus the menu buttons and clickable sheds. */
+  body.tv.tv-pc .ss-nav { display: flex; margin-left: auto; gap: 10px; }
+  body.tv.tv-pc .ss-nav a { min-height: 50px; padding: 0 20px; font-size: 18px; }
+  body.tv.tv-pc .ss-clock { margin-left: 18px; }
+  .ss-card-link { color: inherit; text-decoration: none; cursor: pointer; }
+  .ss-card-link:hover .ss-name { text-decoration: underline; }
   body.tv .ss-header { padding-top: 6px; padding-bottom: 6px; }
   body.tv main { padding-top: 10px; padding-bottom: 10px; gap: 10px; }
   body.tv #ssCards { gap: 10px; }
@@ -7924,7 +7930,7 @@ OFFICE_HOME_HTML = """
   body.tv .ss-card.kind-empty .ss-big, body.tv .ss-card.kind-empty .ss-mid { color: #6b7d90; }
 </style>
 </head>
-<body class="{{ 'tv' if tv else '' }}">
+<body class="{{ 'tv' if tv else '' }}{{ ' tv-pc' if pc else '' }}">
 <div class="ss-page">
   <header class="ss-header">
     <img class="ss-logo" src="/static/stocksense-logo.png" alt="StockSense, Smarter Livestock Monitoring">
@@ -7933,7 +7939,7 @@ OFFICE_HOME_HTML = """
       {% if tv %}<span class="ss-farm-sep" aria-hidden="true">·</span>{% endif %}
       <div class="ss-when"><span id="ssDate">--</span>{% if not tv %} · Office {{ host_ips }}{% endif %}</div>
     </div>
-    {% if tv %}
+    {% if tv and not pc %}
     <div class="ss-clock" id="ssClock">--:--</div>
     {% else %}
     <nav class="ss-nav" aria-label="Office pages">
@@ -7942,13 +7948,14 @@ OFFICE_HOME_HTML = """
       <a href="{{ url_for('office_crop_reports_view') }}">Crop reports</a>
       <a href="{{ url_for('office_settings_view') }}" class="primary">Settings</a>
     </nav>
+    {% if pc %}<div class="ss-clock" id="ssClock">--:--</div>{% endif %}
     {% endif %}
   </header>
   <main>
     <div id="ssCards">{{ cards_html|safe }}</div>
   </main>
 </div>
-{% if not tv %}
+{% if not tv or pc %}
 <script>
 // Fully Kiosk Browser (the farm TV) adds a "fully" object to every page. Show it the
 // TV wall; open the page with ?tv=0 to keep the normal layout on a Fully Kiosk device.
@@ -7966,11 +7973,16 @@ if (window.fully && !/[?&]tv=0/.test(window.location.search)) { window.location.
     var w = window.innerWidth || document.documentElement.clientWidth;
     var h = window.innerHeight || document.documentElement.clientHeight;
     if (!w || !h || !page) return;
-    var scale = Math.min(w / 1920, h / 1080);
+    // Fit the height to 1080 and let the width follow the screen's shape, so the wall
+    // fills a browser window or TV edge to edge. Very narrow windows keep 1920 wide instead.
+    var scale = h / 1080;
+    var width = w / scale;
+    if (width < 1600) { scale = w / 1920; width = 1920; }
     if ((' ' + body.className + ' ').indexOf(' tv-scaled ') < 0) body.className += ' tv-scaled';
+    page.style.width = width + 'px';
     page.style.webkitTransform = 'scale(' + scale + ')';
     page.style.transform = 'scale(' + scale + ')';
-    page.style.left = Math.max(0, (w - 1920 * scale) / 2) + 'px';
+    page.style.left = Math.max(0, (w - width * scale) / 2) + 'px';
     page.style.top = Math.max(0, (h - 1080 * scale) / 2) + 'px';
   }
   fit();
@@ -8008,6 +8020,7 @@ if (window.fully && !/[?&]tv=0/.test(window.location.search)) { window.location.
 <script>
 window.ssMainLoaded = true;
 const SS_TV = {{ 'true' if tv else 'false' }};
+const SS_PC = {{ 'true' if pc else 'false' }};
 const ssOpen = new Set();
 
 function ssClock() {
@@ -8046,7 +8059,7 @@ document.addEventListener('click', (event) => {
 
 async function ssRefresh() {
   try {
-    const resp = await fetch('/api/home-cards?tv=' + (SS_TV ? '1' : '0'), { cache: 'no-store' });
+    const resp = await fetch('/api/home-cards?tv=' + (SS_TV ? '1' : '0') + (SS_PC ? '&pc=1' : ''), { cache: 'no-store' });
     if (!resp.ok) return;
     document.getElementById('ssCards').innerHTML = await resp.text();
     ssApplyOpen();
@@ -12462,8 +12475,9 @@ def office_home_context(tv=False):
     }
 
 
-def render_office_home(tv=False):
+def render_office_home(tv=False, pc=False):
     ctx = office_home_context(tv=tv)
+    ctx["pc"] = pc
     ctx["cards_html"] = render_template_string(OFFICE_CARDS_HTML, **ctx)
     return render_template_string(OFFICE_HOME_HTML, **ctx)
 
@@ -12476,6 +12490,9 @@ SMART_TV_AGENT_RE = re.compile(
 )
 
 
+PHONE_AGENT_RE = re.compile(r"iphone|ipod|android.*mobile|mobile safari|windows phone|blackberry|opera mini", re.I)
+
+
 def request_wants_tv():
     choice = str(request.args.get("tv", "") or "").strip()
     if choice in ["1", "0"]:
@@ -12483,9 +12500,23 @@ def request_wants_tv():
     return bool(SMART_TV_AGENT_RE.search(request.headers.get("User-Agent", "") or ""))
 
 
+def office_home_layout():
+    """(tv, pc): TVs get the wall, PCs get the wall with menu buttons, phones the stacked cards."""
+    choice = str(request.args.get("tv", "") or "").strip()
+    agent = request.headers.get("User-Agent", "") or ""
+    if choice == "0":
+        return False, False
+    if choice == "1" or SMART_TV_AGENT_RE.search(agent):
+        return True, False
+    if PHONE_AGENT_RE.search(agent):
+        return False, False
+    return True, True
+
+
 @app.route("/")
 def dashboard():
-    return render_office_home(tv=request_wants_tv())
+    tv, pc = office_home_layout()
+    return render_office_home(tv=tv, pc=pc)
 
 
 @app.route("/tv")
@@ -12500,7 +12531,9 @@ def classic_dashboard():
 
 @app.route("/api/home-cards")
 def office_home_cards_api():
-    return render_template_string(OFFICE_CARDS_HTML, **office_home_context(tv=request_wants_tv()))
+    ctx = office_home_context(tv=request_wants_tv())
+    ctx["pc"] = request.args.get("pc") == "1"
+    return render_template_string(OFFICE_CARDS_HTML, **ctx)
 
 
 @app.route("/events")
