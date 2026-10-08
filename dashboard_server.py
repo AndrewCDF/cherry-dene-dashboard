@@ -21,36 +21,17 @@ from xml.sax.saxutils import escape as xml_escape
 
 app = Flask(__name__)
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
-CDF_APP_ICON_PATH = os.path.join(
-    APP_ROOT, "ios", "CherryDeneMobile", "Assets.xcassets", "AppIcon.appiconset", "AppIcon-1024.png"
-)
+STOCKSENSE_ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+CDF_APP_ICON_PATH = os.path.join(STOCKSENSE_ICON_DIR, "stocksense-icon-180.png")
+FAVICON_PNG_PATH = os.path.join(STOCKSENSE_ICON_DIR, "stocksense-icon-64.png")
 
-CDF_FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#5b5b5b"/>
-      <stop offset="100%" stop-color="#3f3f3f"/>
-    </linearGradient>
-    <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#4a4a4a"/>
-      <stop offset="100%" stop-color="#343434"/>
-    </linearGradient>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="24" stdDeviation="28" flood-color="#000000" flood-opacity="0.28"/>
-    </filter>
-  </defs>
-  <rect width="1024" height="1024" rx="224" fill="url(#bg)"/>
-  <rect x="98" y="98" width="828" height="828" rx="184" fill="url(#panel)" filter="url(#shadow)"/>
-  <rect x="126" y="126" width="772" height="772" rx="156" fill="none" stroke="#35d07f" stroke-width="26"/>
-  <text x="512" y="610" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="304" font-weight="700" letter-spacing="-20" fill="#f3f3f3">CDF</text>
-</svg>"""
 FAVICON_HEAD_HTML = (
-    '<link rel="icon" type="image/svg+xml" href="/favicon.svg">'
+    '<link rel="icon" type="image/png" href="/favicon.png">'
     '<link rel="apple-touch-icon" href="/apple-touch-icon.png">'
     '<link rel="manifest" href="/manifest.webmanifest">'
     '<meta name="apple-mobile-web-app-capable" content="yes">'
-    '<meta name="apple-mobile-web-app-title" content="CDF">'
-    '<meta name="theme-color" content="#5b5b5b">'
+    '<meta name="apple-mobile-web-app-title" content="StockSense">'
+    '<meta name="theme-color" content="#ffffff">'
 )
 
 
@@ -82,9 +63,10 @@ app.jinja_env.globals["render_page_nav"] = render_page_nav
 
 
 @app.route("/favicon.ico")
+@app.route("/favicon.png")
 @app.route("/favicon.svg")
 def favicon_view():
-    return Response(CDF_FAVICON_SVG, mimetype="image/svg+xml")
+    return send_file(FAVICON_PNG_PATH, mimetype="image/png", max_age=300)
 
 
 @app.route("/apple-touch-icon.png")
@@ -96,18 +78,15 @@ def apple_touch_icon_view():
 @app.route("/manifest.webmanifest")
 def web_manifest_view():
     return jsonify({
-        "name": "Cherry Dene Dashboard",
-        "short_name": "CDF",
+        "name": "StockSense",
+        "short_name": "StockSense",
         "start_url": "/",
         "display": "standalone",
-        "background_color": "#5b5b5b",
-        "theme_color": "#5b5b5b",
+        "background_color": "#eef2f6",
+        "theme_color": "#ffffff",
         "icons": [
-            {
-                "src": "/apple-touch-icon.png",
-                "sizes": "1024x1024",
-                "type": "image/png",
-            }
+            {"src": "/static/stocksense-icon-192.png", "sizes": "192x192", "type": "image/png"},
+            {"src": "/static/stocksense-icon-512.png", "sizes": "512x512", "type": "image/png"},
         ],
     })
 
@@ -7918,8 +7897,9 @@ OFFICE_HOME_HTML = """
   body.tv .ss-grid .ss-stat span { font-size: 13px; line-height: 1.15; }
   body.tv .ss-grid .ss-stat b { font-size: 16px; line-height: 1.15; }
   body.tv .ss-grid .ss-card { gap: 5px; }
-  /* The reading tiles take up any spare height so every card is evenly filled. */
-  body.tv .ss-grid .ss-tiles { flex: 1 1 auto; grid-auto-rows: 1fr; align-content: stretch; }
+  /* Keep the reading tiles compact and spread any spare height evenly between the
+     card's sections, so every card looks filled. */
+  body.tv .ss-grid .ss-card { justify-content: space-between; }
   body.tv .ss-card-alarm, body.tv .ss-card-note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   body.tv .ss-card-alarm { font-size: 16px; }
   body.tv .ss-card-note { font-size: 15px; color: var(--text); }
@@ -7930,7 +7910,15 @@ OFFICE_HOME_HTML = """
   /* PC wall: same as the TV, plus the menu buttons and clickable sheds. */
   body.tv.tv-pc .ss-nav { display: flex; margin-left: auto; gap: 10px; }
   body.tv.tv-pc .ss-nav a { min-height: 50px; padding: 0 20px; font-size: 18px; }
-  body.tv.tv-pc .ss-clock { margin-left: 18px; }
+  body.tv.tv-pc .ss-clock { margin-left: 18px; font-size: 56px; }
+  /* The wall's header always stays on one line, so the cards keep their full height. */
+  body.tv .ss-header { flex-wrap: nowrap; }
+  body.tv .ss-header > * { flex-shrink: 0; }
+  body.tv .ss-farmblock { flex-shrink: 1; min-width: 0; overflow: hidden; white-space: nowrap; }
+  body.tv.tv-pc .ss-farm { font-size: 38px; }
+  body.tv.tv-pc .ss-when { font-size: 26px; }
+  body.tv.tv-pc .ss-nav a { min-height: 46px; padding: 0 16px; font-size: 17px; }
+  body.tv .ss-grid .ss-birds { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .ss-card-link { color: inherit; text-decoration: none; cursor: pointer; }
   .ss-card-link:hover .ss-name { text-decoration: underline; }
   body.tv .ss-header { padding-top: 6px; padding-bottom: 6px; }

@@ -22,40 +22,16 @@ except Exception:
     serial = None
 
 app = Flask(__name__)
-CDF_APP_ICON_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "ios",
-    "CherryDeneMobile",
-    "Assets.xcassets",
-    "AppIcon.appiconset",
-    "AppIcon-1024.png",
-)
+STOCKSENSE_ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+CDF_APP_ICON_PATH = os.path.join(STOCKSENSE_ICON_DIR, "stocksense-icon-180.png")
+FAVICON_PNG_PATH = os.path.join(STOCKSENSE_ICON_DIR, "stocksense-icon-64.png")
 
-CDF_FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#5b5b5b"/>
-      <stop offset="100%" stop-color="#3f3f3f"/>
-    </linearGradient>
-    <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#4a4a4a"/>
-      <stop offset="100%" stop-color="#343434"/>
-    </linearGradient>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="24" stdDeviation="28" flood-color="#000000" flood-opacity="0.28"/>
-    </filter>
-  </defs>
-  <rect width="1024" height="1024" rx="224" fill="url(#bg)"/>
-  <rect x="98" y="98" width="828" height="828" rx="184" fill="url(#panel)" filter="url(#shadow)"/>
-  <rect x="126" y="126" width="772" height="772" rx="156" fill="none" stroke="#35d07f" stroke-width="26"/>
-  <text x="512" y="610" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="304" font-weight="700" letter-spacing="-20" fill="#f3f3f3">CDF</text>
-</svg>"""
 
 TOUCH_OPTIMIZE_HEAD = (
-    '<link rel="icon" type="image/svg+xml" href="/favicon.svg">'
+    '<link rel="icon" type="image/png" href="/favicon.png">'
     '<link rel="apple-touch-icon" href="/apple-touch-icon.png">'
     '<meta name="apple-mobile-web-app-capable" content="yes">'
-    '<meta name="apple-mobile-web-app-title" content="CDF">'
+    '<meta name="apple-mobile-web-app-title" content="StockSense">'
     '<style id="cdf-touch-optimize">'
     'html,body{touch-action:pan-y;overscroll-behavior-y:contain;-webkit-overflow-scrolling:touch;}'
     'body,*{-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none;}'
@@ -332,9 +308,10 @@ NUMBER_PAD_BODY = """
 
 
 @app.route("/favicon.ico")
+@app.route("/favicon.png")
 @app.route("/favicon.svg")
 def favicon_view():
-    return Response(CDF_FAVICON_SVG, mimetype="image/svg+xml")
+    return send_file(FAVICON_PNG_PATH, mimetype="image/png", max_age=300)
 
 
 @app.route("/apple-touch-icon.png")
