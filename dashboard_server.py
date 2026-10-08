@@ -12326,11 +12326,18 @@ def office_home_context(tv=False):
 
     overall = ctx.get("overall", {}) or {}
     active_sheds = len([s for s in sheds if s["live"]])
+
+    # overall water/feed are crop-to-date totals; the tiles want yesterday (6am to 6am),
+    # so add up each shed's own yesterday figures.
+    def yesterday_total(key, fmt):
+        values = [_num(r.get(key)) for r in ctx.get("sheds", [])]
+        values = [v for v in values if v is not None]
+        return fmt_value(sum(values), fmt) if values else None
     summary = [
         {"label": "Birds on farm", "value": "%s (%s)" % (overall.get("birds_placed", "--"), overall.get("birds_remaining", "--")), "sub": "Placed (live) · %d shed%s" % (active_sheds, "" if active_sheds == 1 else "s"), "tone": "navy"},
         {"label": "Crop day", "value": crop_day, "sub": overall.get("farm_crop_id", "--"), "tone": "navy"},
-        {"label": "Water yesterday", "value": _with_unit(overall.get("water"), "L"), "sub": "6am to 6am", "tone": "blue"},
-        {"label": "Feed yesterday", "value": _with_unit(overall.get("feed"), "kg"), "sub": "6am to 6am", "tone": "green"},
+        {"label": "Water yesterday", "value": _with_unit(yesterday_total("water_7to7", "f0"), "L"), "sub": "6am to 6am", "tone": "blue"},
+        {"label": "Feed yesterday", "value": _with_unit(yesterday_total("feed_7to7", "f1"), "kg"), "sub": "6am to 6am", "tone": "green"},
         {"label": "Mortality", "value": overall.get("mortality_display", "--"), "sub": "This crop", "tone": "navy"},
         {"label": "Need a look", "value": str(len(alarms)), "sub": "Alarms and warnings", "tone": "amber" if alarms else "navy"},
     ]
