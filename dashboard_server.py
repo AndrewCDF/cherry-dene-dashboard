@@ -7591,12 +7591,13 @@ OFFICE_CARDS_HTML = """
 <section aria-label="Sheds" class="ss-grid">
   {% for s in sheds %}
   <article class="ss-card kind-{{ s.kind }}" data-shed="{{ s.shed_no }}">
-    <button type="button" class="ss-card-head" aria-expanded="false" data-toggle="{{ s.shed_no }}">
+    {% set off = not s.live %}
+    {% if tv %}<div class="ss-card-head ss-static">{% else %}<button type="button" class="ss-card-head" aria-expanded="false" data-toggle="{{ s.shed_no }}">{% endif %}
       <span class="ss-row">
         <span class="ss-name">{{ s.name }}</span>
         <span class="ss-pill sync-{{ s.sync_kind }}"><span class="ss-dot"></span>{{ s.sync_label }}</span>
         <span class="ss-status kind-{{ s.kind }}">{{ s.status }}</span>
-        <span class="ss-chevron" aria-hidden="true">+</span>
+        {% if not tv %}<span class="ss-chevron" aria-hidden="true">+</span>{% endif %}
       </span>
       <span class="ss-row">
         <span class="ss-birds">{{ s.birds_line }}</span>
@@ -7607,37 +7608,38 @@ OFFICE_CARDS_HTML = """
         </span>
         {% endif %}
       </span>
-    </button>
+    {% if tv %}</div>{% else %}</button>{% endif %}
 
-    {% if s.live %}
+    {% if s.live or tv %}
     <div class="ss-tiles">
-      <div class="ss-tile edge-{{ s.temp_edge }}">
-        <div class="ss-tile-main"><span class="ss-tile-label">Temp °C</span><span class="ss-big">{{ s.temp }}</span></div>
-        <div class="ss-hilo"><span>H <b>{{ s.temp_hi }}</b></span><span>L <b>{{ s.temp_lo }}</b></span></div>
+      <div class="ss-tile edge-{{ 'none' if off else s.temp_edge }}">
+        <div class="ss-tile-main"><span class="ss-tile-label">Temp °C</span><span class="ss-big">{{ '--' if off else s.temp }}</span></div>
+        <div class="ss-hilo"><span>H <b>{{ '--' if off else s.temp_hi }}</b></span><span>L <b>{{ '--' if off else s.temp_lo }}</b></span></div>
       </div>
-      <div class="ss-tile edge-{{ s.rh_edge }}">
-        <div class="ss-tile-main"><span class="ss-tile-label">Humidity %</span><span class="ss-big">{{ s.rh }}</span></div>
-        <div class="ss-hilo"><span>H <b>{{ s.rh_hi }}</b></span><span>L <b>{{ s.rh_lo }}</b></span></div>
+      <div class="ss-tile edge-{{ 'none' if off else s.rh_edge }}">
+        <div class="ss-tile-main"><span class="ss-tile-label">Humidity %</span><span class="ss-big">{{ '--' if off else s.rh }}</span></div>
+        <div class="ss-hilo"><span>H <b>{{ '--' if off else s.rh_hi }}</b></span><span>L <b>{{ '--' if off else s.rh_lo }}</b></span></div>
       </div>
-      <div class="ss-tile edge-{{ s.water_edge }}" data-water-tile="{{ s.shed_no }}">
-        <div class="ss-tile-main"><span class="ss-tile-label">Water now</span><span class="ss-mid"><span data-water="{{ s.shed_no }}">{{ s.water }}</span> <small>L/min</small></span></div>
+      <div class="ss-tile edge-{{ 'none' if off else s.water_edge }}"{% if not off %} data-water-tile="{{ s.shed_no }}"{% endif %}>
+        <div class="ss-tile-main"><span class="ss-tile-label">Water now</span><span class="ss-mid">{% if off %}--{% else %}<span data-water="{{ s.shed_no }}">{{ s.water }}</span> <small>L/min</small>{% endif %}</span></div>
       </div>
-      <div class="ss-tile edge-{{ s.bin_edge }} ss-tile-bin">
-        <div class="ss-tile-main"><span class="ss-tile-label">Feed bin{% if s.bin_pct is not none %} · {{ s.bin_pct }}%{% endif %}</span><span class="ss-mid">{{ s.bin }} <small>kg</small></span></div>
-        {% if s.bin_pct is not none %}<div class="ss-bar"><div class="ss-bar-fill edge-{{ s.bin_edge }}" style="width: {{ s.bin_pct }}%"></div></div>{% endif %}
+      <div class="ss-tile edge-{{ 'none' if off else s.bin_edge }} ss-tile-bin">
+        <div class="ss-tile-main"><span class="ss-tile-label">Feed bin{% if s.bin_pct is not none and not off %} · {{ s.bin_pct }}%{% endif %}</span><span class="ss-mid">{% if off %}--{% else %}{{ s.bin }} <small>kg</small>{% endif %}</span></div>
+        {% if s.bin_pct is not none and not off %}<div class="ss-bar"><div class="ss-bar-fill edge-{{ s.bin_edge }}" style="width: {{ s.bin_pct }}%"></div></div>{% endif %}
       </div>
     </div>
     {% if s.has_alarm %}<div class="ss-card-alarm">{{ s.alarm }}</div>{% endif %}
+    {% if off %}<div class="ss-card-note">{{ s.idle_text }}</div>{% endif %}
 
     <div class="ss-more">
-      {% if s.alloc %}<div class="ss-alloc">{{ s.alloc }}</div>{% endif %}
+      {% if s.alloc and not off %}<div class="ss-alloc">{{ s.alloc }}</div>{% endif %}
       <div class="ss-augers">
         {% for a in s.augers %}
-        <div class="ss-auger"><span class="ss-auger-name"><span class="ss-dot dot-{{ a.kind }}"></span>{{ a.name }}</span><span class="ss-auger-state">{{ a.state }}</span></div>
+        <div class="ss-auger"><span class="ss-auger-name"><span class="ss-dot dot-{{ 'none' if off else a.kind }}"></span>{{ a.name }}</span><span class="ss-auger-state">{{ '--' if off else a.state }}</span></div>
         {% endfor %}
       </div>
       <div class="ss-stats">
-        {% for st in s.stats %}<div class="ss-stat"><span>{{ st.label }}</span><b>{{ st.value }}</b></div>{% endfor %}
+        {% for st in s.stats %}<div class="ss-stat"><span>{{ st.label }}</span><b>{{ '--' if off else st.value }}</b></div>{% endfor %}
       </div>
       <div class="ss-foot">
         <span>Crop {{ s.crop }} · Updated {{ s.updated }}</span>
@@ -7784,46 +7786,47 @@ OFFICE_HOME_HTML = """
 
   /* Tablets */
   @media (max-width: 1100px) {
-    .ss-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-    .ss-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    body:not(.tv) .ss-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    body:not(.tv) .ss-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
 
   /* iPhone: stacked cards, tap a card to open its details */
   @media (max-width: 700px) {
-    .ss-header { padding: 10px 14px; gap: 10px; }
-    .ss-logo { height: 40px; }
-    .ss-farmblock { padding-left: 12px; }
-    .ss-farm { font-size: 20px; }
-    .ss-nav { margin-left: 0; width: 100%; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .ss-nav a { justify-content: center; }
-    main { padding: 12px 12px 24px; gap: 12px; }
-    .ss-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-    .ss-sum { padding: 10px 12px; }
-    .ss-sum-value { font-size: 22px; }
-    .ss-alarms { flex-direction: column; align-items: flex-start; gap: 4px; font-size: 15px; }
-    .ss-grid { grid-template-columns: 1fr; gap: 12px; }
-    .ss-card { padding: 14px; gap: 10px; }
-    .ss-card-head { cursor: pointer; }
-    .ss-name { font-size: 22px; }
-    .ss-chevron { display: inline-block; }
-    .ss-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
-    .ss-tile { padding: 6px 8px; flex-direction: column; align-items: flex-start; gap: 2px; }
-    .ss-tile-label { font-size: 11px; }
-    .ss-big, .ss-mid { font-size: 20px; }
-    .ss-mid small { display: none; }
-    .ss-hilo { display: none; }
-    .ss-bar { display: none; }
-    .ss-card:not(.open) .ss-more { display: none; }
-    .ss-card.open .ss-hilo { display: flex; margin-left: 0; flex-direction: row; gap: 6px; font-size: 12px; }
-    .ss-augers { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .ss-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-    .ss-borehole { gap: 10px 18px; }
-    .ss-link { margin-left: 0; }
+    body:not(.tv) .ss-header { padding: 10px 14px; gap: 10px; }
+    body:not(.tv) .ss-logo { height: 40px; }
+    body:not(.tv) .ss-farmblock { padding-left: 12px; }
+    body:not(.tv) .ss-farm { font-size: 20px; }
+    body:not(.tv) .ss-nav { margin-left: 0; width: 100%; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    body:not(.tv) .ss-nav a { justify-content: center; }
+    body:not(.tv) main { padding: 12px 12px 24px; gap: 12px; }
+    body:not(.tv) .ss-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    body:not(.tv) .ss-sum { padding: 10px 12px; }
+    body:not(.tv) .ss-sum-value { font-size: 22px; }
+    body:not(.tv) .ss-alarms { flex-direction: column; align-items: flex-start; gap: 4px; font-size: 15px; }
+    body:not(.tv) .ss-grid { grid-template-columns: 1fr; gap: 12px; }
+    body:not(.tv) .ss-card { padding: 14px; gap: 10px; }
+    body:not(.tv) .ss-card-head { cursor: pointer; }
+    body:not(.tv) .ss-name { font-size: 22px; }
+    body:not(.tv) .ss-chevron { display: inline-block; }
+    body:not(.tv) .ss-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+    body:not(.tv) .ss-tile { padding: 6px 8px; flex-direction: column; align-items: flex-start; gap: 2px; }
+    body:not(.tv) .ss-tile-label { font-size: 11px; }
+    body:not(.tv) .ss-big, body:not(.tv) .ss-mid { font-size: 20px; }
+    body:not(.tv) .ss-mid small { display: none; }
+    body:not(.tv) .ss-hilo { display: none; }
+    body:not(.tv) .ss-bar { display: none; }
+    body:not(.tv) .ss-card:not(.open) .ss-more { display: none; }
+    body:not(.tv) .ss-card.open .ss-hilo { display: flex; margin-left: 0; flex-direction: row; gap: 6px; font-size: 12px; }
+    body:not(.tv) .ss-augers { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    body:not(.tv) .ss-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    body:not(.tv) .ss-borehole { gap: 10px 18px; }
+    body:not(.tv) .ss-link { margin-left: 0; }
   }
 
   /* TV wall: everything on one screen, no buttons */
+  /* Laid out at 1920 x 1080 and scaled to fit, so every TV shows the same wall. */
   body.tv { height: 100vh; overflow: hidden; }
-  body.tv .ss-page { height: 100vh; display: flex; flex-direction: column; }
+  body.tv .ss-page { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; display: flex; flex-direction: column; transform-origin: 0 0; }
   body.tv .ss-nav { display: none; }
   body.tv .ss-header { padding: 8px 24px; }
   body.tv .ss-clock { margin-left: auto; }
@@ -7852,6 +7855,18 @@ OFFICE_HOME_HTML = """
   body.tv .ss-card-alarm { padding: 5px 8px; font-size: 13px; }
   body.tv .ss-foot { font-size: 11px; }
   body.tv .ss-idle { font-size: 17px; margin: auto 0; }
+  body.tv .ss-chevron { display: none !important; }
+  body.tv .ss-card .ss-more { display: flex !important; }
+  body.tv .ss-card-head { cursor: default; }
+  body.tv .ss-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  body.tv .ss-augers { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  body.tv .ss-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  body.tv .ss-hilo { display: flex; }
+  body.tv .ss-tile.edge-none { border-color: var(--rule); }
+  body.tv .ss-dot.dot-none { background: var(--grey); }
+  body.tv .ss-card.kind-offline .ss-big, body.tv .ss-card.kind-offline .ss-mid,
+  body.tv .ss-card.kind-empty .ss-big, body.tv .ss-card.kind-empty .ss-mid { color: var(--grey); }
+  body.tv .ss-card-note { border-radius: 8px; padding: 5px 8px; background: #eceff3; color: var(--muted); font-size: 13px; font-weight: 600; }
 </style>
 </head>
 <body class="{{ 'tv' if tv else '' }}">
@@ -7880,6 +7895,18 @@ OFFICE_HOME_HTML = """
 <script>
 const SS_TV = {{ 'true' if tv else 'false' }};
 const ssOpen = new Set();
+
+// TV: scale the 1920 x 1080 wall evenly to whatever size the TV's browser reports.
+function ssFitTv() {
+  if (!SS_TV) return;
+  const page = document.querySelector('.ss-page');
+  const scale = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+  page.style.transform = 'scale(' + scale + ')';
+  page.style.left = Math.max(0, (window.innerWidth - 1920 * scale) / 2) + 'px';
+  page.style.top = Math.max(0, (window.innerHeight - 1080 * scale) / 2) + 'px';
+}
+window.addEventListener('resize', ssFitTv);
+ssFitTv();
 
 function ssClock() {
   const now = new Date();
