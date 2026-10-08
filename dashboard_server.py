@@ -7812,7 +7812,7 @@ OFFICE_HOME_HTML = """
     body:not(.tv) .ss-tile { padding: 6px 8px; flex-direction: column; align-items: flex-start; gap: 2px; }
     body:not(.tv) .ss-tile-label { font-size: 11px; }
     body:not(.tv) .ss-big, body:not(.tv) .ss-mid { font-size: 20px; }
-    body:not(.tv) .ss-mid small { display: none; }
+    body:not(.tv) .ss-mid small { display: block; font-size: 12px; line-height: 1.1; }
     body:not(.tv) .ss-hilo { display: none; }
     body:not(.tv) .ss-bar { display: none; }
     body:not(.tv) .ss-card:not(.open) .ss-more { display: none; }
@@ -7824,9 +7824,11 @@ OFFICE_HOME_HTML = """
   }
 
   /* TV wall: everything on one screen, no buttons */
-  /* Laid out at 1920 x 1080 and scaled to fit, so every TV shows the same wall. */
+  /* TV: fills the screen on its own; once the fit script runs (tv-scaled) it is laid out
+     at 1920 x 1080 and scaled to fit, so every TV shows the same wall. */
   body.tv { height: 100vh; overflow: hidden; }
-  body.tv .ss-page { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; display: flex; flex-direction: column; transform-origin: 0 0; }
+  body.tv .ss-page { height: 100vh; display: flex; flex-direction: column; }
+  body.tv.tv-scaled .ss-page { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; -webkit-transform-origin: 0 0; transform-origin: 0 0; }
   body.tv .ss-nav { display: none; }
   body.tv .ss-header { padding: 8px 24px; }
   body.tv .ss-clock { margin-left: auto; }
@@ -7899,21 +7901,67 @@ OFFICE_HOME_HTML = """
     <div id="ssCards">{{ cards_html|safe }}</div>
   </main>
 </div>
+{% if not tv %}
 <script>
+// Fully Kiosk Browser (the farm TV) adds a "fully" object to every page. Show it the
+// TV wall; open the page with ?tv=0 to keep the normal layout on a Fully Kiosk device.
+if (window.fully && !/[?&]tv=0/.test(window.location.search)) { window.location.replace('/?tv=1'); }
+</script>
+{% endif %}
+{% if tv %}
+<script>
+// TV wall. Written in old-style JavaScript on purpose: some smart TV browsers can't run
+// the main script below, so fitting the screen, the clock and the refresh live here.
+(function () {
+  var body = document.body;
+  var page = document.querySelector('.ss-page');
+  function fit() {
+    var w = window.innerWidth || document.documentElement.clientWidth;
+    var h = window.innerHeight || document.documentElement.clientHeight;
+    if (!w || !h || !page) return;
+    var scale = Math.min(w / 1920, h / 1080);
+    if ((' ' + body.className + ' ').indexOf(' tv-scaled ') < 0) body.className += ' tv-scaled';
+    page.style.webkitTransform = 'scale(' + scale + ')';
+    page.style.transform = 'scale(' + scale + ')';
+    page.style.left = Math.max(0, (w - 1920 * scale) / 2) + 'px';
+    page.style.top = Math.max(0, (h - 1080 * scale) / 2) + 'px';
+  }
+  fit();
+  window.addEventListener('resize', fit);
+  window.addEventListener('load', fit);
+  setInterval(fit, 5000);
+
+  setTimeout(function () {
+    if (window.ssMainLoaded) return;
+    var days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    var months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    function pad(n) { return (n < 10 ? '0' : '') + n; }
+    function clock() {
+      var now = new Date();
+      var c = document.getElementById('ssClock');
+      var d = document.getElementById('ssDate');
+      if (c) c.textContent = pad(now.getHours()) + ':' + pad(now.getMinutes());
+      if (d) d.textContent = days[now.getDay()] + ' ' + now.getDate() + ' ' + months[now.getMonth()];
+    }
+    clock();
+    setInterval(clock, 1000);
+    setInterval(function () {
+      var req = new XMLHttpRequest();
+      req.open('GET', '/api/home-cards?tv=1&_=' + new Date().getTime(), true);
+      req.onload = function () {
+        var cards = document.getElementById('ssCards');
+        if (req.status === 200 && cards) cards.innerHTML = req.responseText;
+      };
+      req.send();
+    }, 5000);
+  }, 1500);
+})();
+</script>
+{% endif %}
+<script>
+window.ssMainLoaded = true;
 const SS_TV = {{ 'true' if tv else 'false' }};
 const ssOpen = new Set();
-
-// TV: scale the 1920 x 1080 wall evenly to whatever size the TV's browser reports.
-function ssFitTv() {
-  if (!SS_TV) return;
-  const page = document.querySelector('.ss-page');
-  const scale = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
-  page.style.transform = 'scale(' + scale + ')';
-  page.style.left = Math.max(0, (window.innerWidth - 1920 * scale) / 2) + 'px';
-  page.style.top = Math.max(0, (window.innerHeight - 1080 * scale) / 2) + 'px';
-}
-window.addEventListener('resize', ssFitTv);
-ssFitTv();
 
 function ssClock() {
   const now = new Date();
@@ -12333,18 +12381,11 @@ def office_home_context(tv=False):
 
     overall = ctx.get("overall", {}) or {}
     active_sheds = len([s for s in sheds if s["live"]])
-
-    # overall water/feed are crop-to-date totals; the tiles want yesterday (6am to 6am),
-    # so add up each shed's own yesterday figures.
-    def yesterday_total(key, fmt):
-        values = [_num(r.get(key)) for r in ctx.get("sheds", [])]
-        values = [v for v in values if v is not None]
-        return fmt_value(sum(values), fmt) if values else None
     summary = [
         {"label": "Birds on farm", "value": "%s (%s)" % (overall.get("birds_placed", "--"), overall.get("birds_remaining", "--")), "sub": "Placed (live) · %d shed%s" % (active_sheds, "" if active_sheds == 1 else "s"), "tone": "navy"},
         {"label": "Crop day", "value": crop_day, "sub": overall.get("farm_crop_id", "--"), "tone": "navy"},
-        {"label": "Water yesterday", "value": _with_unit(yesterday_total("water_7to7", "f0"), "L"), "sub": "6am to 6am", "tone": "blue"},
-        {"label": "Feed yesterday", "value": _with_unit(yesterday_total("feed_7to7", "f1"), "kg"), "sub": "6am to 6am", "tone": "green"},
+        {"label": "Water this crop", "value": _with_unit(overall.get("water"), "L"), "sub": "Crop to date", "tone": "blue"},
+        {"label": "Feed this crop", "value": _with_unit(overall.get("feed"), "kg"), "sub": "Crop to date", "tone": "green"},
         {"label": "Mortality", "value": overall.get("mortality_display", "--"), "sub": "This crop", "tone": "navy"},
         {"label": "Need a look", "value": str(len(alarms)), "sub": "Alarms and warnings", "tone": "amber" if alarms else "navy"},
     ]
