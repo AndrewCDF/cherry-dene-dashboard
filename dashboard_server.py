@@ -8047,8 +8047,8 @@ function ssClock() {
   ssFitPhoneHeader();
 }
 
-// Phone: size the farm name to fill the space beside the logo, and the date and time
-// to fill their row.
+// Phone: size the farm name to fill the space beside the logo, with the date and time
+// just smaller underneath.
 function ssFitText(el, maxSize) {
   if (!el || !el.clientWidth) return;
   let lo = 12, hi = maxSize;
@@ -8064,8 +8064,11 @@ function ssFitPhoneHeader() {
     ['.ss-farm', '#ssDate'].forEach((sel) => { const el = document.querySelector(sel); if (el) el.style.fontSize = ''; });
     return;
   }
-  ssFitText(document.querySelector('.ss-farm'), 44);
-  ssFitText(document.getElementById('ssDate'), 40);
+  const farm = document.querySelector('.ss-farm');
+  ssFitText(farm, 44);
+  // The date and time sit just under the farm name's size.
+  const farmSize = parseFloat(farm && farm.style.fontSize) || 22;
+  ssFitText(document.getElementById('ssDate'), farmSize * 0.85);
 }
 window.addEventListener('resize', ssFitPhoneHeader);
 ssClock();
