@@ -7604,7 +7604,7 @@ OFFICE_CARDS_HTML = """
         {% if s.show_lights %}
         <span class="ss-pill lights-{{ 'on' if s.lights_on else 'off' }}">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18h6"></path><path d="M10 22h4"></path><path d="M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"></path></svg>
-          Lights {{ 'On' if s.lights_on else 'Off' }}
+          Lights {{ s.lights_label }}
         </span>
         {% endif %}
       </span>
@@ -7629,7 +7629,6 @@ OFFICE_CARDS_HTML = """
       </div>
     </div>
     {% if s.has_alarm %}<div class="ss-card-alarm">{{ s.alarm }}</div>{% endif %}
-    {% if off %}<div class="ss-card-note">{{ s.idle_text }}</div>{% endif %}
 
     <div class="ss-more">
       {% if s.alloc and not off %}<div class="ss-alloc">{{ s.alloc }}</div>{% endif %}
@@ -7795,7 +7794,15 @@ OFFICE_HOME_HTML = """
 
   /* iPhone: stacked cards, tap a card to open its details */
   @media (max-width: 700px) {
-    body:not(.tv) .ss-header { padding: 10px 14px; gap: 10px; }
+    /* Phone header: logo and farm name side by side, then the date and time, then the
+       office address, all centred, then the menu buttons. */
+    body:not(.tv) .ss-header { padding: 10px 14px; display: grid; grid-template-columns: auto auto; justify-content: center; align-items: center; column-gap: 12px; row-gap: 4px; text-align: center; }
+    body:not(.tv) .ss-farmblock { display: contents; }
+    body:not(.tv) .ss-logo { grid-column: 1; grid-row: 1; }
+    body:not(.tv) .ss-farm { grid-column: 2; grid-row: 1; }
+    body:not(.tv) .ss-when { grid-column: 1 / -1; grid-row: 2; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+    body:not(.tv) .ss-ip-sep { display: none; }
+    body:not(.tv) .ss-nav { grid-column: 1 / -1; grid-row: 3; margin-top: 6px; }
     body:not(.tv) .ss-logo { height: 40px; }
     body:not(.tv) .ss-farmblock { padding-left: 12px; }
     body:not(.tv) .ss-farm { font-size: 20px; }
@@ -7910,6 +7917,8 @@ OFFICE_HOME_HTML = """
   body.tv .ss-grid .ss-stat span { font-size: 13px; line-height: 1.15; }
   body.tv .ss-grid .ss-stat b { font-size: 16px; line-height: 1.15; }
   body.tv .ss-grid .ss-card { gap: 5px; }
+  /* The reading tiles take up any spare height so every card is evenly filled. */
+  body.tv .ss-grid .ss-tiles { flex: 1 1 auto; grid-auto-rows: 1fr; align-content: stretch; }
   body.tv .ss-card-alarm, body.tv .ss-card-note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   body.tv .ss-card-alarm { font-size: 16px; }
   body.tv .ss-card-note { font-size: 15px; color: var(--text); }
@@ -7940,7 +7949,7 @@ OFFICE_HOME_HTML = """
     <div class="ss-farmblock">
       <div class="ss-farm">{{ farm_name }}</div>
       {% if tv %}<span class="ss-farm-sep" aria-hidden="true">·</span>{% endif %}
-      <div class="ss-when"><span id="ssDate">--</span>{% if not tv %} · Office {{ host_ips }}{% endif %}</div>
+      <div class="ss-when"><span id="ssDate">--</span>{% if not tv %}<span class="ss-ip"><span class="ss-ip-sep"> · </span>Office {{ host_ips }}</span>{% endif %}</div>
     </div>
     {% if tv and not pc %}
     <div class="ss-clock" id="ssClock">--:--</div>
@@ -12384,8 +12393,10 @@ def office_home_shed(row, meta):
         "status": status,
         "sync_kind": sync_kind,
         "sync_label": sync_label,
-        "show_lights": bool(row.get("lighting_visible")) and kind != "offline",
-        "lights_on": bool(row.get("lighting_on")),
+        # Every shed shows a lights pill; "--" when the shed isn't reporting its lighting.
+        "show_lights": True,
+        "lights_on": bool(row.get("lighting_on")) and bool(row.get("lighting_visible")) and kind != "offline",
+        "lights_label": ("On" if row.get("lighting_on") else "Off") if row.get("lighting_visible") and kind != "offline" else "--",
         "birds_line": birds_line,
         "alloc": row.get("allocation_text", ""),
         "live": kind not in ["offline", "empty"],
