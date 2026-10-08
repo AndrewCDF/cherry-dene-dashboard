@@ -12,7 +12,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import urlparse
 
 try:
@@ -63,20 +63,61 @@ TOUCH_OPTIMIZE_HEAD = (
     'a,.button-link,.metric-link,.settings-button{touch-action:pan-y;}'
     'button,input,select,textarea,label,summary{touch-action:manipulation;}'
     'input,textarea,select,.mono{-webkit-user-select:text;user-select:text;}'
-    '.cdf-number-pad{position:fixed;right:12px;bottom:12px;z-index:9999;width:min(420px,calc(100vw - 24px));padding:10px;background:rgba(54,54,54,0.96);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,0.14);border-radius:18px;box-shadow:0 18px 36px rgba(0,0,0,0.28);transform:translateY(calc(100% + 16px));transition:transform .12s ease-out;}'
+    '.cdf-number-pad{position:fixed;right:12px;bottom:12px;z-index:9999;width:min(420px,calc(100vw - 24px));padding:10px;background:rgba(255,255,255,0.98);backdrop-filter:blur(8px);border:1px solid #d5dde6;border-radius:18px;box-shadow:0 18px 36px rgba(0,0,0,0.28);transform:translateY(calc(100% + 16px));transition:transform .12s ease-out;}'
     '.cdf-number-pad.is-open{transform:translateY(0);}'
     '.cdf-number-pad__panel{max-width:none;margin:0;}'
-    '.cdf-number-pad__head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px;color:#ececec;font:700 15px/1 Arial,sans-serif;}'
-    '.cdf-number-pad__value{color:#d2d2d2;font:600 13px/1 Arial,sans-serif;min-height:14px;}'
+    '.cdf-number-pad__head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px;color:#0d2b4a;font:600 15px/1 "Barlow","Helvetica Neue",Helvetica,sans-serif;}'
+    '.cdf-number-pad__value{color:#4a6078;font:600 13px/1 "Barlow","Helvetica Neue",Helvetica,sans-serif;min-height:14px;}'
     '.cdf-number-pad__grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;}'
-    '.cdf-number-pad__key{min-height:52px;border-radius:12px;border:1px solid #8a8a8a;background:linear-gradient(180deg,#7a7a7a,#676767);color:#ececec;font:700 22px/1 Arial,sans-serif;}'
+    '.cdf-number-pad__key{min-height:52px;border-radius:12px;border:1px solid #c5d0dc;background:#f5f8fb;color:#0d2b4a;font:600 22px/1 "Barlow","Helvetica Neue",Helvetica,sans-serif;}'
     '.cdf-number-pad__key--wide{grid-column:span 2;}'
-    '.cdf-number-pad__key--action{background:linear-gradient(180deg,#6f6f6f,#5f5f5f);font-size:17px;}'
+    '.cdf-number-pad__key--action{background:#dbe3ec;font-size:17px;}'
     '.cdf-number-pad__key--url{font-size:18px;}'
     '.cdf-number-pad__key[hidden]{display:none;}'
     '@media (max-width:700px){.cdf-number-pad{left:10px;right:10px;bottom:10px;width:auto;padding:10px;}.cdf-number-pad__key{min-height:54px;}}'
     '</style>'
 )
+
+# Shared look for every page not already built on the overview's theme (those carry
+# the cdf-theme-native marker). Injected after each page's own styles so it wins.
+THEME_HEAD = (
+    '<link rel="preconnect" href="https://fonts.googleapis.com">'
+    '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Semi+Condensed:wght@500;600;700&display=swap">'
+    '<link id="cdf-theme" rel="stylesheet" href="/static/stocksense-theme.css?v=1">'
+)
+
+# Back buttons (data-nav-back) return to the previous *different* page the viewer was on.
+# Visited paths are remembered per browser session; a form save that reloads the same page
+# doesn't count, so Back never lands on the page you just saved. The button's href is
+# the fallback when there is no history (e.g. first page after the kiosk starts).
+NAV_HISTORY_SCRIPT = """
+<script id="cdf-nav-history">
+(function () {
+  var KEY = 'cdfNavStack';
+  function load() { try { return JSON.parse(sessionStorage.getItem(KEY) || '[]'); } catch (e) { return []; } }
+  function save(stack) { try { sessionStorage.setItem(KEY, JSON.stringify(stack.slice(-30))); } catch (e) {} }
+  var stack = load();
+  var here = location.pathname;
+  if (stack.length && stack[stack.length - 1] === here) {
+    // reload / form save on the same page
+  } else if (stack.length > 1 && stack[stack.length - 2] === here) {
+    stack.pop();
+  } else {
+    stack.push(here);
+  }
+  save(stack);
+  document.addEventListener('click', function (event) {
+    var btn = event.target.closest ? event.target.closest('[data-nav-back]') : null;
+    if (!btn) return;
+    var current = load();
+    if (current.length > 1) {
+      event.preventDefault();
+      location.href = current[current.length - 2];
+    }
+  });
+})();
+</script>
+"""
 
 NUMBER_PAD_BODY = """
 <div id="cdfNumberPad" class="cdf-number-pad" aria-hidden="true">
@@ -318,8 +359,12 @@ def inject_favicon(response):
             body = response.get_data(as_text=True)
             if "<head>" in body and 'cdf-touch-optimize' not in body:
                 body = body.replace('<head>', '<head>' + TOUCH_OPTIMIZE_HEAD, 1)
+            if "</head>" in body and 'cdf-theme' not in body:
+                body = body.replace('</head>', THEME_HEAD + '</head>', 1)
             if "</body>" in body and 'cdf-number-pad-script' not in body:
                 body = body.replace("</body>", NUMBER_PAD_BODY + "</body>", 1)
+            if "</body>" in body and 'cdf-nav-history' not in body:
+                body = body.replace("</body>", NAV_HISTORY_SCRIPT + "</body>", 1)
             response.set_data(body)
             response.headers["Content-Length"] = str(len(response.get_data()))
     except Exception:
@@ -372,7 +417,15 @@ DEFAULT_CONFIG = {
     "auger_left_label": "Auger Left",
     "auger_right_label": "Auger Right",
     "lighting_label": "Lighting",
+    "climate_limits_updated_ts": None,
+    "auto_update_enabled": False,
+    "layout_front_end": "left",
+    "layout_bin_corner": "top-left",
+    "layout_door_end": "left",
 }
+
+SHED_LAYOUT_ENDS = ["left", "right"]
+SHED_LAYOUT_CORNERS = ["top-left", "top-right", "bottom-left", "bottom-right"]
 
 SERIAL_THREAD = None
 MONITOR_THREAD = None
@@ -410,8 +463,9 @@ FEED_REFILL_SETTLING_SECONDS = 5 * 60
 FEED_MOVEMENT_MIN_DROP_KG = 1.0
 FEED_MOVEMENT_NOISE_FACTOR = 2.0
 FEED_MOVEMENT_SESSION_GAP_SECONDS = 150
+# A delivery can pause while the lorry swaps compartments; keep it as one fill-up.
+FEED_FILL_SESSION_GAP_SECONDS = 20 * 60
 FEED_STABLE_NOISE_KG = 2.0
-BACKUP_KEEP_COUNT = 6
 PICO_AUTO_RECOVERY_FREEZE_SECONDS = 90
 PICO_AUTO_RECOVERY_COOLDOWN_SECONDS = 10 * 60
 PICO_POST_UPDATE_RECOVERY_WAIT_SECONDS = 20
@@ -1078,6 +1132,13 @@ def load_config():
         cfg["feed_kg_per_raw_unit"] = float(raw_scale) if raw_scale not in [None, ""] else None
     except Exception:
         cfg["feed_kg_per_raw_unit"] = None
+    if cfg.get("layout_front_end") not in SHED_LAYOUT_ENDS:
+        cfg["layout_front_end"] = "left"
+    if cfg.get("layout_bin_corner") not in SHED_LAYOUT_CORNERS:
+        cfg["layout_bin_corner"] = "top-left"
+    if cfg.get("layout_door_end") not in SHED_LAYOUT_ENDS:
+        cfg["layout_door_end"] = "left"
+    cfg["auto_update_enabled"] = bool(cfg.get("auto_update_enabled", False))
     cfg["serial_enabled"] = bool(cfg.get("serial_enabled", True))
     cfg["sync_on_sensor_update"] = bool(cfg.get("sync_on_sensor_update", True))
     cfg["deployment_mode"] = str(cfg.get("deployment_mode", "commissioning") or "commissioning").strip().lower()
@@ -1234,20 +1295,120 @@ def local_ip_address():
                 pass
 
 
+BACKUP_KEEP_ALL_HOURS = 24
+BACKUP_KEEP_DAILY_DAYS = 14
+BACKUP_KEEP_WEEKLY_WEEKS = 8
+BACKUP_KEEP_MANUAL = 10
+BACKUP_KEEP_NEWEST = 6
+BACKUP_RETENTION_TEXT = "Hourly for 24 hours, then one a day for 14 days, then one a week for 8 weeks"
+
+
+def backup_is_healthy(path):
+    # A backup only counts as good if the zip opens cleanly and every JSON file in it parses.
+    try:
+        with zipfile.ZipFile(path) as zf:
+            if zf.testzip() is not None:
+                return False
+            for name in zf.namelist():
+                if name.endswith(".json"):
+                    json.loads(zf.read(name).decode("utf-8") or "null")
+        return True
+    except Exception:
+        return False
+
+
+def backups_to_keep(paths, now_ts=None):
+    # Layered retention: everything from the last 24 hours, the newest backup of each day
+    # for 14 days, the newest of each week for 8 weeks, and the newest 10 manual backups.
+    # Suspect (failed check) backups never count as a day's or week's keeper. The newest 6
+    # good automatic backups are always kept, however old, so a Pi that has been switched
+    # off for months doesn't lose them all on its first backup back.
+    now_ts = int(now_ts or time.time())
+    rows = []
+    for path in paths:
+        try:
+            rows.append((int(os.path.getmtime(path)), path))
+        except Exception:
+            continue
+    rows.sort(reverse=True)
+    keep = set()
+    days_seen = set()
+    weeks_seen = set()
+    manual_kept = 0
+    newest_kept = 0
+    for ts, path in rows:
+        name = os.path.basename(path)
+        age = now_ts - ts
+        if "manual" in name:
+            if manual_kept < BACKUP_KEEP_MANUAL:
+                keep.add(path)
+                manual_kept += 1
+            continue
+        if age <= BACKUP_KEEP_ALL_HOURS * 3600:
+            keep.add(path)
+            if "suspect" not in name:
+                newest_kept += 1
+            continue
+        if "suspect" in name:
+            continue
+        if newest_kept < BACKUP_KEEP_NEWEST:
+            newest_kept += 1
+            keep.add(path)
+            continue
+        dt_obj = datetime.fromtimestamp(ts)
+        day_key = dt_obj.strftime("%Y-%m-%d")
+        week_key = dt_obj.strftime("%G-W%V")
+        if age <= BACKUP_KEEP_DAILY_DAYS * 86400:
+            if day_key not in days_seen:
+                days_seen.add(day_key)
+                keep.add(path)
+            continue
+        if age <= BACKUP_KEEP_WEEKLY_WEEKS * 7 * 86400 and week_key not in weeks_seen:
+            weeks_seen.add(week_key)
+            keep.add(path)
+    return keep
+
+
+def prune_backups_layered(paths, newest_path=None):
+    # Never delete anything when the backup just made failed its check: an overnight
+    # corruption must not push the last good copies out.
+    if newest_path is not None and not backup_is_healthy(newest_path):
+        return False
+    keep = backups_to_keep(paths)
+    for path in paths:
+        if path not in keep:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+    return True
+
+
+def mark_backup_suspect_if_bad(path):
+    # Renames a backup that fails its check to *_suspect.zip and returns the new path.
+    if backup_is_healthy(path):
+        return path, True
+    suspect = path[:-4] + "_suspect.zip"
+    try:
+        os.replace(path, suspect)
+        return suspect, False
+    except Exception:
+        return path, False
+
+
 def list_backup_files():
+    # Newest first, by the time each backup was made (not alphabetically).
     base = backups_dir()
     out = []
     try:
-        names = sorted(os.listdir(base), reverse=True)
+        names = os.listdir(base)
     except Exception:
         return out
-    i = 0
-    while i < len(names):
-        name = names[i]
+    for name in names:
         path = os.path.join(base, name)
         if os.path.isfile(path) and name.endswith(".zip"):
             out.append(path)
-        i += 1
+    out.sort(key=lambda p: os.path.getmtime(p), reverse=True)
     return out
 
 
@@ -1272,14 +1433,9 @@ def create_backup_zip(label="auto"):
             if os.path.exists(src):
                 zf.write(src, arcname=os.path.basename(src))
             i += 1
-    backups = list_backup_files()
-    i = BACKUP_KEEP_COUNT
-    while i < len(backups):
-        try:
-            os.remove(backups[i])
-        except Exception:
-            pass
-        i += 1
+    path, healthy = mark_backup_suspect_if_bad(path)
+    if healthy:
+        prune_backups_layered(list_backup_files())
     return path
 
 
@@ -1295,7 +1451,10 @@ def maybe_auto_backup(state):
     try:
         path = create_backup_zip("auto")
         state["last_backup_ts"] = now_ts
-        state["last_backup_status"] = "Backup OK: %s" % os.path.basename(path)
+        if "suspect" in os.path.basename(path):
+            state["last_backup_status"] = "Backup failed check, older backups kept: %s" % os.path.basename(path)
+        else:
+            state["last_backup_status"] = "Backup OK: %s" % os.path.basename(path)
     except Exception as exc:
         state["last_backup_ts"] = now_ts
         state["last_backup_status"] = "Backup failed: %s" % exc
@@ -1514,6 +1673,7 @@ def default_sensor_state():
     return {
         "temp_c": None,
         "rh_pct": None,
+        "climate_days": [],
         "water_lpm": None,
         "water_lpm_raw": None,
         "water_last_pulse_delta": None,
@@ -2171,6 +2331,8 @@ def load_state():
         sensors["alarms"] = []
     if not isinstance(sensors.get("water_history_samples"), list):
         sensors["water_history_samples"] = []
+    if not isinstance(sensors.get("climate_days"), list):
+        sensors["climate_days"] = []
     if not isinstance(sensors.get("feed_raw_display_samples"), list):
         sensors["feed_raw_display_samples"] = []
     if sensors.get("feed_raw_display_units") in [""] and sensors.get("feed_raw_units") not in [None, ""]:
@@ -2513,15 +2675,26 @@ def sync_payload(state):
             water_total_litres = round(float(total_pulses) / pulses_per_litre, 3)
     except Exception:
         water_total_litres = None
+    climate_days = sensors.get("climate_days") or []
+    climate_today = climate_days[-1] if climate_days and climate_days[-1].get("date") == datetime.now().strftime("%Y-%m-%d") else {}
     payload["controller_meta"] = {
         "temp_c": sensors.get("temp_c"),
         "rh_pct": sensors.get("rh_pct"),
+        # Today's (midnight to midnight) high and low, for the office tiles.
+        "climate_today": {
+            "date": climate_today.get("date"),
+            "temp_max": climate_today.get("temp_max"),
+            "temp_min": climate_today.get("temp_min"),
+            "rh_max": climate_today.get("rh_max"),
+            "rh_min": climate_today.get("rh_min"),
+        } if climate_today else None,
         "temp_low_c": cfg.get("temp_low_c"),
         "temp_high_c": cfg.get("temp_high_c"),
         "temp_amber_margin_c": cfg.get("temp_amber_margin_c"),
         "rh_low_pct": cfg.get("rh_low_pct"),
         "rh_high_pct": cfg.get("rh_high_pct"),
         "rh_amber_margin_pct": cfg.get("rh_amber_margin_pct"),
+        "climate_limits_updated_ts": cfg.get("climate_limits_updated_ts"),
         "water_lpm": sensors.get("water_lpm"),
         "water_low_lpm": cfg.get("water_low_lpm"),
         "water_total_litres": water_total_litres,
@@ -2530,6 +2703,7 @@ def sync_payload(state):
         "feed_noise_kg": sensors.get("feed_noise_kg"),
         "feed_movement": clean_feed_movement_state(sensors.get("feed_movement", {})),
         "feed_low_kg": cfg.get("feed_low_kg"),
+        "feed_capacity_kg": cfg.get("feed_capacity_kg"),
         "lighting_on": sensors.get("lighting_on"),
         "lighting_enabled": lighting_enabled(cfg),
         "lighting_label": lighting_label_for(cfg),
@@ -2603,9 +2777,10 @@ def dashboard_request(path, method="GET", payload=None, timeout=4):
     return urllib.request.urlopen(req, timeout=timeout)
 
 
-def fetch_current_crop_hourly_history(shed_no):
+def fetch_current_crop_hourly_history(shed_no, hourly=False):
     try:
-        with dashboard_request("/api/shed/%d/current-crop/hourly" % shed_no, method="GET") as resp:
+        path = "/api/shed/%d/current-crop/hourly" % shed_no + ("?bucket=1" if hourly else "")
+        with dashboard_request(path, method="GET") as resp:
             if not (200 <= int(resp.status) < 300):
                 return {}
             payload = json.loads(resp.read().decode("utf-8"))
@@ -2646,7 +2821,7 @@ def fetch_mortality_from_dashboard(shed_no):
         return {}
 
 
-def post_mortality_to_dashboard(shed_no, dest_shed, bird_loss, note=""):
+def post_mortality_to_dashboard(shed_no, dest_shed, bird_loss, note="", date_text=""):
     try:
         with dashboard_request(
             "/api/shed/%d/mortality" % shed_no,
@@ -2655,6 +2830,7 @@ def post_mortality_to_dashboard(shed_no, dest_shed, bird_loss, note=""):
                 "dest_shed": dest_shed,
                 "bird_loss": bird_loss,
                 "note": note,
+                "date": date_text,
             },
             timeout=6,
         ) as resp:
@@ -2668,6 +2844,42 @@ def post_mortality_to_dashboard(shed_no, dest_shed, bird_loss, note=""):
             return ok, (payload.get("message") if isinstance(payload, dict) else "")
     except Exception as exc:
         return False, "Mortality failed: %s" % exc
+
+
+CLIMATE_LIMIT_KEYS = ["temp_low_c", "temp_high_c", "temp_amber_margin_c", "rh_low_pct", "rh_high_pct", "rh_amber_margin_pct"]
+
+
+def adopt_office_climate_limits(limits):
+    # Temperature / humidity limits match the office's: whichever side changed them
+    # last wins. Applies the office's limits if they are newer than this controller's.
+    if not isinstance(limits, dict):
+        return False
+    try:
+        office_ts = int(limits.get("updated_ts"))
+    except Exception:
+        return False
+    cfg = load_config()
+    local_ts = cfg.get("climate_limits_updated_ts")
+    if local_ts not in [None, ""] and office_ts <= int(local_ts):
+        return False
+    try:
+        values = {key: float(limits.get(key)) for key in CLIMATE_LIMIT_KEYS}
+    except Exception:
+        return False
+    if values["temp_low_c"] >= values["temp_high_c"] or values["rh_low_pct"] >= values["rh_high_pct"]:
+        return False
+    if values["temp_amber_margin_c"] < 0 or values["rh_amber_margin_pct"] < 0:
+        return False
+    cfg.update(values)
+    cfg["climate_limits_updated_ts"] = office_ts
+    save_config(cfg)
+    record_controller_event("climate_limits_from_office", "Temperature / humidity limits updated from office", "")
+    return True
+
+
+def sync_climate_limits_to_office():
+    # Send changed limits to the office straight away, without holding up the page.
+    threading.Thread(target=lambda: auto_sync_if_changed(load_state()), daemon=True).start()
 
 
 def pull_from_dashboard(state):
@@ -2684,6 +2896,7 @@ def pull_from_dashboard(state):
                 return False, state["last_sync_status"]
 
             payload = json.loads(resp.read().decode("utf-8"))
+            adopt_office_climate_limits(payload.get("climate_limits"))
             incoming = payload.get("entries", {})
             if isinstance(incoming, dict):
                 state["entries"] = {}
@@ -2996,7 +3209,7 @@ def feed_movement_display_context(sensors, entries):
             pass
         event_rows.append({
             "ts_label": ts_label,
-            "movement_label": "Feed Out" if movement_kind == "feed_out" else ("Bin Fill-Up" if movement_kind == "bin_fill" else "--"),
+            "movement_label": "Feed out" if movement_kind == "feed_out" else ("Feed in" if movement_kind == "bin_fill" else "--"),
             "kg_label": fmt_value(event.get("kg"), "f1"),
             "crop_state_label": "In Crop" if crop_state == "in_crop" else "Out Of Crop",
             "crop_state_class": "in-crop" if crop_state == "in_crop" else "out-crop",
@@ -3015,11 +3228,261 @@ def feed_movement_display_context(sensors, entries):
         "updated_age": fmt_age_seconds(movement.get("last_sample_ts") or movement.get("updated_ts")),
         "last_movement_label": {
             "feed_out": "Feed out",
-            "bin_fill": "Bin fill-up",
+            "bin_fill": "Feed in",
         }.get(str(movement.get("last_movement") or ""), "--"),
         "event_rows": event_rows,
         "has_activity": total >= 0.5,
     }
+
+
+OVERVIEW_STAGE_WIDTH = 836
+
+
+def shed_plan_layout(cfg):
+    # Pixel positions for the overview's shed plan (836 px wide stage), worked out
+    # from the layout chosen in Controller Config. "left"/"right" are as seen on screen.
+    corner = cfg.get("layout_bin_corner", "top-left")
+    bin_left = corner.endswith("left")
+    bin_top = corner.startswith("top")
+    door_left = cfg.get("layout_door_end", "left") == "left"
+    front_left = cfg.get("layout_front_end", "left") == "left"
+
+    bin_margin, other_margin = 170, 72
+    shed_w = OVERVIEW_STAGE_WIDTH - bin_margin - other_margin
+    shed_x = bin_margin if bin_left else other_margin
+    shed_y, shed_h = 106, 330
+    shed_right = shed_x + shed_w
+
+    bin_size = 124
+    bin_x = 16 if bin_left else OVERVIEW_STAGE_WIDTH - 16 - bin_size
+    # Top-corner bins overhang the shed's top edge by 40px; bottom-corner bins mirror that
+    # below the bottom edge, with their label above instead of below.
+    bin_y = shed_y - 40 if bin_top else shed_y + shed_h - bin_size + 40
+    pipe_y = bin_y + 59
+    pipe_x = bin_x + bin_size - 2 if bin_left else shed_right - 4
+    bin_label_x = min(max(0, bin_x + bin_size // 2 - 78), OVERVIEW_STAGE_WIDTH - 156)
+    bin_label_y = bin_y + bin_size + 12 if bin_top else bin_y - 52
+
+    # The door is always centred on its end wall.
+    door_h = 100
+    door_y = shed_y + (shed_h - door_h) // 2
+    if door_left:
+        door_x = shed_x - 2
+        tick_x = shed_x - 18
+        label_x = shed_x - 24 - 126
+        label_align = "right"
+    else:
+        door_x = shed_right - 8
+        tick_x = shed_right + 8
+        label_x = shed_right + 24
+        label_align = "left"
+
+    cards_gap = 14
+    temp_w = 200
+    rh_w = 168
+    water_w = shed_w - temp_w - rh_w - 2 * cards_gap
+
+    return {
+        "front_left": front_left,
+        "shed_x": shed_x, "shed_y": shed_y, "shed_w": shed_w, "shed_h": shed_h,
+        "inner_w": shed_w - 12,
+        "bin_x": bin_x, "bin_y": bin_y,
+        "pipe_x": pipe_x, "pipe_y": pipe_y,
+        "bin_label_x": bin_label_x, "bin_label_y": bin_label_y,
+        "door_x": door_x, "door_y": door_y, "door_h": door_h,
+        "tick_x": tick_x, "label_x": label_x, "label_y": door_y + door_h // 2 - 11, "label_align": label_align,
+        "temp_x": shed_x, "temp_w": temp_w,
+        "rh_x": shed_x + temp_w + cards_gap, "rh_w": rh_w,
+        "water_x": shed_x + temp_w + rh_w + 2 * cards_gap, "water_w": water_w,
+        "front_label_x": shed_x + 6 if front_left else shed_right - 6 - 80,
+        "rear_label_x": shed_right - 6 - 80 if front_left else shed_x + 6,
+        "end_label_y": shed_y + shed_h + 8,
+    }
+
+
+def ordered_entry_keys(entries, pen_order):
+    # Pens keep the front-to-rear order they were added in; anything the office
+    # added without a position goes to the rear in shed-number order.
+    keys = [str(k) for k in (pen_order or []) if str(k) in entries]
+    rest = sorted([k for k in entries.keys() if str(k) not in keys], key=lambda k: int(k) if str(k).isdigit() else 0)
+    return keys + rest
+
+
+def overview_pens(cfg, entries, pen_order=None, layout=None):
+    layout = layout or shed_plan_layout(cfg)
+    pen_area = layout["inner_w"]
+    rows = []
+    for key in ordered_entry_keys(entries, pen_order):
+        try:
+            dest_shed = int(key)
+        except Exception:
+            continue
+        rec = clean_entry_record(entries.get(key, {}))
+        if rec["bird_count"] <= 0:
+            continue
+        rows.append({
+            "dest_shed": dest_shed,
+            "name": entry_shed_label(dest_shed),
+            # Shed number order for lists (Shed 6B sits straight after Shed 6).
+            "number_order": (entry_home_shed_no(dest_shed) or dest_shed) * 1000 + dest_shed,
+            "birds": rec["bird_count"],
+            "birds_text": fmt_value(rec["bird_count"], "i"),
+            "placed": max(int(rec.get("placed_bird_count") or 0), rec["bird_count"]),
+            "placed_text": fmt_value(max(int(rec.get("placed_bird_count") or 0), rec["bird_count"]), "i"),
+            "mortality_text": fmt_value(max(0, int(rec.get("placed_bird_count") or 0) - rec["bird_count"]), "i"),
+            "can_move": entry_home_shed_no(dest_shed) != cfg["shed_no"] and rec["crop_active"] == 1,
+        })
+    # Pens are sized by birds placed, so the split stays put as mortality comes off,
+    # and run wall to wall so each label sits in the middle of the pen you see.
+    total = sum(row["placed"] for row in rows)
+    x = 0.0
+    i = 0
+    while i < len(rows):
+        width = pen_area * rows[i]["placed"] / total if total > 0 else 0
+        left = x if layout["front_left"] else layout["inner_w"] - x - width
+        rows[i]["left"] = int(round(left))
+        rows[i]["width"] = int(round(width))
+        # Dashed divider on the right of every pen except the one against the right wall.
+        rows[i]["divided"] = i != (len(rows) - 1 if layout["front_left"] else 0)
+        x += width
+        i += 1
+    return rows
+
+
+def overview_pen_add_options(cfg, pens):
+    present = set(pen["dest_shed"] for pen in pens)
+    rows = []
+    for dest_shed in ENTRY_SHED_NUMBERS:
+        if dest_shed in present:
+            continue
+        rows.append({
+            "dest_shed": dest_shed,
+            "label": entry_shed_label(dest_shed),
+            "is_home": entry_home_shed_no(dest_shed) == cfg["shed_no"],
+        })
+    return rows
+
+
+def mortality_day_options(crop_epoch, now_ts=None):
+    now = datetime.fromtimestamp(now_ts or time.time())
+    today = now.date()
+    start = today
+    if crop_epoch not in [None, ""]:
+        try:
+            start = min(today, datetime.fromtimestamp(int(crop_epoch)).date())
+        except Exception:
+            start = today
+    rows = []
+    day = today
+    while day >= start:
+        offset = (today - day).days
+        if offset == 0:
+            label = "Today"
+        elif offset == 1:
+            label = "Yesterday"
+        else:
+            label = day.strftime("%a %d %b")
+        if crop_epoch not in [None, ""]:
+            label = "%s · day %d" % (label, (day - start).days)
+        rows.append({"value": "" if offset == 0 else day.strftime("%Y-%m-%d"), "label": label})
+        day = day - timedelta(days=1)
+    return rows
+
+
+def overview_climate(cfg, temp_c, sensors, now_ts):
+    low = float(cfg.get("temp_low_c", 18.0))
+    high = float(cfg.get("temp_high_c", 24.0))
+    scale_low = low - 5.0
+    scale_high = high + 5.0
+    span = max(0.1, scale_high - scale_low)
+    if temp_c is None:
+        status = "none"
+    elif temp_c < low:
+        status = "low"
+    elif temp_c > high:
+        status = "high"
+    else:
+        status = "ok"
+    dev = 0.0
+    if status == "low":
+        dev = low - temp_c
+    elif status == "high":
+        dev = temp_c - high
+    colors = {
+        "ok": ("#2f9e3a", "#1e6b16"),
+        "low": ("#1676b8", "#0b5ea8"),
+        "high": ("#f08a12", "#9a4b00"),
+        "none": ("#9aa8b6", "#4a6078"),
+    }
+    if status == "low":
+        short = "%.1f° low" % dev
+        advice = "%.1f °C below target. Check the heaters." % dev
+    elif status == "high":
+        short = "%.1f° high" % dev
+        advice = "%.1f °C above target. Check ventilation and heater settings." % dev
+    elif status == "ok":
+        short = "On target"
+        advice = "Sensor updated %s." % fmt_age_seconds(sensors.get("last_sensor_ts"))
+    else:
+        short = "No reading"
+        advice = "No temperature reading from the Pico."
+    return {
+        "temp_status": status,
+        "temp_status_color": colors[status][0],
+        "temp_status_text_color": colors[status][1],
+        "temp_status_short": short,
+        "temp_advice": advice,
+        "temp_advice_color": "#4a6078" if status == "ok" else colors[status][1],
+        "temp_scale_low": "%.0f °C" % scale_low,
+        "temp_scale_high": "%.0f °C" % scale_high,
+        "temp_target_text": "Target %s to %s °C" % (fmt_value(low, "f1"), fmt_value(high, "f1")),
+        "temp_band_left": round((low - scale_low) * 100.0 / span, 1),
+        "temp_band_width": round((high - low) * 100.0 / span, 1),
+        "temp_marker_pct": None if temp_c is None else round(max(0.0, min(100.0, (temp_c - scale_low) * 100.0 / span)), 1),
+    }
+
+
+def overview_rh_gauge(cfg, rh_pct):
+    low = float(cfg.get("rh_low_pct", 40.0))
+    high = float(cfg.get("rh_high_pct", 80.0))
+    scale_low = max(0.0, low - 15.0)
+    scale_high = min(100.0, high + 15.0)
+    span = max(0.1, scale_high - scale_low)
+    if rh_pct is None:
+        advice = ""
+        short, short_color = "No reading", "#4a6078"
+    elif rh_pct < low:
+        advice = "Humidity %.0f%% below target." % (low - rh_pct)
+        short, short_color = "%.0f%% low" % (low - rh_pct), "#0b5ea8"
+    elif rh_pct > high:
+        advice = "Humidity %.0f%% above target. Check ventilation." % (rh_pct - high)
+        short, short_color = "%.0f%% high" % (rh_pct - high), "#9a4b00"
+    else:
+        advice = ""
+        short, short_color = "On target", "#1e6b16"
+    return {
+        "rh_status_short": short,
+        "rh_status_text_color": short_color,
+        "rh_ok": rh_pct is not None and low <= rh_pct <= high,
+        "rh_advice": advice,
+        "rh_scale_low": "%.0f%%" % scale_low,
+        "rh_scale_high": "%.0f%%" % scale_high,
+        "rh_target_text": "Target %.0f to %.0f%% RH" % (low, high),
+        "rh_band_left": round((low - scale_low) * 100.0 / span, 1),
+        "rh_band_width": round((high - low) * 100.0 / span, 1),
+        "rh_marker_pct": None if rh_pct is None else round(max(0.0, min(100.0, (rh_pct - scale_low) * 100.0 / span)), 1),
+    }
+
+
+def feed_fill_pct(feed_kg, capacity_kg):
+    try:
+        feed_kg = float(feed_kg)
+        capacity_kg = float(capacity_kg)
+    except Exception:
+        return None
+    if capacity_kg <= 0:
+        return None
+    return max(0.0, min(100.0, feed_kg * 100.0 / capacity_kg))
 
 
 def build_home_context():
@@ -3047,9 +3510,10 @@ def build_home_context():
         birds_placed_raw = birds_remaining_raw + mortality_total_raw
     birds_display = fmt_value(birds_remaining_raw if birds_remaining_raw > 0 else None, "i")
     if birds_placed_raw > 0:
+        # Always placed first, live in brackets.
         birds_display = "%s (%s)" % (
-            fmt_value(birds_remaining_raw, "i"),
             fmt_value(birds_placed_raw, "i"),
+            fmt_value(birds_remaining_raw, "i"),
         )
     sync_status = state.get("last_sync_status", "") or "No sync yet"
     sync_class = "ok" if "OK" in sync_status else ("warn" if "No sync" in sync_status else "bad")
@@ -3161,7 +3625,12 @@ def build_home_context():
     lighting_badge_class = "lighting-on" if lighting_on else "lighting-off"
     lighting_badge_text = "💡"
 
-    return {
+    layout = shed_plan_layout(cfg)
+    pens = overview_pens(cfg, state.get("entries", {}), state.get("pen_order", []), layout)
+    climate = overview_climate(cfg, temp_c_f, sensors, now_ts)
+    climate.update(overview_rh_gauge(cfg, rh_pct_f))
+
+    ctx = {
         "shed_no": cfg["shed_no"],
         "shed_display_name": shed_display_name_from_number(cfg["shed_no"]),
         "host_ips": host_ipv4_display(),
@@ -3170,7 +3639,8 @@ def build_home_context():
         "refresh_seconds": max(0.25, float(cfg["touch_refresh_seconds"])),
         "sync_status": sync_status,
         "sync_class": sync_class,
-        "sync_short": "%s • %s" % (short_status_text("sync", sync_status), fmt_age_seconds(state.get("last_sync_ts"))),
+        # Status only: the seconds-ago counter flickered on every poll. Sync timing is on the Health page.
+        "sync_short": short_status_text("sync", sync_status),
         "push_status": push_status,
         "push_class": push_class,
         "push_short": short_status_text("push", push_status),
@@ -3217,6 +3687,21 @@ def build_home_context():
         "auger_tiles": auger_tiles,
         "auger_count": len(auger_tiles),
         "lighting_tile": lighting_tile,
+        "pens": pens,
+        "pens_signature": ",".join("%s:%s" % (pen["dest_shed"], pen["can_move"]) for pen in pens),
+        "pen_add_options": overview_pen_add_options(cfg, pens),
+        "mortality_days": mortality_day_options(active_crop_epoch, now_ts),
+        "layout": layout,
+        "feed_kg_live_display": fmt_value(sensors.get("feed_kg_live") if sensors.get("feed_kg_live") is not None else sensors.get("feed_kg"), "f0"),
+        "feed_live_pct": feed_fill_pct(sensors.get("feed_kg_live") if sensors.get("feed_kg_live") is not None else feed_kg_f, cfg.get("feed_capacity_kg")),
+        "clock_hm": datetime.now().strftime("%H:%M"),
+        "crop_subtitle": ("%s birds · Day %s" % (birds_display, fmt_value(oldest_age_days, "i"))) if active_crop_id is not None else "No active crop",
+        "header_birds": ("%s birds" % birds_display) if active_crop_id is not None else "No active crop",
+        "header_day": ("Day %s" % fmt_value(oldest_age_days, "i")) if active_crop_id is not None else "",
+        "overview_chip_ok": not alarm_rows and climate["temp_status"] == "ok",
+        "overview_chip_text": ("Shed on target" if not alarm_rows and climate["temp_status"] == "ok" else ("%d alarm%s active" % (len(alarm_rows), "" if len(alarm_rows) == 1 else "s") if alarm_rows else "Shed needs a look")),
+        "climate_today": climate_today_display(sensors, now_ts),
+        "feed_capacity_kg": fmt_value(cfg.get("feed_capacity_kg"), "f0"),
         "controller_alerts": controller_alerts,
         "alarm_count": len(alarm_rows),
         "alarm_class": alarm_class,
@@ -3236,6 +3721,8 @@ def build_home_context():
         "last_seen_office_sync_at": fmt_ts(state.get("last_seen_office_sync_ts")),
         "last_seen_office_sync_age": fmt_age_seconds(state.get("last_seen_office_sync_ts")),
     }
+    ctx.update(climate)
+    return ctx
 
 
 def build_water_stream_payload():
@@ -4040,7 +4527,9 @@ def update_feed_movement_state(sensors, feed_kg, sample_ts, entries=None):
     movement_kind = ""
     movement_kg = 0.0
 
-    if feed_kg >= baseline_kg + FEED_REFILL_RISE_KG:
+    # Measure a rise from the lowest point since the last movement, not from the last
+    # fill level: a delivery into a part-empty bin rarely tops the previous fill.
+    if feed_kg >= low_kg + FEED_REFILL_RISE_KG:
         fill_kg = max(0.0, feed_kg - low_kg)
         if fill_kg >= min_drop_kg:
             movement[feed_in_key] = round(float(movement.get(feed_in_key) or 0.0) + fill_kg, 3)
@@ -4072,7 +4561,7 @@ def update_feed_movement_state(sensors, feed_kg, sample_ts, entries=None):
             "crop_state": "in_crop" if in_crop else "out_of_crop",
             "crop_id": None if active_crop_id in [None, ""] else int(active_crop_id),
             "feed_kg_after": round(feed_kg, 3),
-        })
+        }, session_gap_seconds=FEED_FILL_SESSION_GAP_SECONDS if movement_kind == "bin_fill" else FEED_MOVEMENT_SESSION_GAP_SECONDS)
         movement["events"] = events[-500:]
 
     movement.update({
@@ -4262,6 +4751,55 @@ def reset_feed_average_state(sensors, clear_published=True):
         sensors["feed_kg"] = None
 
 
+CLIMATE_DAYS_KEPT = 90
+
+
+def update_climate_extremes(sensors, now_ts):
+    day = datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d")
+    days = sensors.get("climate_days")
+    if not isinstance(days, list):
+        days = []
+    if not days or days[-1].get("date") != day:
+        days.append({"date": day})
+    rec = days[-1]
+    for metric, key in [("temp", "temp_c"), ("rh", "rh_pct")]:
+        try:
+            value = float(sensors.get(key))
+        except Exception:
+            continue
+        if rec.get(metric + "_min") is None or value < rec[metric + "_min"]:
+            rec[metric + "_min"] = value
+            rec[metric + "_min_ts"] = now_ts
+        if rec.get(metric + "_max") is None or value > rec[metric + "_max"]:
+            rec[metric + "_max"] = value
+            rec[metric + "_max_ts"] = now_ts
+    sensors["climate_days"] = days[-CLIMATE_DAYS_KEPT:]
+
+
+def climate_day_display(rec):
+    rec = rec or {}
+    return {
+        "date": rec.get("date", ""),
+        "date_label": datetime.strptime(rec["date"], "%Y-%m-%d").strftime("%a %d %b") if rec.get("date") else "--",
+        "temp_min": fmt_value(rec.get("temp_min"), "f1"),
+        "temp_min_at": fmt_clock_ts(rec.get("temp_min_ts")),
+        "temp_max": fmt_value(rec.get("temp_max"), "f1"),
+        "temp_max_at": fmt_clock_ts(rec.get("temp_max_ts")),
+        "rh_min": fmt_value(rec.get("rh_min"), "f0"),
+        "rh_min_at": fmt_clock_ts(rec.get("rh_min_ts")),
+        "rh_max": fmt_value(rec.get("rh_max"), "f0"),
+        "rh_max_at": fmt_clock_ts(rec.get("rh_max_ts")),
+    }
+
+
+def climate_today_display(sensors, now_ts):
+    day = datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d")
+    days = sensors.get("climate_days") or []
+    if days and days[-1].get("date") == day:
+        return climate_day_display(days[-1])
+    return climate_day_display({"date": day})
+
+
 def apply_sensor_packet(state, packet):
     sensors = state.get("sensors", default_sensor_state())
     now_ts = int(time.time())
@@ -4303,6 +4841,9 @@ def apply_sensor_packet(state, packet):
 
     if isinstance(packet.get("alarms"), list) and packet_kind != "checkpoint":
         sensors["alarms"] = packet.get("alarms")
+
+    if packet_kind != "checkpoint" and ("temp_c" in packet or "rh_pct" in packet):
+        update_climate_extremes(sensors, now_ts)
 
     sensors["pico_connected"] = True
     sensors["last_sensor_ts"] = now_ts
@@ -4657,6 +5198,59 @@ def start_monitor_thread():
 BACKGROUND_SYNC_THREAD = None
 
 
+AUTO_UPDATE_WINDOW_MINUTES = 30
+AUTO_UPDATE_THREAD = None
+
+
+def auto_update_status_path():
+    return os.path.join(DATA_DIR, "auto_update_status.json")
+
+
+def load_auto_update_status():
+    data = read_json_file(auto_update_status_path(), {})
+    return data if isinstance(data, dict) else {}
+
+
+def auto_update_loop():
+    # Once a night, in the first half hour after midnight, check GitHub and install the
+    # update if this controller is on a different commit to its branch on GitHub.
+    while True:
+        try:
+            now = datetime.now()
+            today = now.strftime("%Y-%m-%d")
+            in_window = now.hour == 0 and now.minute < AUTO_UPDATE_WINDOW_MINUTES
+            status = load_auto_update_status()
+            if in_window and load_config().get("auto_update_enabled", False) and status.get("last_run_date") != today:
+                status = {"last_run_date": today, "last_run_ts": int(time.time())}
+                write_json_file_atomic(auto_update_status_path(), status)
+                check = check_for_update()
+                if not check.get("ok"):
+                    status["result"] = "Check failed: %s" % (check.get("status") or "unknown error")
+                elif not check.get("update_available"):
+                    status["result"] = "Already on latest version"
+                else:
+                    status["result"] = "Updating %s -> %s" % (check.get("local_commit"), check.get("remote_commit"))
+                write_json_file_atomic(auto_update_status_path(), status)
+                if check.get("ok") and check.get("update_available"):
+                    install_controller_update("nightly auto update")
+        except Exception as exc:
+            try:
+                status = load_auto_update_status()
+                status["result"] = "Auto update error: %s" % exc
+                write_json_file_atomic(auto_update_status_path(), status)
+            except Exception:
+                pass
+        time.sleep(60)
+
+
+def start_auto_update_thread():
+    global AUTO_UPDATE_THREAD
+    if AUTO_UPDATE_THREAD and AUTO_UPDATE_THREAD.is_alive():
+        return
+    AUTO_UPDATE_THREAD = threading.Thread(target=auto_update_loop, daemon=True)
+    AUTO_UPDATE_THREAD.start()
+
+
 def start_background_sync_thread():
     global BACKGROUND_SYNC_THREAD
     if BACKGROUND_SYNC_THREAD is not None and BACKGROUND_SYNC_THREAD.is_alive():
@@ -4713,7 +5307,7 @@ HTML = """
             border: 1px solid var(--line);
             border-radius: 20px;
             padding: 18px;
-            box-shadow: 0 0 20px rgba(0, 0, 0, 0.08);
+            box-shadow: 0 0 20px rgba(0,0,0,0.08);
         }
         .hero-main {
             display: block;
@@ -4726,16 +5320,14 @@ HTML = """
             white-space: nowrap;
         }
         h1.active {
-            text-shadow:
-                0 0 10px rgba(53,208,127,0.95),
-                0 0 20px rgba(53,208,127,0.65),
-                0 0 34px rgba(53,208,127,0.35);
+            text-shadow: 0 0 10px rgba(47,158,58,0.52),
+                0 0 20px rgba(47,158,58,0.36),
+                0 0 34px rgba(47,158,58,0.19);
         }
         h1.inactive {
-            text-shadow:
-                0 0 10px rgba(255,119,119,0.95),
-                0 0 20px rgba(255,119,119,0.65),
-                0 0 34px rgba(255,119,119,0.35);
+            text-shadow: 0 0 10px rgba(214,69,69,0.52),
+                0 0 20px rgba(214,69,69,0.36),
+                0 0 34px rgba(214,69,69,0.19);
         }
         .title-row {
             display: flex;
@@ -4767,28 +5359,24 @@ HTML = """
             white-space: nowrap;
         }
         .hero-crop.active {
-            text-shadow:
-                0 0 10px rgba(53,208,127,0.95),
-                0 0 20px rgba(53,208,127,0.65),
-                0 0 34px rgba(53,208,127,0.35);
+            text-shadow: 0 0 10px rgba(47,158,58,0.52),
+                0 0 20px rgba(47,158,58,0.36),
+                0 0 34px rgba(47,158,58,0.19);
         }
         .hero-crop.inactive {
-            text-shadow:
-                0 0 10px rgba(255,119,119,0.95),
-                0 0 20px rgba(255,119,119,0.65),
-                0 0 34px rgba(255,119,119,0.35);
+            text-shadow: 0 0 10px rgba(214,69,69,0.52),
+                0 0 20px rgba(214,69,69,0.36),
+                0 0 34px rgba(214,69,69,0.19);
         }
         .hero-datetime.active {
-            text-shadow:
-                0 0 10px rgba(53,208,127,0.90),
-                0 0 18px rgba(53,208,127,0.55),
-                0 0 28px rgba(53,208,127,0.28);
+            text-shadow: 0 0 10px rgba(47,158,58,0.50),
+                0 0 18px rgba(47,158,58,0.30),
+                0 0 28px rgba(47,158,58,0.15);
         }
         .hero-datetime.inactive {
-            text-shadow:
-                0 0 10px rgba(255,119,119,0.90),
-                0 0 18px rgba(255,119,119,0.55),
-                0 0 28px rgba(255,119,119,0.28);
+            text-shadow: 0 0 10px rgba(214,69,69,0.50),
+                0 0 18px rgba(214,69,69,0.30),
+                0 0 28px rgba(214,69,69,0.15);
         }
         .hero-birds {
             display: inline-flex;
@@ -4806,30 +5394,26 @@ HTML = """
         .hero-birds.active,
         .hero-age.active,
         .hero-mortality.active {
-            border-color: rgba(53,208,127,0.90);
-            box-shadow:
-                0 0 10px rgba(53,208,127,0.28),
-                0 0 18px rgba(53,208,127,0.16);
+            border-color: rgba(47,158,58,0.90);
+            box-shadow: 0 0 10px rgba(47,158,58,0.15),
+                0 0 18px rgba(47,158,58,0.09);
         }
         .hero-birds.inactive,
         .hero-age.inactive,
         .hero-mortality.inactive {
-            border-color: rgba(255,119,119,0.90);
-            box-shadow:
-                0 0 10px rgba(255,119,119,0.24),
-                0 0 18px rgba(255,119,119,0.14);
+            border-color: rgba(214,69,69,0.90);
+            box-shadow: 0 0 10px rgba(214,69,69,0.13),
+                0 0 18px rgba(214,69,69,0.08);
         }
         .hero-age.lighting-on {
-            border-color: rgba(53,208,127,0.90);
-            box-shadow:
-                0 0 10px rgba(53,208,127,0.28),
-                0 0 18px rgba(53,208,127,0.16);
+            border-color: rgba(47,158,58,0.90);
+            box-shadow: 0 0 10px rgba(47,158,58,0.15),
+                0 0 18px rgba(47,158,58,0.09);
         }
         .hero-age.lighting-off {
-            border-color: rgba(255,119,119,0.90);
-            box-shadow:
-                0 0 10px rgba(255,119,119,0.24),
-                0 0 18px rgba(255,119,119,0.14);
+            border-color: rgba(214,69,69,0.90);
+            box-shadow: 0 0 10px rgba(214,69,69,0.13),
+                0 0 18px rgba(214,69,69,0.08);
         }
         .hero-birds-label {
             color: var(--muted);
@@ -4887,12 +5471,12 @@ HTML = """
             transition: opacity 120ms ease, filter 120ms ease, color 120ms ease;
         }
         .hero-light-icon.lighting-on {
-            color: #fff3c3;
+            color: #9a4b00;
             opacity: 1;
             filter: drop-shadow(0 0 8px rgba(255, 208, 106, 0.75));
         }
         .hero-light-icon.lighting-off {
-            color: #d5d5d5;
+            color: #0d2b4a;
             opacity: 0.65;
             filter: grayscale(1) brightness(0.75);
         }
@@ -4985,13 +5569,13 @@ HTML = """
             overflow: hidden;
             text-overflow: ellipsis;
         }
-        .pill.ok { border-color: rgba(123,225,170,0.45); color: var(--green); }
-        .pill.warn { border-color: rgba(255,208,106,0.45); color: var(--amber); }
-        .pill.bad { border-color: rgba(255,119,119,0.45); color: var(--red); }
+        .pill.ok { border-color: rgba(47,158,58,0.45); color: var(--green); }
+        .pill.warn { border-color: rgba(240,138,18,0.45); color: var(--amber); }
+        .pill.bad { border-color: rgba(214,69,69,0.45); color: var(--red); }
         .hero-pills {
             margin-top: 12px;
             padding-top: 12px;
-            border-top: 1px solid #8b8b8b;
+            border-top: 1px solid #d5dde6;
         }
         .top-grid {
             display: grid;
@@ -5076,89 +5660,77 @@ HTML = """
             font-size: 40px;
         }
         .metric.flow-green {
-            border-color: #35d07f;
-            box-shadow:
-                0 0 10px rgba(53,208,127,0.95),
-                0 0 20px rgba(53,208,127,0.65),
-                0 0 34px rgba(53,208,127,0.35);
+            border-color: #2f9e3a;
+            box-shadow: 0 0 10px rgba(47,158,58,0.52),
+                0 0 20px rgba(47,158,58,0.36),
+                0 0 34px rgba(47,158,58,0.19);
         }
         .metric.flow-red,
         .metric.feed-red {
-            border-color: #ff5b5b;
-            box-shadow:
-                0 0 10px rgba(255,91,91,0.95),
-                0 0 20px rgba(255,91,91,0.65),
-                0 0 34px rgba(255,91,91,0.35);
+            border-color: #d64545;
+            box-shadow: 0 0 10px rgba(214,69,69,0.52),
+                0 0 20px rgba(214,69,69,0.36),
+                0 0 34px rgba(214,69,69,0.19);
         }
         .metric.temp-green {
-            border-color: #35d07f;
-            box-shadow:
-                0 0 10px rgba(53,208,127,0.95),
-                0 0 20px rgba(53,208,127,0.65),
-                0 0 34px rgba(53,208,127,0.35);
+            border-color: #2f9e3a;
+            box-shadow: 0 0 10px rgba(47,158,58,0.52),
+                0 0 20px rgba(47,158,58,0.36),
+                0 0 34px rgba(47,158,58,0.19);
         }
         .metric.temp-warn {
-            border-color: #ffd06a;
-            box-shadow:
-                0 0 10px rgba(255,208,106,0.95),
-                0 0 20px rgba(255,208,106,0.65),
-                0 0 34px rgba(255,208,106,0.35);
+            border-color: #f08a12;
+            box-shadow: 0 0 10px rgba(240,138,18,0.52),
+                0 0 20px rgba(240,138,18,0.36),
+                0 0 34px rgba(240,138,18,0.19);
         }
         .metric.temp-red {
-            border-color: #ff5b5b;
-            box-shadow:
-                0 0 10px rgba(255,91,91,0.95),
-                0 0 20px rgba(255,91,91,0.65),
-                0 0 34px rgba(255,91,91,0.35);
+            border-color: #d64545;
+            box-shadow: 0 0 10px rgba(214,69,69,0.52),
+                0 0 20px rgba(214,69,69,0.36),
+                0 0 34px rgba(214,69,69,0.19);
         }
         .metric.rh-green {
-            border-color: #35d07f;
-            box-shadow:
-                0 0 10px rgba(53,208,127,0.95),
-                0 0 20px rgba(53,208,127,0.65),
-                0 0 34px rgba(53,208,127,0.35);
+            border-color: #2f9e3a;
+            box-shadow: 0 0 10px rgba(47,158,58,0.52),
+                0 0 20px rgba(47,158,58,0.36),
+                0 0 34px rgba(47,158,58,0.19);
         }
         .metric.rh-warn {
-            border-color: #ffd06a;
-            box-shadow:
-                0 0 10px rgba(255,208,106,0.95),
-                0 0 20px rgba(255,208,106,0.65),
-                0 0 34px rgba(255,208,106,0.35);
+            border-color: #f08a12;
+            box-shadow: 0 0 10px rgba(240,138,18,0.52),
+                0 0 20px rgba(240,138,18,0.36),
+                0 0 34px rgba(240,138,18,0.19);
         }
         .metric.rh-red {
-            border-color: #ff5b5b;
-            box-shadow:
-                0 0 10px rgba(255,91,91,0.95),
-                0 0 20px rgba(255,91,91,0.65),
-                0 0 34px rgba(255,91,91,0.35);
+            border-color: #d64545;
+            box-shadow: 0 0 10px rgba(214,69,69,0.52),
+                0 0 20px rgba(214,69,69,0.36),
+                0 0 34px rgba(214,69,69,0.19);
         }
         .metric.feed-green {
-            border-color: #35d07f;
-            box-shadow:
-                0 0 10px rgba(53,208,127,0.95),
-                0 0 20px rgba(53,208,127,0.65),
-                0 0 34px rgba(53,208,127,0.35);
+            border-color: #2f9e3a;
+            box-shadow: 0 0 10px rgba(47,158,58,0.52),
+                0 0 20px rgba(47,158,58,0.36),
+                0 0 34px rgba(47,158,58,0.19);
         }
         .metric.state-green {
-            border-color: #35d07f;
-            box-shadow:
-                0 0 10px rgba(53,208,127,0.95),
-                0 0 20px rgba(53,208,127,0.65),
-                0 0 34px rgba(53,208,127,0.35);
+            border-color: #2f9e3a;
+            box-shadow: 0 0 10px rgba(47,158,58,0.52),
+                0 0 20px rgba(47,158,58,0.36),
+                0 0 34px rgba(47,158,58,0.19);
         }
         .metric.state-warn {
-            border-color: #ffd06a;
-            box-shadow:
-                0 0 10px rgba(255,208,106,0.95),
-                0 0 20px rgba(255,208,106,0.65),
-                0 0 34px rgba(255,208,106,0.35);
+            border-color: #f08a12;
+            box-shadow: 0 0 10px rgba(240,138,18,0.52),
+                0 0 20px rgba(240,138,18,0.36),
+                0 0 34px rgba(240,138,18,0.19);
         }
         .metric.state-red {
-            border-color: #ff5b5b;
-            box-shadow:
-                0 0 10px rgba(255,91,91,0.95),
-                0 0 20px rgba(255,91,91,0.65),
-                0 0 34px rgba(255,91,91,0.35);
+            border-color: #d64545;
+            box-shadow: 0 0 10px rgba(214,69,69,0.52),
+                0 0 20px rgba(214,69,69,0.36),
+                0 0 34px rgba(214,69,69,0.19);
         }
         .metric-label {
             color: var(--muted);
@@ -5213,7 +5785,7 @@ HTML = """
             padding: 14px;
             border-radius: 16px;
             background: var(--panel-2);
-            border: 1px solid #818181;
+            border: 1px solid #d5dde6;
         }
         .allocation-top {
             display: flex;
@@ -5245,8 +5817,8 @@ HTML = """
             min-height: 78px;
             width: 100%;
             border-radius: 16px;
-            border: 1px solid #8a8a8a;
-            background: linear-gradient(180deg, #7a7a7a, #676767);
+            border: 1px solid #d5dde6;
+            background: #ffffff;
             color: var(--text);
             font-size: 20px;
             font-weight: 700;
@@ -5268,12 +5840,17 @@ HTML = """
             font-size: 28px;
             line-height: 1;
         }
+        .home-buttons {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
         button {
             min-height: 78px;
             width: 100%;
             border-radius: 16px;
-            border: 1px solid #8a8a8a;
-            background: linear-gradient(180deg, #7d7d7d, #696969);
+            border: 1px solid #d5dde6;
+            background: #ffffff;
             color: var(--text);
             font-size: 24px;
             font-weight: 700;
@@ -5283,29 +5860,29 @@ HTML = """
             transform: scale(0.99);
         }
         .danger {
-            border-color: #7f4b53;
+            border-color: #d64545;
             background: linear-gradient(180deg, #542e34, #3e2328);
         }
         .secondary {
-            border-color: #8a8a8a;
-            background: linear-gradient(180deg, #757575, #636363);
+            border-color: #d5dde6;
+            background: #ffffff;
             font-size: 20px;
         }
         .msg {
             margin-bottom: 16px;
             padding: 14px 16px;
             border-radius: 16px;
-            border: 1px solid #385f6f;
-            background: rgba(33, 71, 88, 0.42);
+            border: 1px solid #1676b8;
+            background: #e6f0f9;
             font-size: 18px;
         }
         .msg.error {
-            border-color: #7f4b53;
-            background: rgba(89, 42, 49, 0.42);
+            border-color: #d64545;
+            background: #fdecec;
         }
         .msg.warn {
-            border-color: rgba(255,208,106,0.45);
-            background: rgba(89, 68, 27, 0.35);
+            border-color: rgba(240,138,18,0.45);
+            background: #fff4e5;
         }
         .floating-alerts {
             margin-bottom: 16px;
@@ -5322,7 +5899,7 @@ HTML = """
             justify-content: space-between;
             gap: 12px;
             padding: 12px 0;
-            border-bottom: 1px solid #818181;
+            border-bottom: 1px solid #d5dde6;
             font-size: 18px;
         }
         .detail:last-child {
@@ -5339,8 +5916,8 @@ HTML = """
         .alarm {
             padding: 12px 14px;
             border-radius: 14px;
-            border: 1px solid rgba(255,119,119,0.35);
-            background: rgba(84, 34, 34, 0.38);
+            border: 1px solid rgba(214,69,69,0.35);
+            background: #fdecec;
             font-size: 17px;
         }
         .mono {
@@ -5574,14 +6151,14 @@ HTML = """
                     <div id="tempTile" class="metric metric-mini {{ temp_glow }}">
                         <div class="metric-label">Temp</div>
                         <div class="metric-val" id="tempValue">{{ temp_c }}</div>
-                        <div class="metric-sub">C</div>
+                        <div class="metric-sub">C · <span id="tempHiLo">H {{ climate_today.temp_max }} / L {{ climate_today.temp_min }}</span></div>
                     </div>
                 </a>
                 <a class="metric-link" href="{{ url_for('rh_settings_view') }}">
                     <div id="rhTile" class="metric metric-mini {{ rh_glow }}">
                         <div class="metric-label">RH</div>
                         <div class="metric-val" id="rhValue">{{ rh_pct }}</div>
-                        <div class="metric-sub">%RH</div>
+                        <div class="metric-sub">%RH · <span id="rhHiLo">H {{ climate_today.rh_max }} / L {{ climate_today.rh_min }}</span></div>
                     </div>
                 </a>
             </div>
@@ -5639,7 +6216,11 @@ HTML = """
         </div>
 
         <div class="main-grid">
-            <div class="panel">
+            <div class="panel home-buttons">
+                <a class="button-link settings-button" href="{{ url_for('index') }}">
+                    <span class="settings-icon">&#9638;</span>
+                    <span>Overview</span>
+                </a>
                 <a class="button-link settings-button" href="{{ url_for('controller_settings_view') }}">
                     <span class="settings-icon">&#9881;</span>
                     <span>Settings</span>
@@ -5701,6 +6282,10 @@ HTML = """
             if (document.getElementById('alarmPill')) setPillClass('alarmPill', data.alarm_class);
             setText('tempValue', data.temp_c);
             setText('rhValue', data.rh_pct);
+            if (data.climate_today) {
+                setText('tempHiLo', 'H ' + data.climate_today.temp_max + ' / L ' + data.climate_today.temp_min);
+                setText('rhHiLo', 'H ' + data.climate_today.rh_max + ' / L ' + data.climate_today.rh_min);
+            }
             setText('waterValue', data.water_lpm);
             setText('feedValue', data.feed_kg);
             setText('water7to7Value', data.water_7to7);
@@ -5823,6 +6408,876 @@ HTML = """
 """
 
 
+OVERVIEW_HTML = """
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>{{ shed_display_name }} Overview</title>
+    <meta name="cdf-theme-native" content="1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@500;600&display=swap">
+    <style>
+        :root {
+            --page: #eef2f6;
+            --card: #ffffff;
+            --card-2: #f5f8fb;
+            --rule: #d5dde6;
+            --track: #dbe3ec;
+            --text: #0d2b4a;
+            --muted: #4a6078;
+            --soft: #31475e;
+            --green: #2f9e3a;
+            --amber: #f08a12;
+            --red: #d64545;
+            --blue: #1676b8;
+            --water: #1676b8;
+            --feed: #d9b86a;
+            --steel: #b8bdb6;
+            --wall: #7a807a;
+        }
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: var(--page);
+            color: var(--text);
+            font-family: "Barlow", "Helvetica Neue", Helvetica, sans-serif;
+        }
+        .cond { font-family: "Barlow Semi Condensed", "Barlow", "Helvetica Neue", Helvetica, sans-serif; }
+        .page { display: flex; flex-direction: column; min-height: 100vh; }
+
+        .topbar {
+            min-height: 76px; padding: 10px 28px; display: flex; align-items: center;
+            justify-content: space-between; gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--rule);
+         background: #ffffff;}
+        .brand-logo { height: 48px; width: auto; display: block; }
+        .topbar-left { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+        /* The shed name box takes all the room between the logo and the status items. */
+        .topbar-left.crop-badge { flex: 1 1 auto; min-width: 0; justify-content: space-evenly; align-items: center; align-self: stretch; padding-top: 0; padding-bottom: 0; }
+        /* Barlow's letters sit ~2px below the centre of their line box; lift them so they look centred. */
+        .topbar-left .shed-title, .topbar-left .subtitle { line-height: 1; margin: 0; position: relative; top: -2px; }
+        .topbar-left .subtitle { font-size: 22px; font-weight: 600; color: var(--soft); }
+        .hdr-sep { font-size: 28px; font-weight: 700; line-height: 1; color: var(--muted); position: relative; top: -2px; }
+        .shed-title { font-size: 30px; font-weight: 600; line-height: 1; }
+        .crop-badge {
+            padding: 8px 18px; border-radius: 12px; border: 2px solid var(--rule);
+            transition: border-color 0.4s, box-shadow 0.4s;
+        }
+        .crop-badge.active { border-color: #2f9e3a; box-shadow: 0 0 6px rgba(47,158,58,0.5), 0 0 14px rgba(47,158,58,0.25); }
+        .crop-badge.inactive { border-color: #d64545; box-shadow: 0 0 6px rgba(214,69,69,0.5), 0 0 14px rgba(214,69,69,0.25); }
+        .subtitle { font-size: 18px; color: var(--muted); }
+        .topbar-right { display: flex; align-items: center; gap: 24px; }
+        .chip { padding: 8px 16px; border-radius: 999px; color: var(--page); font-size: 17px; font-weight: 600; white-space: nowrap; }
+        .chip.ok { background: var(--green); }
+        .chip.attention { background: var(--amber); }
+        .sync { display: flex; align-items: center; gap: 8px; font-size: 16px; color: var(--muted); white-space: nowrap; }
+        .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--amber); }
+        .dot.ok { background: var(--green); }
+        .dot.bad { background: var(--red); }
+        .clock { font-size: 30px; font-weight: 500; }
+
+        .banners { padding: 0 24px; }
+        .banner { margin-top: 12px; padding: 10px 14px; border-radius: 12px; background: var(--card); font-size: 16px; font-weight: 600; }
+        .banner.warn { color: #9a4b00; background: #fff4e5; border: 1px solid #f3b366; }
+        .banner.error { color: #8f1f1f; background: #fdecec; border: 1px solid #e3a0a0; }
+        .banner.info { color: var(--soft); border: 1px solid var(--rule); }
+
+        .body { flex: 1; padding: 20px 24px; display: flex; gap: 20px; align-items: stretch; }
+        .plan-wrap { flex: 0 1 836px; min-width: 0; }
+        .plan-stage-box { position: relative; width: 100%; }
+        .stage { position: absolute; left: 0; top: 0; width: 836px; height: 480px; transform-origin: 0 0; }
+        .abs { position: absolute; }
+
+
+        .climate-card {
+            top: 0; height: 86px; padding: 8px 14px; border-radius: 14px; background: var(--card);
+            border: 2px solid var(--rule); display: flex; flex-direction: column; justify-content: center; gap: 2px;
+            color: var(--text); text-decoration: none;
+        }
+        .climate-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+        .glowable { transition: border-color 0.3s, box-shadow 0.3s; }
+        .glowable.temp-green, .glowable.flow-green, .glowable.feed-green, .glowable.state-green {
+            border-color: #2f9e3a;
+            box-shadow: 0 0 8px rgba(47,158,58,0.75), 0 0 16px rgba(47,158,58,0.45), 0 0 28px rgba(47,158,58,0.22);
+        }
+        .glowable.temp-warn, .glowable.state-warn {
+            border-color: #f08a12;
+            box-shadow: 0 0 8px rgba(240,138,18,0.75), 0 0 16px rgba(240,138,18,0.45), 0 0 28px rgba(240,138,18,0.22);
+        }
+        .glowable.temp-red, .glowable.flow-red, .glowable.feed-red, .glowable.state-red {
+            border-color: #d64545;
+            box-shadow: 0 0 8px rgba(214,69,69,0.75), 0 0 16px rgba(214,69,69,0.45), 0 0 28px rgba(214,69,69,0.22);
+        }
+        .card-label { font-size: 15px; color: var(--soft); }
+        .temp-val { font-size: 44px; font-weight: 600; line-height: 1; }
+        .climate-body { display: flex; align-items: center; gap: 6px; }
+        .climate-body .unit { align-self: flex-end; margin-bottom: 4px; }
+        .hilo-stack { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; font-size: 14px; color: var(--muted); line-height: 1.15; }
+        .hilo-stack b { color: var(--text); font-weight: 600; }
+        .unit { font-size: 22px; color: var(--muted); }
+        .hilo { font-size: 14px; color: var(--muted); margin-top: 4px; }
+        .temp-right { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; text-align: right; }
+        .rh-val { font-size: 20px; font-weight: 600; color: var(--text); text-decoration: none; }
+        .temp-status { font-size: 14px; font-weight: 600; }
+
+        .water-card {
+            top: 0; height: 86px; padding: 8px 16px; border-radius: 14px;
+            background: var(--card); display: flex; flex-direction: column; justify-content: center; gap: 2px;
+            color: var(--text); text-decoration: none; border: 2px solid transparent;
+        }
+        .water-ring { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--water); }
+        .water-val { font-size: 36px; font-weight: 600; line-height: 1.05; }
+
+        .bin {
+            left: 16px; top: 150px; width: 124px; height: 124px; border-radius: 50%; border: 4px solid var(--steel);
+            background: var(--card-2); overflow: hidden; box-shadow: 6px 8px 0 rgba(0,0,0,0.3); display: block; color: var(--text); text-decoration: none;
+        }
+        .bin-fill { position: absolute; left: 0; right: 0; bottom: 0; background: rgba(217,184,106,0.38); transition: height 0.6s; }
+        .bin-cap { position: absolute; left: 50%; top: 30%; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: var(--steel); }
+        .bin-readout { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; padding-bottom: 14px; line-height: 1.05; }
+        .bin-kg { font-size: 22px; font-weight: 600; }
+        .bin-kg-unit { font-size: 14px; font-weight: 500; margin-left: 2px; }
+        .bin-pct { font-size: 17px; font-weight: 600; color: var(--soft); }
+        .bin-label-sub { font-size: 14px; color: var(--muted); }
+        .bin-label { width: 156px; text-align: center; }
+        .bin-label-name { font-size: 16px; font-weight: 600; }
+        .bin-label-kg { font-size: 22px; font-weight: 600; }
+        .feed-pipe { width: 36px; height: 6px; background: var(--feed); }
+
+        .shed {
+            left: 170px; top: 190px; width: 650px; height: 330px; border: 6px solid var(--wall); border-radius: 6px; overflow: hidden;
+            background-color: #c9a458;
+            background-image:
+                repeating-linear-gradient(28deg, rgba(255,236,170,0.35) 0px, rgba(255,236,170,0.35) 2px, transparent 2px, transparent 9px),
+                repeating-linear-gradient(-34deg, rgba(120,88,30,0.28) 0px, rgba(120,88,30,0.28) 2px, transparent 2px, transparent 13px),
+                repeating-linear-gradient(72deg, rgba(240,214,140,0.4) 0px, rgba(240,214,140,0.4) 1px, transparent 1px, transparent 17px),
+                repeating-linear-gradient(-80deg, rgba(150,112,44,0.22) 0px, rgba(150,112,44,0.22) 3px, transparent 3px, transparent 23px);
+            box-shadow: 8px 10px 0 rgba(0,0,0,0.3);
+        }
+        .shed.lights-off { filter: brightness(0.62) saturate(0.8); }
+        .pen { position: absolute; top: 0; height: 318px; display: flex; align-items: center; justify-content: center; }
+        .pen.divided { border-right: 3px dashed #5a4722; }
+        .pen-card {
+            max-width: calc(100% - 16px); padding: 14px 18px; border-radius: 12px; background: rgba(255,255,255,0.95);
+            display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center;
+        }
+        .pen-name { font-size: 30px; font-weight: 600; line-height: 1.05; color: var(--text); text-decoration: none; }
+        .pen-birds { font-size: 18px; color: var(--soft); }
+        .pen-card { color: var(--text); text-decoration: none; }
+        .pen-card:active { transform: scale(0.98); }
+        .shed-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; }
+        .add-corner { position: absolute; bottom: 12px; z-index: 2; }
+        .add-btn {
+            width: 52px; height: 52px; border-radius: 50%; border: 3px solid var(--text); background: rgba(255,255,255,0.95);
+            color: var(--text); font-family: inherit; font-size: 34px; font-weight: 500; line-height: 1; cursor: pointer;
+            display: flex; align-items: center; justify-content: center; padding: 0 0 4px; opacity: 0.5;
+        }
+        .add-btn:active { transform: scale(0.95); }
+        .add-btn-big { width: 96px; height: 96px; font-size: 64px; padding-bottom: 8px; }
+        .add-hint { padding: 8px 14px; border-radius: 10px; background: rgba(255,255,255,0.95); font-size: 16px; color: var(--soft); }
+
+        .modal { position: fixed; inset: 0; z-index: 50; background: rgba(20,22,21,0.72); display: none; align-items: center; justify-content: center; padding: 16px; }
+        .modal.open { display: flex; }
+        .modal-card { width: 100%; max-width: 560px; max-height: calc(100vh - 32px); overflow-y: auto; padding: 22px; border-radius: 16px; background: var(--card); border: 1px solid var(--rule); display: flex; flex-direction: column; gap: 16px; }
+        .modal-title { font-size: 28px; font-weight: 600; }
+        .modal-sub { font-size: 16px; color: var(--muted); margin-top: -10px; }
+        .field-label { font-size: 15px; color: var(--soft); margin-bottom: 8px; }
+        .shed-choices { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; }
+        .shed-choice input { position: absolute; opacity: 0; pointer-events: none; }
+        .shed-choice span {
+            display: flex; align-items: center; justify-content: center; min-height: 52px; border-radius: 10px;
+            border: 1px solid #c5d0dc; background: var(--card-2); font-size: 18px; font-weight: 600; cursor: pointer;
+        }
+        .shed-choice input:checked + span { background: var(--text); color: var(--page); border-color: var(--text); }
+        .shed-choice input:focus-visible + span { outline: 3px solid var(--text); outline-offset: 2px; }
+        .modal input[type="number"] {
+            width: 100%; min-height: 60px; padding: 0 16px; border-radius: 10px; border: 1px solid #c5d0dc;
+            background: var(--card-2); color: var(--text); font-family: inherit; font-size: 26px; font-weight: 600;
+        }
+        .modal-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .modal-actions button { min-height: 56px; border-radius: 12px; font-family: inherit; font-size: 18px; font-weight: 600; cursor: pointer; }
+        .btn-primary { border: 0; background: var(--text); color: var(--page); }
+        .btn-secondary { border: 1px solid #c5d0dc; background: var(--card-2); color: var(--text); }
+
+        .door { width: 10px; background: repeating-linear-gradient(45deg, var(--amber) 0px, var(--amber) 8px, var(--page) 8px, var(--page) 16px); }
+        .door-tick { background: var(--text); }
+        .door-label { width: 126px; }
+        .end-label { top: 528px; font-size: 14px; color: var(--muted); }
+
+        .panel {
+            flex: 1 1 360px; min-width: 300px; padding: 16px 20px; border-radius: 14px; background: var(--card);
+            display: flex; flex-direction: column; gap: 10px;
+        }
+        .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+        .panel-title { font-size: 24px; font-weight: 600; }
+        .panel-chip { padding: 5px 12px; border-radius: 999px; font-size: 15px; font-weight: 600; color: var(--page); white-space: nowrap; }
+        .gauge { position: relative; height: 22px; }
+        .gauge-track { position: absolute; left: 0; right: 0; top: 6px; height: 10px; border-radius: 5px; background: var(--track); }
+        .gauge-band { position: absolute; top: 6px; height: 10px; background: rgba(47,158,58,0.55); }
+        .gauge-marker { position: absolute; top: 0; width: 4px; height: 22px; margin-left: -2px; border-radius: 2px; background: var(--text); transition: left 0.6s; }
+        .gauge-scale { display: flex; justify-content: space-between; gap: 8px; font-size: 14px; color: var(--muted); }
+        .advice { font-size: 15px; line-height: 1.3; }
+        .gauge-block { display: flex; flex-direction: column; gap: 3px; }
+        .gauge-title { font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+        .rule { height: 1px; background: var(--track); }
+        .row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+        .row-label { font-size: 15px; color: var(--muted); }
+        .row-big { font-size: 28px; font-weight: 600; }
+        .row-mid { font-size: 24px; font-weight: 600; }
+        .row-small { font-size: 15px; }
+        .row-link { color: inherit; text-decoration: none; }
+        .pen-table { display: grid; grid-template-columns: 1fr auto auto; column-gap: 22px; row-gap: 4px; font-size: 15px; }
+        .pen-table > :nth-child(3n+2), .pen-table > :nth-child(3n+3) { text-align: right; }
+        .pen-table-head { font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+        .mort-select {
+            min-height: 42px; width: 100%; padding: 0 10px; border-radius: 10px; border: 1px solid #c5d0dc;
+            background: var(--card-2); color: var(--text); font-family: inherit; font-size: 16px; font-weight: 600;
+        }
+        .mort-open {
+            min-height: 52px; width: 100%; border: 1px solid #9aa8b6; border-radius: 12px; background: var(--card-2);
+            color: var(--text); font-family: inherit; font-size: 18px; font-weight: 600; cursor: pointer;
+        }
+        .note { font-size: 14px; color: var(--muted); }
+        .equip { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-top: 8px; }
+        .equip-item { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border-radius: 12px; background: var(--card); border: 2px solid var(--rule); color: var(--text); text-decoration: none; }
+        a.equip-item:active { background: var(--card-2); }
+        .panel .equip-item { background: var(--card-2); }
+        .equip-head { display: flex; align-items: center; gap: 8px; font-size: 16px; }
+        .equip-name { font-weight: 600; }
+        .equip-status { margin-left: auto; font-weight: 600; }
+        .equip-time { font-size: 14px; color: var(--muted); }
+        .equip-time:empty { display: none; }
+        .equip-item .dot { background: var(--amber); }
+        .equip-item.state-green .dot { background: var(--green); }
+        .equip-item.state-red .dot { background: var(--red); }
+
+        .nav { padding: 0 24px 16px; display: flex; gap: 12px; }
+        .nav a {
+            flex: 1 1 0; min-height: 56px; display: flex; align-items: center; justify-content: center; gap: 8px; text-align: center;
+            border: 1px solid #c5d0dc; border-radius: 12px; background: var(--card); color: var(--text);
+            font-size: 18px; font-weight: 500; text-decoration: none; padding: 0 8px;
+        }
+        .nav a[aria-current="page"] { background: var(--text); color: var(--page); border-color: var(--text); font-weight: 600; }
+        .nav-badge { min-width: 24px; padding: 1px 7px; border-radius: 999px; background: var(--red); color: var(--page); font-size: 14px; font-weight: 600; }
+        a:focus-visible, button:focus-visible { outline: 3px solid var(--text); outline-offset: 2px; }
+
+        @media (min-width: 901px) {
+            /* Kiosk layout: one screen, no page scroll. The shed plan scales to fill
+               whatever space the left column has; the panel scrolls if it ever overflows. */
+            .page { height: 100vh; min-height: 0; }
+            .body { min-height: 0; }
+            .plan-wrap { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+            .plan-stage-box { flex: 1 1 auto; min-height: 0; }
+            .panel { flex: 0 0 340px; min-width: 0; overflow-y: auto; padding: 14px 18px; gap: 8px; }
+            /* Compact right panel so it fits short kiosk screens without scrolling. */
+            .panel .panel-title { font-size: 21px; }
+            .panel .panel-chip { padding: 3px 10px; font-size: 14px; }
+            .panel .gauge { height: 18px; }
+            .panel .gauge-track, .panel .gauge-band { top: 5px; height: 8px; }
+            .panel .gauge-marker { height: 18px; }
+            .panel .gauge-scale { font-size: 12px; }
+            .panel .gauge-title { font-size: 11px; }
+            .panel .advice { font-size: 14px; }
+            .panel .row-label { font-size: 14px; }
+            .panel .row-big { font-size: 23px; }
+            .panel .row-mid { font-size: 19px; }
+            .panel .pen-table { font-size: 14px; row-gap: 2px; }
+            .panel .mort-open { min-height: 44px; font-size: 16px; }
+            .panel .equip-item { padding: 8px 12px; }
+        }
+        @media (max-width: 900px) {
+            .topbar { padding: 10px 16px; }
+            .shed-title { font-size: 28px; }
+            .clock { font-size: 24px; }
+            .body { flex-direction: column; padding: 16px; }
+            .plan-wrap, .panel { flex: none; width: 100%; min-width: 0; }
+            .nav { padding: 0 16px 16px; flex-wrap: wrap; }
+            .nav a { flex: 1 1 30%; font-size: 16px; }
+            .banners { padding: 0 16px; }
+        }
+    </style>
+</head>
+<body>
+<div class="page">
+    <header class="topbar">
+        <img class="brand-logo" src="/static/stocksense-logo.png" alt="StockSense, Smarter Livestock Monitoring">
+        <div class="topbar-left crop-badge {{ crop_class }}" id="shedTitle">
+            <div class="shed-title cond">{{ shed_display_name }}</div>
+            <span class="hdr-sep" aria-hidden="true">·</span>
+            <div class="subtitle" id="headerBirds">{{ header_birds }}</div>
+            <span class="hdr-sep" id="headerDaySep" aria-hidden="true" {% if not header_day %}style="display:none"{% endif %}>·</span>
+            <div class="subtitle" id="headerDay" {% if not header_day %}style="display:none"{% endif %}>{{ header_day }}</div>
+        </div>
+        <div class="topbar-right">
+            <div id="overviewChip" class="chip {% if overview_chip_ok %}ok{% else %}attention{% endif %}">{{ overview_chip_text }}</div>
+            <div class="sync"><span id="syncDot" class="dot {{ sync_class }}"></span><span id="syncValue">Office sync {{ sync_short }}</span></div>
+            <div class="clock cond" id="clockValue">{{ clock_hm }}</div>
+        </div>
+    </header>
+
+    <div class="banners">
+        {% if msg and not hide_home_alerts %}<div class="banner {% if ok %}info{% else %}error{% endif %} auto-dismiss">{{ msg }}</div>{% endif %}
+        {% if not hide_home_alerts %}
+        <div id="offlineBanner" class="banner warn" {% if not offline_banner %}style="display:none"{% endif %}>{{ offline_banner }}</div>
+        <div id="picoFreezeBanner" class="banner error" {% if not pico_warning_banner %}style="display:none"{% endif %}>{{ pico_warning_banner }}</div>
+        <div id="picoRecoveryBanner" class="banner warn" {% if not pico_recovery_banner %}style="display:none"{% endif %}>{{ pico_recovery_banner }}</div>
+        {% endif %}
+    </div>
+
+    <main class="body">
+        <section class="plan-wrap" aria-label="Shed plan">
+            <div class="plan-stage-box" id="stageBox">
+                <div class="stage" id="stage">
+                    <a class="abs climate-card glowable {{ temp_glow }}" id="tempCard" href="{{ url_for('temp_settings_view') }}" style="left: {{ layout.temp_x }}px; width: {{ layout.temp_w }}px">
+                        <div class="climate-head"><span class="card-label">Temperature</span><span class="temp-status" id="tempStatus" style="color: {{ temp_status_text_color }}">{{ temp_status_short }}</span></div>
+                        <div class="climate-body">
+                            <div class="temp-val cond" id="tempValue">{{ temp_c }}</div>
+                            <div class="unit">°C</div>
+                            <div class="hilo-stack" aria-label="Today's high and low">
+                                <span>H <b id="tempHi">{{ climate_today.temp_max }}</b></span>
+                                <span>L <b id="tempLo">{{ climate_today.temp_min }}</b></span>
+                            </div>
+                        </div>
+                    </a>
+
+                    <a class="abs climate-card glowable {{ rh_glow }}" id="rhCard" href="{{ url_for('rh_settings_view') }}" style="left: {{ layout.rh_x }}px; width: {{ layout.rh_w }}px">
+                        <div class="climate-head"><span class="card-label">Humidity</span><span class="temp-status" id="rhStatus" style="color: {{ rh_status_text_color }}">{{ rh_status_short }}</span></div>
+                        <div class="climate-body">
+                            <div class="temp-val cond" id="rhValue">{{ rh_pct }}</div>
+                            <div class="unit">%RH</div>
+                            <div class="hilo-stack" aria-label="Today's high and low">
+                                <span>H <b id="rhHi">{{ climate_today.rh_max }}</b></span>
+                                <span>L <b id="rhLo">{{ climate_today.rh_min }}</b></span>
+                            </div>
+                        </div>
+                    </a>
+
+                    <a class="abs water-card glowable {{ water_glow }}" id="waterCard" href="{{ url_for('water_settings_view') }}" style="left: {{ layout.water_x }}px; width: {{ layout.water_w }}px">
+                        <div style="display: flex; align-items: center; gap: 8px" class="card-label"><span class="water-ring"></span><span>Water now</span></div>
+                        <div class="water-val cond"><span id="waterValue">{{ water_lpm }}</span> L/min</div>
+                    </a>
+
+                    <div class="abs feed-pipe" style="left: {{ layout.pipe_x }}px; top: {{ layout.pipe_y }}px"></div>
+                    <a class="abs bin glowable {{ feed_glow }}" id="binCircle" href="{{ url_for('feed_settings_view') }}" aria-label="Feed bin {{ feed_kg }} kg" style="left: {{ layout.bin_x }}px; top: {{ layout.bin_y }}px">
+                        <div class="bin-fill" id="binFill" style="height: {{ (feed_live_pct or 0)|round(0) }}%"></div>
+                        <div class="bin-cap"></div>
+                        <div class="bin-readout">
+                            <div class="bin-kg cond"><span id="binLiveKg">{{ feed_kg_live_display }}</span><span class="bin-kg-unit">kg</span></div>
+                            <div class="bin-pct cond" id="binPct">{% if feed_live_pct is not none %}{{ feed_live_pct|round(0)|int }}%{% else %}--{% endif %}</div>
+                        </div>
+                    </a>
+                    <div class="abs bin-label" style="left: {{ layout.bin_label_x }}px; top: {{ layout.bin_label_y }}px">
+                        <div class="bin-label-name">Feed bin</div>
+                        <div class="bin-label-sub">Live weight</div>
+                    </div>
+
+                    <div class="abs shed {% if lighting_tile and not lighting_on %}lights-off{% endif %}" id="shedFloor" style="left: {{ layout.shed_x }}px; top: {{ layout.shed_y }}px; width: {{ layout.shed_w }}px; height: {{ layout.shed_h }}px">
+                        {% for pen in pens %}
+                        <div class="pen {% if pen.divided %}divided{% endif %}" style="left: {{ pen.left }}px; width: {{ pen.width }}px">
+                            <a class="pen-card" href="{{ url_for('allocation_view') }}" aria-label="{{ pen.name }}, open allocation">
+                                <span class="pen-name cond">{{ pen.name }}</span>
+                                <span class="pen-birds"><span data-pen-placed="{{ pen.dest_shed }}">{{ pen.placed_text }}</span> (<span data-pen-birds="{{ pen.dest_shed }}">{{ pen.birds_text }}</span>)</span>
+                            </a>
+                        </div>
+                        {% endfor %}
+                        {% if pens %}
+                        {% if pen_add_options %}
+                        <button type="button" class="add-btn add-corner" style="{{ 'left' if layout.front_left else 'right' }}: 12px" data-side="front" aria-label="Add a pen at the front end">+</button>
+                        <button type="button" class="add-btn add-corner" style="{{ 'right' if layout.front_left else 'left' }}: 12px" data-side="rear" aria-label="Add a pen at the rear end">+</button>
+                        {% endif %}
+                        {% else %}
+                        <div class="shed-empty">
+                            <button type="button" class="add-btn add-btn-big" data-side="rear" aria-label="Add the first pen">+</button>
+                            <div class="add-hint">Shed empty. Tap + to add the first pen.</div>
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    <div class="abs door" style="left: {{ layout.door_x }}px; top: {{ layout.door_y }}px; height: {{ layout.door_h }}px"></div>
+                    <div class="abs door-tick" style="left: {{ layout.tick_x }}px; top: {{ layout.door_y }}px; width: 10px; height: 2px"></div>
+                    <div class="abs door-tick" style="left: {{ layout.tick_x }}px; top: {{ layout.door_y + layout.door_h - 2 }}px; width: 10px; height: 2px"></div>
+                    <div class="abs door-tick" style="left: {{ layout.tick_x + 4 }}px; top: {{ layout.door_y }}px; width: 2px; height: {{ layout.door_h }}px"></div>
+                    <div class="abs door-label" style="left: {{ layout.label_x }}px; top: {{ layout.label_y }}px; text-align: {{ layout.label_align }}">
+                        <div style="font-size: 16px; font-weight: 600">Door</div>
+                    </div>
+                    <div class="abs end-label" style="left: {{ layout.front_label_x }}px; top: {{ layout.end_label_y }}px; width: 80px; text-align: {{ 'left' if layout.front_left else 'right' }}">Front end</div>
+                    <div class="abs end-label" style="left: {{ layout.rear_label_x }}px; top: {{ layout.end_label_y }}px; width: 80px; text-align: {{ 'right' if layout.front_left else 'left' }}">Rear end</div>
+                </div>
+            </div>
+            {% if auger_tiles %}
+            <div class="equip" aria-label="Augers">
+                {% for auger in auger_tiles %}
+                <a class="equip-item glowable {{ auger.glow }}" id="equip-{{ auger.key }}" href="{{ url_for('auger_runs_view') }}" aria-label="{{ auger.label }}, view auger runs">
+                    <div class="equip-head"><span class="dot"></span><span class="equip-name">{{ auger.label }}</span><span class="equip-status" data-equip-status>{{ auger.status }}</span></div>
+                    <div class="equip-time" data-equip-runtime>{{ auger.runtime or '' }}</div>
+                    <div class="equip-time" data-equip-last-run>{{ auger.last_run or '' }}</div>
+                </a>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </section>
+
+        <section class="panel" aria-label="Shed conditions">
+            <div class="panel-head">
+                <div class="panel-title cond">Shed conditions</div>
+                <div class="panel-chip" id="panelChip" style="background: {{ temp_status_color if temp_status != 'ok' or rh_ok else '#f08a12' }}">{{ 'No reading' if temp_status == 'none' else ('On target' if temp_status == 'ok' and rh_ok else 'Needs a look') }}</div>
+            </div>
+
+            <div class="gauge-block">
+                <div class="gauge-title">Temperature</div>
+                <div class="gauge">
+                    <div class="gauge-track"></div>
+                    <div class="gauge-band" style="left: {{ temp_band_left }}%; width: {{ temp_band_width }}%"></div>
+                    <div class="gauge-marker" id="gaugeMarker" style="left: {{ temp_marker_pct if temp_marker_pct is not none else 0 }}%; {% if temp_marker_pct is none %}display: none{% endif %}"></div>
+                </div>
+                <div class="gauge-scale">
+                    <div>{{ temp_scale_low }}</div>
+                    <div>{{ temp_target_text }}</div>
+                    <div>{{ temp_scale_high }}</div>
+                </div>
+            </div>
+
+            <div class="gauge-block">
+                <div class="gauge-title">Humidity</div>
+                <div class="gauge">
+                    <div class="gauge-track"></div>
+                    <div class="gauge-band" style="left: {{ rh_band_left }}%; width: {{ rh_band_width }}%"></div>
+                    <div class="gauge-marker" id="rhGaugeMarker" style="left: {{ rh_marker_pct if rh_marker_pct is not none else 0 }}%; {% if rh_marker_pct is none %}display: none{% endif %}"></div>
+                </div>
+                <div class="gauge-scale">
+                    <div>{{ rh_scale_low }}</div>
+                    <div>{{ rh_target_text }}</div>
+                    <div>{{ rh_scale_high }}</div>
+                </div>
+            </div>
+
+            <div class="advice" id="tempAdvice" style="color: {{ temp_advice_color }}">{{ temp_advice }}</div>
+            <div class="advice" id="rhAdvice" style="color: #9a4b00; {% if not rh_advice %}display: none{% endif %}">{{ rh_advice }}</div>
+
+            <div class="rule"></div>
+
+            <div style="display: flex; flex-direction: column; gap: 8px">
+                <a class="row row-link" href="{{ url_for('allocation_view') }}">
+                    <div class="row-label">Birds in shed</div>
+                    <div class="row-big cond" id="birdsValue">{{ birds_display }}</div>
+                </a>
+                {% if pens %}
+                <div class="pen-table">
+                    <div class="pen-table-head"></div>
+                    <div class="pen-table-head">Live</div>
+                    <div class="pen-table-head">Mortality</div>
+                    {% for pen in pens|sort(attribute='number_order') %}
+                    <div style="color: var(--muted)">{{ pen.name }}</div>
+                    <a class="row-link" href="{{ url_for('allocation_view') }}" data-pen-birds="{{ pen.dest_shed }}">{{ pen.birds_text }}</a>
+                    <a class="row-link" href="{{ url_for('mortality_view') }}" data-pen-mortality="{{ pen.dest_shed }}">{{ pen.mortality_text }}</a>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+
+            <div class="rule"></div>
+
+            <a class="row row-link" href="{{ url_for('water_history_view') }}">
+                <div class="row-label">Water yesterday 6am to 6am</div>
+                <div class="row-mid cond"><span id="water7to7Value">{{ water_7to7 }}</span> L</div>
+            </a>
+
+            <a class="row row-link" href="{{ url_for('feed_history_view') }}">
+                <div class="row-label">Feed yesterday 6am to 6am</div>
+                <div class="row-mid cond"><span id="feed7to7Value">{{ feed_7to7 }}</span> kg</div>
+            </a>
+
+            <div class="rule"></div>
+
+            {% if pens %}
+            <button type="button" class="mort-open" id="mortOpen">Add mortality</button>
+            {% endif %}
+
+            {% if lighting_tile %}
+            <div class="equip-item glowable {{ lighting_tile.glow }}" id="equip-lighting" style="margin-top: auto">
+                <div class="equip-head"><span class="dot"></span><span class="equip-name">{{ lighting_tile.label }}</span><span class="equip-status" data-equip-status>{{ lighting_tile.status }}</span></div>
+            </div>
+            {% endif %}
+
+        </section>
+    </main>
+
+    <div class="modal" id="addPenModal" role="dialog" aria-modal="true" aria-labelledby="addPenTitle">
+        <form class="modal-card" method="post" action="{{ url_for('add_pen') }}">
+            <div class="modal-title cond" id="addPenTitle">Add pen</div>
+            <div class="modal-sub" id="addPenSub">At the rear end of the shed</div>
+            <input type="hidden" name="side" id="addPenSide" value="rear">
+            <input type="hidden" name="return_to" value="index">
+            <fieldset style="border: 0; margin: 0; padding: 0">
+                <legend class="field-label">Which shed are these birds for?</legend>
+                <div class="shed-choices">
+                    {% for opt in pen_add_options %}
+                    <label class="shed-choice">
+                        <input type="radio" name="dest_shed" value="{{ opt.dest_shed }}" required {% if opt.is_home %}checked{% endif %}>
+                        <span>{{ opt.label }}</span>
+                    </label>
+                    {% endfor %}
+                </div>
+            </fieldset>
+            <div>
+                <label class="field-label" for="addPenBirds" style="display: block">Birds placed</label>
+                <input type="number" id="addPenBirds" name="placed_bird_count" min="1" step="1" inputmode="numeric" required>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn-secondary" id="addPenCancel">Cancel</button>
+                <button type="submit" class="btn-primary">Add pen</button>
+            </div>
+        </form>
+    </div>
+
+    {% if pens %}
+    <div class="modal" id="mortModal" role="dialog" aria-modal="true" aria-labelledby="mortTitle">
+        <form class="modal-card" id="mortForm" method="post" action="{{ url_for('mortality_add_view') }}">
+            <div class="modal-title cond" id="mortTitle">Add mortality</div>
+            <div class="modal-sub"><a class="row-link" href="{{ url_for('mortality_view') }}">View mortality history</a></div>
+            <input type="hidden" name="return_to" value="index">
+            <fieldset style="border: 0; margin: 0; padding: 0">
+                <legend class="field-label">Which pen?</legend>
+                <div class="shed-choices">
+                    {% for pen in pens|sort(attribute='number_order') %}
+                    <label class="shed-choice">
+                        <input type="radio" name="dest_shed" value="{{ pen.dest_shed }}" required {% if loop.first %}checked{% endif %}>
+                        <span>{{ pen.name }}</span>
+                    </label>
+                    {% endfor %}
+                </div>
+            </fieldset>
+            <div>
+                <label class="field-label" for="mortDay" style="display: block">Day</label>
+                <select id="mortDay" name="mortality_date" class="mort-select">
+                    {% for day in mortality_days %}<option value="{{ day.value }}">{{ day.label }}</option>{% endfor %}
+                </select>
+            </div>
+            <div>
+                <label class="field-label" for="mortBirds" style="display: block">Birds lost</label>
+                <input type="number" id="mortBirds" name="bird_loss" min="1" step="1" inputmode="numeric" required>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn-secondary" id="mortCancel">Cancel</button>
+                <button type="submit" class="btn-primary">Record</button>
+            </div>
+        </form>
+    </div>
+    {% endif %}
+
+    <nav class="nav" aria-label="Controller pages">
+        <a href="{{ url_for('index') }}" aria-current="page">Overview</a>
+        <a href="{{ url_for('controller_alarms_view') }}">Alarms <span class="nav-badge" id="alarmBadge" {% if not alarm_count %}style="display:none"{% endif %}>{{ alarm_count }}</span></a>
+        <a href="{{ url_for('climate_history_view') }}">Trends</a>
+        <a href="{{ url_for('feed_history_view') }}">Feed and water log</a>
+        <a href="{{ url_for('classic_view') }}">Classic view</a>
+        <a href="{{ url_for('controller_settings_view') }}">Settings</a>
+    </nav>
+</div>
+<script>
+    const controllerPollMs = {{ refresh_seconds * 1000 }};
+    const pensSignature = {{ pens_signature|tojson }};
+    const glowClasses = ['temp-green', 'temp-warn', 'temp-red', 'flow-green', 'flow-red', 'feed-green', 'feed-red', 'state-green', 'state-warn', 'state-red'];
+
+    const mortModal = document.getElementById('mortModal');
+    if (mortModal) {
+        document.getElementById('mortOpen').addEventListener('click', () => mortModal.classList.add('open'));
+        document.getElementById('mortCancel').addEventListener('click', () => mortModal.classList.remove('open'));
+        mortModal.addEventListener('click', (event) => { if (event.target === mortModal) mortModal.classList.remove('open'); });
+        document.getElementById('mortForm').addEventListener('submit', (event) => {
+            const day = document.getElementById('mortDay');
+            if (day.value) {
+                const pen = document.querySelector('#mortForm input[name="dest_shed"]:checked');
+                const penName = pen ? pen.parentElement.textContent.trim() : '';
+                const birds = document.getElementById('mortBirds').value;
+                if (!confirm('Record ' + birds + ' mortality in ' + penName + ' for ' + day.options[day.selectedIndex].text + '?')) event.preventDefault();
+            }
+        });
+    }
+
+    const addPenModal = document.getElementById('addPenModal');
+    function openAddPen(side) {
+        document.getElementById('addPenSide').value = side;
+        document.getElementById('addPenSub').textContent = {{ (not pens)|tojson }}
+            ? 'First pen in the shed'
+            : (side === 'front' ? 'At the front end of the shed, before ' : 'At the rear end of the shed, after ') + (side === 'front' ? {{ (pens[0].name if pens else '')|tojson }} : {{ (pens[-1].name if pens else '')|tojson }});
+        addPenModal.classList.add('open');
+    }
+    function closeAddPen() {
+        addPenModal.classList.remove('open');
+    }
+    document.querySelectorAll('.add-btn').forEach(btn => btn.addEventListener('click', () => openAddPen(btn.dataset.side)));
+    document.getElementById('addPenCancel').addEventListener('click', closeAddPen);
+    addPenModal.addEventListener('click', (event) => { if (event.target === addPenModal) closeAddPen(); });
+
+    function fitStage() {
+        const box = document.getElementById('stageBox');
+        const stage = document.getElementById('stage');
+        if (window.innerWidth > 900) {
+            box.style.height = '';
+            const scale = Math.max(0.4, Math.min(box.clientWidth / 836, box.clientHeight / 480));
+            const left = Math.max(0, (box.clientWidth - 836 * scale) / 2);
+            const top = Math.max(0, (box.clientHeight - 480 * scale) / 2);
+            stage.style.transform = 'translate(' + left + 'px, ' + top + 'px) scale(' + scale + ')';
+            return;
+        }
+        const scale = Math.min(1.4, box.clientWidth / 836);
+        stage.style.transform = 'scale(' + scale + ')';
+        box.style.height = (480 * scale) + 'px';
+    }
+    window.addEventListener('resize', fitStage);
+    fitStage();
+
+    function setText(id, value) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = (value === undefined || value === null) ? '--' : value;
+    }
+    function setClass(el, cls, options) {
+        if (!el) return;
+        options.forEach(name => el.classList.remove(name));
+        if (cls) el.classList.add(cls);
+    }
+    function toggleBanner(id, text) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.style.display = text ? '' : 'none';
+        el.textContent = text || '';
+    }
+
+    function render(d) {
+        if ((d.pens_signature || '') !== pensSignature && !addPenModal.classList.contains('open') && !(mortModal && mortModal.classList.contains('open'))) {
+            window.location.reload();
+            return;
+        }
+        setText('headerBirds', d.header_birds);
+        setText('headerDay', d.header_day);
+        document.getElementById('headerDay').style.display = d.header_day ? '' : 'none';
+        document.getElementById('headerDaySep').style.display = d.header_day ? '' : 'none';
+        setClass(document.getElementById('shedTitle'), d.crop_class, ['active', 'inactive']);
+        setText('clockValue', d.clock_hm);
+        setText('syncValue', 'Office sync ' + (d.sync_short || '--'));
+        setClass(document.getElementById('syncDot'), d.sync_class, ['ok', 'warn', 'bad']);
+        const chip = document.getElementById('overviewChip');
+        setClass(chip, d.overview_chip_ok ? 'ok' : 'attention', ['ok', 'attention']);
+        setText('overviewChip', d.overview_chip_text);
+
+        setText('tempValue', d.temp_c);
+        setText('rhValue', d.rh_pct);
+        if (d.climate_today) {
+            setText('tempHi', d.climate_today.temp_max);
+            setText('tempLo', d.climate_today.temp_min);
+            setText('rhHi', d.climate_today.rh_max);
+            setText('rhLo', d.climate_today.rh_min);
+        }
+        setClass(document.getElementById('tempCard'), d.temp_glow, glowClasses);
+        setClass(document.getElementById('rhCard'), d.rh_glow, glowClasses);
+        const status = document.getElementById('tempStatus');
+        status.textContent = d.temp_status_short;
+        status.style.color = d.temp_status_text_color;
+        const rhStatus = document.getElementById('rhStatus');
+        rhStatus.textContent = d.rh_status_short;
+        rhStatus.style.color = d.rh_status_text_color;
+        const panelChip = document.getElementById('panelChip');
+        panelChip.style.background = (d.temp_status === 'ok' && !d.rh_ok) ? '#f08a12' : d.temp_status_color;
+        panelChip.textContent = d.temp_status === 'none' ? 'No reading' : ((d.temp_status === 'ok' && d.rh_ok) ? 'On target' : 'Needs a look');
+        const rhMarker = document.getElementById('rhGaugeMarker');
+        if (d.rh_marker_pct === null || d.rh_marker_pct === undefined) {
+            rhMarker.style.display = 'none';
+        } else {
+            rhMarker.style.display = '';
+            rhMarker.style.left = d.rh_marker_pct + '%';
+        }
+        const rhAdvice = document.getElementById('rhAdvice');
+        rhAdvice.style.display = d.rh_advice ? '' : 'none';
+        rhAdvice.textContent = d.rh_advice || '';
+        const marker = document.getElementById('gaugeMarker');
+        if (d.temp_marker_pct === null || d.temp_marker_pct === undefined) {
+            marker.style.display = 'none';
+        } else {
+            marker.style.display = '';
+            marker.style.left = d.temp_marker_pct + '%';
+        }
+        const advice = document.getElementById('tempAdvice');
+        advice.textContent = d.temp_advice;
+        advice.style.color = d.temp_advice_color;
+
+        setText('waterValue', d.water_lpm);
+        setClass(document.getElementById('waterCard'), d.water_glow, glowClasses);
+
+        setText('binLiveKg', d.feed_kg_live_display);
+        const livePct = d.feed_live_pct === null || d.feed_live_pct === undefined ? null : d.feed_live_pct;
+        setText('binPct', livePct === null ? '--' : Math.round(livePct) + '%');
+        document.getElementById('binFill').style.height = (livePct || 0) + '%';
+        setClass(document.getElementById('binCircle'), d.feed_glow, glowClasses);
+        setText('water7to7Value', d.water_7to7);
+        setText('feed7to7Value', d.feed_7to7);
+
+        setText('birdsValue', d.birds_display || d.total_birds);
+        setText('mortalityValue', d.mortality_total);
+        (d.pens || []).forEach(pen => {
+            document.querySelectorAll('[data-pen-birds="' + pen.dest_shed + '"]').forEach(el => { el.textContent = pen.birds_text; });
+            document.querySelectorAll('[data-pen-placed="' + pen.dest_shed + '"]').forEach(el => { el.textContent = pen.placed_text; });
+            document.querySelectorAll('[data-pen-mortality="' + pen.dest_shed + '"]').forEach(el => { el.textContent = pen.mortality_text; });
+        });
+
+        const shed = document.getElementById('shedFloor');
+        if (d.lighting_tile) setClass(shed, d.lighting_on ? '' : 'lights-off', ['lights-off']);
+
+        (d.auger_tiles || []).forEach(auger => {
+            const item = document.getElementById('equip-' + auger.key);
+            setClass(item, auger.glow, glowClasses);
+            if (item) {
+                item.querySelector('[data-equip-status]').textContent = auger.status;
+                item.querySelector('[data-equip-runtime]').textContent = auger.runtime || '';
+                item.querySelector('[data-equip-last-run]').textContent = auger.last_run || '';
+            }
+        });
+        if (d.lighting_tile) {
+            const item = document.getElementById('equip-lighting');
+            setClass(item, d.lighting_tile.glow, glowClasses);
+            if (item) item.querySelector('[data-equip-status]').textContent = d.lighting_tile.status;
+        }
+
+        const badge = document.getElementById('alarmBadge');
+        badge.style.display = d.alarm_count ? '' : 'none';
+        badge.textContent = d.alarm_count;
+
+        toggleBanner('offlineBanner', d.offline_banner);
+        toggleBanner('picoFreezeBanner', d.pico_warning_banner);
+        toggleBanner('picoRecoveryBanner', d.pico_recovery_banner);
+    }
+
+    setTimeout(() => {
+        document.querySelectorAll('.auto-dismiss').forEach(el => { el.style.display = 'none'; });
+    }, 10000);
+
+    async function poll() {
+        try {
+            const resp = await fetch('/api/home-state', { cache: 'no-store' });
+            if (!resp.ok) return;
+            render(await resp.json());
+        } catch (err) {
+        }
+    }
+    setInterval(poll, controllerPollMs);
+
+    if (window.EventSource) {
+        const waterSource = new EventSource('/api/water-stream');
+        waterSource.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                setText('waterValue', data.water_lpm);
+                setClass(document.getElementById('waterCard'), data.water_glow, glowClasses);
+            } catch (err) {
+            }
+        };
+    }
+</script>
+</body>
+</html>
+"""
+
+
+CLIMATE_HISTORY_HTML = """
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Shed {{ shed_no }} Daily High Low</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <style>
+        :root {
+            --bg: #5b5b5b;
+            --panel: rgba(115, 115, 115, 0.96);
+            --panel-2: rgba(104, 104, 104, 0.98);
+            --line: #858585;
+            --text: #ececec;
+            --muted: #d2d2d2;
+            --red: #ff7777;
+            --blue: #84d0ff;
+        }
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        body { margin: 0; min-height: 100vh; color: var(--text); background: var(--bg); font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; }
+        .wrap { width: 100%; max-width: 1024px; margin: 0 auto; padding: 16px; }
+        .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 20px; padding: 16px; margin-bottom: 14px; }
+        h1 { margin: 0 0 4px; font-size: 30px; }
+        .sub { color: var(--muted); font-size: 15px; }
+        table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+        th, td { padding: 10px 8px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+        th:first-child, td:first-child { text-align: left; }
+        th { font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+        td { font-size: 19px; font-weight: 700; }
+        .hi { color: var(--red); }
+        .lo { color: var(--blue); }
+        .at { display: block; font-size: 12px; font-weight: 400; color: var(--muted); }
+        .group { text-align: center !important; }
+        .scroll { overflow-x: auto; }
+        .button-link {
+            display: flex; align-items: center; justify-content: center; min-height: 72px; border-radius: 16px;
+            border: 1px solid #d5dde6; background: #ffffff;
+            color: var(--text); font-size: 22px; font-weight: 700; text-decoration: none;
+        }
+        .nav { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <nav class="page-nav" aria-label="Page navigation"><a class="page-nav-btn" href="{{ url_for('index') }}" data-nav-back>← Back</a><a class="page-nav-btn" href="{{ url_for('index') }}">⌂ Overview</a></nav>
+        <div class="panel">
+            <h1>Daily High / Low</h1>
+            <div class="sub">Shed {{ shed_no }} · midnight to midnight · last {{ rows|length }} day{% if rows|length != 1 %}s{% endif %} recorded</div>
+        </div>
+        <div class="panel scroll">
+            {% if rows %}
+            <table>
+                <thead>
+                    <tr><th></th><th class="group" colspan="2">Temp °C</th><th class="group" colspan="2">RH %</th></tr>
+                    <tr><th>Day</th><th>High</th><th>Low</th><th>High</th><th>Low</th></tr>
+                </thead>
+                <tbody>
+                    {% for r in rows %}
+                    <tr>
+                        <td>{{ r.date_label }}{% if r.date == today %}<span class="at">Today so far</span>{% endif %}</td>
+                        <td class="hi">{{ r.temp_max }}<span class="at">{{ r.temp_max_at }}</span></td>
+                        <td class="lo">{{ r.temp_min }}<span class="at">{{ r.temp_min_at }}</span></td>
+                        <td class="hi">{{ r.rh_max }}<span class="at">{{ r.rh_max_at }}</span></td>
+                        <td class="lo">{{ r.rh_min }}<span class="at">{{ r.rh_min_at }}</span></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="sub">No readings recorded yet. Highs and lows start filling in as soon as the Pico sends temperature and humidity.</div>
+            {% endif %}
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+
+EXIT_KIOSK_HTML = """
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Closing Shed Screen</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body>
+    <div class="wrap" style="max-width: 720px; margin: 0 auto; padding: 40px 24px;">
+        <div class="panel" style="padding: 24px;">
+            <h1>Closing the shed screen</h1>
+            <div class="sub">Returning to the Raspberry Pi desktop. The controller keeps running in the background, so sensors, alarms and office sync carry on. Reboot the Pi to bring the shed screen back.</div>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+
 SETTINGS_HTML = """
 <!doctype html>
 <html lang="en">
@@ -5830,283 +7285,182 @@ SETTINGS_HTML = """
     <meta charset="utf-8">
     <title>Shed {{ shed_no }} Settings</title>
     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <meta name="cdf-theme-native" content="1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@500;600&display=swap">
     <style>
         :root {
-            --bg: #5b5b5b;
-            --panel: rgba(115, 115, 115, 0.96);
-            --panel-2: rgba(104, 104, 104, 0.98);
-            --line: #8a8a8a;
-            --text: #ececec;
-            --muted: #d2d2d2;
+            --page: #eef2f6; --card: #ffffff; --card-2: #f5f8fb; --rule: #d5dde6; --track: #dbe3ec;
+            --text: #0d2b4a; --muted: #4a6078; --soft: #31475e;
+            --green: #2f9e3a; --amber: #f08a12; --red: #d64545;
         }
-        body {
-            margin: 0;
-            color: var(--text);
-            font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-            background: #5b5b5b;
-        }
-        .wrap {
-            max-width: 1024px;
-            margin: 0 auto;
-            padding: 18px;
-        }
-        .topbar {
-            margin-bottom: 16px;
-        }
-        .topbar a {
-            color: var(--text);
-            text-decoration: none;
-            font-size: 18px;
-        }
-        .grid {
-            display: grid;
-            grid-template-columns: 1.05fr 0.95fr;
-            gap: 16px;
-        }
-        .panel {
-            background: var(--panel);
-            border: 1px solid var(--line);
-            border-radius: 20px;
-            padding: 18px;
-        }
-        h1 {
-            margin: 0 0 8px 0;
-            font-size: 38px;
-        }
-        .sub {
-            color: var(--muted);
-            margin-bottom: 16px;
-            font-size: 18px;
-        }
-        .action-grid {
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 12px;
-        }
-        .action-form {
-            margin: 0;
-        }
-        .button-link {
-            display: block;
-            min-height: 74px;
-            width: 100%;
-            border-radius: 16px;
-            border: 1px solid #8a8a8a;
-            background: linear-gradient(180deg, #7a7a7a, #676767);
-            color: var(--text);
-            font-size: 20px;
-            font-weight: 700;
-            text-decoration: none;
-            text-align: center;
-            line-height: 74px;
-            white-space: nowrap;
-        }
-        .button-icon {
-            margin-right: 10px;
-        }
-        .full-panel {
-            margin-top: 16px;
-        }
-        .detail-list {
-            display: grid;
-            gap: 10px;
-        }
-        .detail {
-            display: flex;
-            justify-content: space-between;
-            gap: 12px;
-            padding: 12px 0;
-            border-bottom: 1px solid #818181;
-            font-size: 18px;
-        }
-        .detail:last-child {
-            border-bottom: 0;
-        }
-        .label {
-            color: var(--muted);
-        }
-        .status-note {
-            margin: 12px 0 0;
-            color: var(--muted);
-            font-size: 16px;
-        }
-        .status-note.is-busy {
-            color: var(--text);
-        }
-        .msg {
-            margin-bottom: 16px;
-            padding: 12px 14px;
-            border-radius: 14px;
-            border: 1px solid #8a8a8a;
-            background: rgba(115, 115, 115, 0.96);
-            font-size: 18px;
-        }
-        .button-row {
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 12px;
-            margin-top: 14px;
-            max-width: 560px;
-            margin-left: auto;
-            margin-right: auto;
-        }
-        .update-split {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 16px;
-            margin-top: 12px;
-        }
-        .update-box {
-            background: var(--panel-2);
-            border: 1px solid var(--line);
-            border-radius: 16px;
-            padding: 16px;
-        }
-        .update-box h2 {
-            margin: 0 0 10px 0;
-            font-size: 24px;
-        }
-        .collapse {
-            margin-top: 14px;
-        }
-        .collapse summary {
-            cursor: pointer;
-            list-style: none;
-            padding: 12px 14px;
-            border: 1px solid var(--line);
-            border-radius: 12px;
-            background: rgba(86, 86, 86, 0.96);
-            font-weight: 700;
-        }
-        .collapse summary::-webkit-details-marker {
-            display: none;
-        }
-        .collapse[open] summary {
-            margin-bottom: 12px;
-        }
-        .button-row form {
-            width: 100%;
-            margin: 0;
-        }
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        body { margin: 0; min-height: 100vh; background: var(--page); color: var(--text); font-family: "Barlow", "Helvetica Neue", Helvetica, sans-serif; }
+        .cond { font-family: "Barlow Semi Condensed", "Barlow", "Helvetica Neue", Helvetica, sans-serif; }
+        .topbar { min-height: 64px; background: #ffffff; padding: 10px 28px; display: flex; align-items: center; gap: 18px; flex-wrap: wrap; border-bottom: 1px solid var(--rule); }
+        .back { display: flex; align-items: center; justify-content: center; min-height: 48px; padding: 0 16px; border-radius: 12px; border: 1px solid #c5d0dc; background: var(--card); color: var(--text); text-decoration: none; font-size: 17px; font-weight: 600; }
+        .title { font-size: 34px; font-weight: 600; color: #0b3a6b; }
+        .brand-logo { height: 44px; width: auto; display: block; margin-left: auto; }
+        .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+        .chip { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; background: var(--card); font-size: 15px; color: var(--soft); }
+        .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--amber); }
+        .dot.ok { background: var(--green); }
+        .dot.bad { background: var(--red); }
+        .wrap { max-width: 1200px; margin: 0 auto; padding: 14px 24px 20px; }
+        .msg { margin-bottom: 16px; padding: 12px 14px; border-radius: 12px; background: var(--card); border: 1px solid var(--rule); font-weight: 600; }
+        .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+        .col { display: flex; flex-direction: column; gap: 14px; }
+        .section-title { margin: 0 0 6px 4px; font-size: 14px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+        .list { border-radius: 14px; background: var(--card); overflow: hidden; }
+        .item { display: flex; align-items: center; gap: 12px; min-height: 50px; padding: 0 18px; color: var(--text); text-decoration: none; font-size: 18px; font-weight: 500; border-top: 1px solid var(--track); }
+        .item:first-child { border-top: 0; }
+        .item:active { background: var(--card-2); }
+        .item-sub { margin-left: auto; font-size: 15px; color: var(--muted); }
+        .chev { color: var(--muted); font-size: 22px; line-height: 1; }
+        .badge { margin-left: auto; min-width: 26px; padding: 2px 8px; border-radius: 999px; background: var(--red); color: var(--page); font-size: 14px; font-weight: 600; text-align: center; }
+        .card { border-radius: 14px; background: var(--card); padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+        .row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 16px; }
+        .row-label { color: var(--muted); }
+        .status { font-size: 18px; font-weight: 600; }
+        .status.is-busy { color: var(--amber); }
+        .hint { font-size: 14px; color: var(--muted); line-height: 1.35; }
+        .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .btns form { margin: 0; }
         button {
-            min-height: 74px;
-            width: 100%;
-            border-radius: 16px;
-            border: 1px solid #8a8a8a;
-            background: linear-gradient(180deg, #7a7a7a, #676767);
-            color: var(--text);
-            font-size: 20px;
-            font-weight: 700;
-            cursor: pointer;
+            width: 100%; min-height: 56px; border-radius: 12px; border: 1px solid #c5d0dc; background: var(--card-2);
+            color: var(--text); font-family: inherit; font-size: 17px; font-weight: 600; cursor: pointer;
         }
-        button.secondary {
-            background: linear-gradient(180deg, #737373, #626262);
+        button:active { background: var(--track); }
+        button:disabled { opacity: 0.5; }
+        button.primary { background: var(--text); color: var(--page); border-color: var(--text); }
+        button.danger { background: #fdecec; border-color: #e3a0a0; color: #8f1f1f; }
+        input[type="number"] {
+            width: 100%; min-height: 56px; padding: 0 14px; border-radius: 12px; border: 1px solid #c5d0dc;
+            background: var(--card-2); color: var(--text); font-family: inherit; font-size: 20px; font-weight: 600;
         }
-        @media (max-width: 900px) {
-            .grid {
-                grid-template-columns: 1fr;
-            }
-            .update-split {
-                grid-template-columns: 1fr;
-            }
+        button.mode-toggle { width: auto; min-height: 40px; padding: 0 18px; font-size: 15px; }
+        button.mode-toggle.on { background: var(--green); border-color: var(--green); color: var(--page); }
+        .mode-chip { padding: 4px 12px; border-radius: 999px; font-size: 15px; font-weight: 600; color: var(--page); background: var(--amber); }
+        .mode-chip.live { background: var(--green); }
+        details summary { cursor: pointer; color: var(--muted); font-size: 15px; min-height: 32px; display: flex; align-items: center; }
+        details .row { margin-top: 6px; font-size: 15px; }
+        .mono { font-family: ui-monospace, Menlo, monospace; font-size: 14px; }
+        a:focus-visible, button:focus-visible, input:focus-visible { outline: 3px solid var(--text); outline-offset: 2px; }
+        @media (max-width: 860px) {
+            .topbar { padding: 10px 16px; }
+            .title { font-size: 28px; }
+            .chips { margin-left: 0; width: 100%; }
+            .wrap { padding: 16px; }
+            .cols { grid-template-columns: 1fr; }
         }
     </style>
 </head>
 <body>
+    <header class="topbar">
+        <a class="back" href="{{ url_for('index') }}">← Overview</a>
+        <div class="title cond">Settings</div>
+        <img class="brand-logo" src="/static/stocksense-logo.png" alt="StockSense, Smarter Livestock Monitoring">
+        <div class="chips">
+            <div class="chip"><span class="dot {{ sync_class }}"></span>Office sync {{ sync_short }}</div>
+            <div class="chip"><span class="dot {{ sensor_class }}"></span>Pico {{ sensor_status_short }}</div>
+        </div>
+    </header>
+
     <div class="wrap">
         {% if msg %}<div class="msg">{{ msg }}</div>{% endif %}
-        <div class="topbar"><a href="{{ url_for('index') }}">← Back</a></div>
-        <div class="grid">
-            <div class="panel">
-                <h1>Shed {{ shed_no }} Settings</h1>
-                <div class="sub">Controller tools, alarms, logs, config, and commissioning.</div>
-                <div class="action-grid">
-                    <a class="button-link" href="{{ url_for('allocation_view') }}">Shed Allocation</a>
-                    <a class="button-link" href="{{ url_for('controller_alarms_view') }}">Alarms{% if alarm_count %} ({{ alarm_count }}){% endif %}</a>
-                    <a class="button-link" href="{{ url_for('commissioning_view') }}">Commissioning</a>
-                    <a class="button-link" href="{{ url_for('hx711_diagnostics_view') }}">HX711 Diagnostics</a>
-                    <a class="button-link" href="{{ url_for('controller_config_view') }}">Controller Config</a>
-                    <a class="button-link" href="{{ url_for('controller_health_view') }}">Controller Health</a>
-                    <form class="action-form" method="post" action="{{ url_for('controller_reboot_view') }}" onsubmit="return confirm('Reboot this controller Pi now?');">
-                        <button class="secondary" type="submit"><span class="button-icon">↻</span>Reboot</button>
-                    </form>
-                    <form class="action-form" method="post" action="{{ url_for('controller_shutdown_view') }}" onsubmit="return confirm('Shut down this controller Pi now?');">
-                        <button class="secondary" type="submit"><span class="button-icon">⏻</span>Shutdown</button>
-                    </form>
-                </div>
+        <div class="cols">
+            <div class="col">
+                <section>
+                    <h2 class="section-title">Shed</h2>
+                    <nav class="list" aria-label="Shed settings">
+                        <a class="item" href="{{ url_for('allocation_view') }}"><span>Shed allocation</span><span class="item-sub">{{ birds_display }}</span><span class="chev">›</span></a>
+                        <a class="item" href="{{ url_for('mortality_view') }}"><span>Mortality</span><span class="chev" style="margin-left: auto">›</span></a>
+                        <a class="item" href="{{ url_for('controller_alarms_view') }}"><span>Alarms</span>{% if alarm_count %}<span class="badge">{{ alarm_count }}</span>{% else %}<span class="item-sub">None active</span>{% endif %}<span class="chev">›</span></a>
+                        <a class="item" href="{{ url_for('temp_settings_view') }}"><span>Temperature range</span><span class="chev" style="margin-left: auto">›</span></a>
+                        <a class="item" href="{{ url_for('rh_settings_view') }}"><span>Humidity range</span><span class="chev" style="margin-left: auto">›</span></a>
+                        <a class="item" href="{{ url_for('water_settings_view') }}"><span>Water meter</span><span class="chev" style="margin-left: auto">›</span></a>
+                        <a class="item" href="{{ url_for('feed_settings_view') }}"><span>Feed bin</span><span class="chev" style="margin-left: auto">›</span></a>
+                    </nav>
+                </section>
+
+                <section>
+                    <h2 class="section-title">Controller</h2>
+                    <nav class="list" aria-label="Controller tools">
+                        <a class="item" href="{{ url_for('controller_health_view') }}"><span>Health</span><span class="chev" style="margin-left: auto">›</span></a>
+                        <a class="item" href="{{ url_for('controller_events_view') }}"><span>Event log</span><span class="chev" style="margin-left: auto">›</span></a>
+                        <a class="item" href="{{ url_for('controller_config_view') }}"><span>Config</span><span class="chev" style="margin-left: auto">›</span></a>
+                        <a class="item" href="{{ url_for('commissioning_view') }}"><span>Commissioning</span><span class="chev" style="margin-left: auto">›</span></a>
+                        <a class="item" href="{{ url_for('hx711_diagnostics_view') }}"><span>Feed scale diagnostics</span><span class="chev" style="margin-left: auto">›</span></a>
+                    </nav>
+                </section>
             </div>
-            <div class="panel">
-                <h1>Current State</h1>
-                <div class="sub">Current shed state and latest controller heartbeat.</div>
-                <div class="detail-list">
-                    <div class="detail"><span class="label">Crop Active</span><span>{{ "Yes" if entry.crop_active == 1 else "No" }}</span></div>
-                    <div class="detail"><span class="label">Started</span><span>{{ started_at }}</span></div>
-                    <div class="detail"><span class="label">Updated By</span><span>{{ entry.updated_by }}</span></div>
-                    <div class="detail"><span class="label">Updated At</span><span>{{ updated_at }}</span></div>
-                    <div class="detail"><span class="label">Sync</span><span>{{ sync_short }}</span></div>
-                    <div class="detail"><span class="label">Pico</span><span>{{ sensor_status_short }}</span></div>
-                </div>
-            </div>
-        </div>
-        <div class="panel full-panel">
-            <h1 style="font-size:28px;">Software Update</h1>
-            <div class="sub">Check for a newer controller version. When the pulled update includes Pico firmware changes, they are deployed automatically too.</div>
-            <div class="update-split">
-                <div class="update-box">
-                    <h2>Controller Update</h2>
-                    <div class="detail-list">
-                        <div class="detail"><span class="label">Last Check</span><span id="controllerUpdateChecked">{{ update_checked_at }}</span></div>
-                    </div>
-                    <div id="controllerUpdateStatus" class="status-note">{{ update_status.status }}</div>
-                    <div class="button-row">
-                        <form id="controllerUpdateCheckForm" method="post" action="{{ url_for('check_update_view') }}">
-                            <button id="controllerUpdateCheckButton" class="secondary" type="submit">Check for Update</button>
-                        </form>
-                        <form id="controllerUpdateApplyForm" method="post" action="{{ url_for('apply_update_view') }}" {% if not update_status.update_available %}style="display:none;"{% endif %}>
-                            <button type="submit">Update Controller</button>
-                        </form>
-                    </div>
-                    {% if update_status.restart_required %}
-                    <div class="status-note">Latest code has been pulled. A controller restart is required to run the new version.</div>
-                    {% endif %}
-                    <details class="collapse">
-                        <summary>Show Version Details</summary>
-                        <div class="detail-list">
-                            <div class="detail"><span class="label">Branch</span><span id="controllerUpdateBranch">{{ update_status.branch }}</span></div>
-                            <div class="detail"><span class="label">Current Version</span><span id="controllerUpdateCurrent">{{ update_status.local_commit }}</span></div>
-                            <div class="detail"><span class="label">Latest Version</span><span id="controllerUpdateLatest">{{ update_status.remote_commit }}</span></div>
+
+            <div class="col">
+                <section>
+                    <h2 class="section-title">Software</h2>
+                    <div class="card">
+                        <div class="row"><span class="status" id="controllerUpdateStatus">{{ update_status.status }}</span></div>
+                        <div class="row"><span class="row-label">Last checked</span><span id="controllerUpdateChecked">{{ update_checked_at }}</span></div>
+                        {% if update_status.restart_required %}
+                        <div class="hint">Latest code has been pulled. Restart the controller to run the new version.</div>
+                        {% endif %}
+                        <div class="btns">
+                            <form id="controllerUpdateCheckForm" method="post" action="{{ url_for('check_update_view') }}">
+                                <button id="controllerUpdateCheckButton" type="submit">Check for update</button>
+                            </form>
+                            <form id="controllerUpdateApplyForm" method="post" action="{{ url_for('apply_update_view') }}" {% if not update_status.update_available %}style="display:none;"{% endif %}>
+                                <button class="primary" type="submit">Install update</button>
+                            </form>
                         </div>
-                    </details>
-                </div>
-            </div>
-            <div class="update-split" style="margin-top:16px;">
-                <div class="update-box">
-                    <h2>Mode Lock</h2>
-                    <div class="detail-list">
-                        <div class="detail"><span class="label">Current Mode</span><span>{{ current_mode }}</span></div>
-                        <div class="detail"><span class="label">Next Mode</span><span>{{ next_mode_label }}</span></div>
+                        <details>
+                            <summary>Version details</summary>
+                            <div class="row"><span class="row-label">Branch</span><span class="mono" id="controllerUpdateBranch">{{ update_status.branch }}</span></div>
+                            <div class="row"><span class="row-label">Installed</span><span class="mono" id="controllerUpdateCurrent">{{ update_status.local_commit }}</span></div>
+                            <div class="row"><span class="row-label">Latest</span><span class="mono" id="controllerUpdateLatest">{{ update_status.remote_commit }}</span></div>
+                        </details>
+                        <div class="row"><span class="row-label">Nightly auto update</span>
+                            <form method="post" action="{{ url_for('toggle_auto_update_view') }}" style="margin: 0">
+                                <input type="hidden" name="enabled" value="{{ '0' if auto_update_enabled else '1' }}">
+                                <button type="submit" class="mode-toggle {% if auto_update_enabled %}on{% endif %}" aria-pressed="{{ 'true' if auto_update_enabled else 'false' }}">{{ 'On' if auto_update_enabled else 'Off' }}</button>
+                            </form>
+                        </div>
+                        <div class="row"><span class="row-label">Last nightly check</span><span style="text-align: right">{{ auto_update_last }}</span></div>
+                        <div class="hint">Shortly after midnight the controller checks GitHub and, if it is on a different version, installs the update and restarts. Pico firmware changes are deployed automatically.</div>
                     </div>
-                    <div class="status-note">A PIN is required before this controller can leave commissioning mode or return to it.</div>
-                    <div class="button-row">
-                        <form method="post" action="{{ url_for('switch_controller_mode_view') }}">
+                </section>
+
+                <section>
+                    <h2 class="section-title">Mode</h2>
+                    <div class="card">
+                        <div class="row"><span class="row-label">Current mode</span><span class="mode-chip {% if current_mode_key == 'live' %}live{% endif %}">{{ current_mode }}</span></div>
+                        <div class="hint">Use commissioning while wiring and proving sensors. Go live once the shed is ready for normal alarms. Switching needs the mode PIN.</div>
+                        <form method="post" action="{{ url_for('switch_controller_mode_view') }}" class="btns">
                             <input type="hidden" name="target_mode" value="{{ next_mode_key }}">
-                            <input type="number" name="mode_pin" inputmode="numeric" enterkeyhint="done" placeholder="Enter mode PIN" style="width:100%; min-height:64px; border-radius:14px; border:1px solid #8a8a8a; background:#686868; color:#ececec; font-size:22px; padding:10px 14px; box-sizing:border-box; margin-bottom:12px;">
-                            <button type="submit">{{ "Go Live" if next_mode_key == "live" else "Return to Commissioning" }}</button>
+                            <input type="number" name="mode_pin" inputmode="numeric" enterkeyhint="done" placeholder="Mode PIN" aria-label="Mode PIN">
+                            <button type="submit">{{ "Go live" if next_mode_key == "live" else "Back to commissioning" }}</button>
                         </form>
                     </div>
-                </div>
-                <div class="update-box">
-                    <h2>Mode Notes</h2>
-                    <div class="detail-list">
-                        <div class="detail"><span class="label">Commissioning</span><span>Setup safeguards on</span></div>
-                        <div class="detail"><span class="label">Live</span><span>Production behavior on</span></div>
+                </section>
+
+                <section>
+                    <h2 class="section-title">Power</h2>
+                    <div class="card">
+                        <div class="btns">
+                            <form method="post" action="{{ url_for('controller_exit_kiosk_view') }}" onsubmit="return confirm('Close the shed screen and go to the Raspberry Pi desktop? The controller keeps running in the background.');" style="grid-column: 1 / -1">
+                                <button type="submit">⇱ Exit to desktop</button>
+                            </form>
+                            <form method="post" action="{{ url_for('controller_reboot_view') }}" onsubmit="return confirm('Reboot this controller Pi now?');">
+                                <button type="submit">↻ Reboot</button>
+                            </form>
+                            <form method="post" action="{{ url_for('controller_shutdown_view') }}" onsubmit="return confirm('Shut down this controller Pi now? It will need power cycling to start again.');">
+                                <button class="danger" type="submit">⏻ Shut down</button>
+                            </form>
+                        </div>
                     </div>
-                    <div class="status-note">Use commissioning while wiring and proving sensors. Switch to live once the shed is ready for normal alarms and behavior.</div>
-                </div>
+                </section>
             </div>
         </div>
     </div>
-</body>
 <script>
 (function () {
     const form = document.getElementById('controllerUpdateCheckForm');
@@ -6141,11 +7495,7 @@ SETTINGS_HTML = """
             latestEl.textContent = data.remote_commit || '--';
             checkedEl.textContent = data.checked_at_label || '--';
             statusEl.textContent = data.status || '--';
-            if (data.update_available) {
-                applyForm.style.display = '';
-            } else {
-                applyForm.style.display = 'none';
-            }
+            applyForm.style.display = data.update_available ? '' : 'none';
         } catch (err) {
             statusEl.textContent = 'Update check failed';
         } finally {
@@ -6156,6 +7506,7 @@ SETTINGS_HTML = """
     });
 })();
 </script>
+</body>
 </html>
 """
 
@@ -6218,7 +7569,7 @@ HEALTH_HTML = """
             justify-content: space-between;
             gap: 12px;
             padding: 12px 0;
-            border-bottom: 1px solid #818181;
+            border-bottom: 1px solid #d5dde6;
             font-size: 18px;
         }
         .detail:last-child {
@@ -6235,8 +7586,8 @@ HEALTH_HTML = """
         .alarm {
             padding: 12px 14px;
             border-radius: 14px;
-            border: 1px solid rgba(255,119,119,0.35);
-            background: rgba(84, 34, 34, 0.38);
+            border: 1px solid rgba(214,69,69,0.35);
+            background: #fdecec;
             font-size: 17px;
         }
         .mono {
@@ -6250,7 +7601,7 @@ HEALTH_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
+        <nav class="page-nav" aria-label="Page navigation"><a class="page-nav-btn" href="{{ url_for('controller_settings_view') }}" data-nav-back>← Back</a><a class="page-nav-btn" href="{{ url_for('index') }}">⌂ Overview</a></nav>
         <div class="panel">
             <h1>Shed {{ shed_no }} Controller Health</h1>
             <div class="sub">Dashboard connection, sync status, serial state, and controller diagnostics.</div>
@@ -6301,37 +7652,37 @@ CONFIG_HTML = """
     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
     <style>
         :root { --bg:#5b5b5b; --panel:rgba(115,115,115,0.96); --line:#8a8a8a; --text:#ececec; --muted:#d2d2d2; }
-        body { margin:0; color:var(--text); font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; background:#5b5b5b; }
+        body { margin:0; color: var(--text); font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; background: #5b5b5b; }
         .wrap { max-width:1024px; margin:0 auto; padding:18px; }
         .topbar { margin-bottom:16px; }
-        .topbar a { color:var(--text); text-decoration:none; font-size:18px; }
+        .topbar a { color: var(--text); text-decoration:none; font-size:18px; }
         .grid { display:grid; grid-template-columns:1.2fr 0.8fr; gap:16px; }
-        .panel { background:var(--panel); border:1px solid var(--line); border-radius:20px; padding:18px; }
+        .panel { background: var(--panel); border: 1px solid var(--line); border-radius:20px; padding:18px; }
         h1 { margin:0 0 8px 0; font-size:38px; }
-        .sub { color:var(--muted); margin-bottom:16px; font-size:18px; }
+        .sub { color: var(--muted); margin-bottom:16px; font-size:18px; }
         .field { margin-bottom:14px; }
-        .group-title { margin:18px 0 10px 0; font-size:18px; color:var(--text); }
-        label { display:block; color:var(--muted); margin-bottom:8px; font-size:15px; }
-        input[type="text"], input[type="number"] { width:100%; min-height:64px; border-radius:16px; border:1px solid var(--line); background:#686868; color:var(--text); font-size:24px; padding:10px 14px; box-sizing:border-box; }
-        .value-readout { min-height:64px; border-radius:16px; border:1px solid var(--line); background:#5f5f5f; color:var(--text); font-size:22px; padding:14px; box-sizing:border-box; display:flex; align-items:center; word-break:break-word; }
-        .check { display:flex; align-items:center; justify-content:space-between; padding:12px 0; border-bottom:1px solid #818181; font-size:18px; }
-        .check:last-child { border-bottom:0; }
+        .group-title { margin:18px 0 10px 0; font-size:18px; color: var(--text); }
+        label { display:block; color: var(--muted); margin-bottom:8px; font-size:15px; }
+        input[type="text"], input[type="number"], select { width:100%; min-height:64px; border-radius:16px; border: 1px solid var(--line); background: #f5f8fb; color: var(--text); font-size:24px; padding:10px 14px; box-sizing:border-box; }
+        .value-readout { min-height:64px; border-radius:16px; border: 1px solid var(--line); background: #5f5f5f; color: var(--text); font-size:22px; padding:14px; box-sizing:border-box; display:flex; align-items:center; word-break:break-word; }
+        .check { display:flex; align-items:center; justify-content:space-between; padding:12px 0; border-bottom: 1px solid #d5dde6; font-size:18px; }
+        .check:last-child { border-bottom: 0; }
         input[type="checkbox"] { width:28px; height:28px; }
-        button, .button-link { display:block; width:100%; min-height:68px; border-radius:16px; border:1px solid #8a8a8a; background:linear-gradient(180deg, #7d7d7d, #696969); color:var(--text); font-size:20px; font-weight:700; text-decoration:none; text-align:center; line-height:68px; cursor:pointer; }
+        button, .button-link { display:block; width:100%; min-height:68px; border-radius:16px; border: 1px solid #d5dde6; background: #ffffff; color: var(--text); font-size:20px; font-weight:700; text-decoration:none; text-align:center; line-height:68px; cursor:pointer; }
         .button-link { margin-top:12px; }
-        .detail { display:flex; justify-content:space-between; gap:12px; padding:12px 0; border-bottom:1px solid #818181; font-size:16px; }
-        .detail:last-child { border-bottom:0; }
-        .hint { color:var(--muted); font-size:15px; margin-top:12px; }
+        .detail { display:flex; justify-content:space-between; gap:12px; padding:12px 0; border-bottom: 1px solid #d5dde6; font-size:16px; }
+        .detail:last-child { border-bottom: 0; }
+        .hint { color: var(--muted); font-size:15px; margin-top:12px; }
         .auger-grid { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:12px; margin-top:10px; }
-        .auger-card { border:1px solid #818181; border-radius:16px; padding:14px; background:#636363; }
-        .auger-card h3 { margin:0 0 12px 0; font-size:18px; color:var(--text); }
-        .auger-card .check { padding:10px 0 0 0; border-bottom:0; }
+        .auger-card { border: 1px solid #d5dde6; border-radius:16px; padding:14px; background: #636363; }
+        .auger-card h3 { margin:0 0 12px 0; font-size:18px; color: var(--text); }
+        .auger-card .check { padding:10px 0 0 0; border-bottom: 0; }
         @media (max-width: 900px) { .grid { grid-template-columns:1fr; } .auger-grid { grid-template-columns:1fr; } }
     </style>
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
+        <nav class="page-nav" aria-label="Page navigation"><a class="page-nav-btn" href="{{ url_for('controller_settings_view') }}" data-nav-back>← Back</a><a class="page-nav-btn" href="{{ url_for('index') }}">⌂ Overview</a></nav>
         <div class="grid">
             <div class="panel">
                 <h1>Shed {{ shed_no }} Controller Config</h1>
@@ -6348,6 +7699,28 @@ CONFIG_HTML = """
                     <div class="field"><label for="touch_refresh_seconds">Home Poll Seconds</label><input id="touch_refresh_seconds" type="number" name="touch_refresh_seconds" step="0.05" min="0.25" inputmode="decimal" value="{{ cfg.touch_refresh_seconds }}"></div>
                     <div class="check"><span>Serial Enabled</span><input type="checkbox" name="serial_enabled" {% if cfg.serial_enabled %}checked{% endif %}></div>
                     <div class="check"><span>Auto Sync On Change</span><input type="checkbox" name="sync_on_sensor_update" {% if cfg.sync_on_sensor_update %}checked{% endif %}></div>
+                    <div class="group-title">Shed Layout</div>
+                    <div class="sub" style="margin-bottom:10px;">How the shed plan on the overview is drawn, as seen on this screen.</div>
+                    <div class="field"><label for="layout_front_end">Front end of shed</label>
+                        <select id="layout_front_end" name="layout_front_end">
+                            <option value="left" {% if cfg.layout_front_end == 'left' %}selected{% endif %}>Left side of screen</option>
+                            <option value="right" {% if cfg.layout_front_end == 'right' %}selected{% endif %}>Right side of screen</option>
+                        </select>
+                    </div>
+                    <div class="field"><label for="layout_bin_corner">Feed bin position</label>
+                        <select id="layout_bin_corner" name="layout_bin_corner">
+                            <option value="top-left" {% if cfg.layout_bin_corner == 'top-left' %}selected{% endif %}>Top left corner</option>
+                            <option value="top-right" {% if cfg.layout_bin_corner == 'top-right' %}selected{% endif %}>Top right corner</option>
+                            <option value="bottom-left" {% if cfg.layout_bin_corner == 'bottom-left' %}selected{% endif %}>Bottom left corner</option>
+                            <option value="bottom-right" {% if cfg.layout_bin_corner == 'bottom-right' %}selected{% endif %}>Bottom right corner</option>
+                        </select>
+                    </div>
+                    <div class="field"><label for="layout_door_end">Door</label>
+                        <select id="layout_door_end" name="layout_door_end">
+                            <option value="left" {% if cfg.layout_door_end == 'left' %}selected{% endif %}>Left end wall</option>
+                            <option value="right" {% if cfg.layout_door_end == 'right' %}selected{% endif %}>Right end wall</option>
+                        </select>
+                    </div>
                     <div class="group-title">Augers</div>
                     <div class="sub" style="margin-bottom:10px;">Rename each auger tile and decide whether it should appear and be monitored on this shed.</div>
                     <div class="auger-grid">
@@ -6402,33 +7775,33 @@ ALARMS_HTML = """
     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
     <style>
         :root { --bg:#5b5b5b; --panel:rgba(115,115,115,0.96); --line:#8a8a8a; --text:#ececec; --muted:#d2d2d2; --green:#7be1aa; --amber:#ffd06a; --red:#ff7777; }
-        body { margin:0; color:var(--text); font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; background:#5b5b5b; }
+        body { margin:0; color: var(--text); font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; background: #5b5b5b; }
         .wrap { max-width:1024px; margin:0 auto; padding:18px; }
         .topbar { margin-bottom:16px; }
-        .topbar a { color:var(--text); text-decoration:none; font-size:18px; }
-        .panel { background:var(--panel); border:1px solid var(--line); border-radius:20px; padding:18px; }
+        .topbar a { color: var(--text); text-decoration:none; font-size:18px; }
+        .panel { background: var(--panel); border: 1px solid var(--line); border-radius:20px; padding:18px; }
         h1 { margin:0 0 8px 0; font-size:38px; }
-        .sub { color:var(--muted); margin-bottom:16px; font-size:18px; }
+        .sub { color: var(--muted); margin-bottom:16px; font-size:18px; }
         .alarm-list { display:grid; gap:12px; }
-        .alarm { padding:14px 16px; border-radius:16px; border:1px solid #818181; background:#686868; }
-        .alarm.bad { border-color:rgba(255,119,119,0.45); }
-        .alarm.warn { border-color:rgba(255,208,106,0.45); }
+        .alarm { padding:14px 16px; border-radius:16px; border: 1px solid #d5dde6; background: #f5f8fb; }
+        .alarm.bad { border-color: rgba(214,69,69,0.45); }
+        .alarm.warn { border-color: rgba(240,138,18,0.45); }
         .alarm-title { font-size:20px; font-weight:700; margin-bottom:4px; }
-        .alarm-detail { color:var(--muted); font-size:16px; }
-        .okbox { padding:18px; border-radius:16px; border:1px solid rgba(123,225,170,0.35); color:var(--green); background:rgba(30,57,42,0.25); font-size:20px; }
+        .alarm-detail { color: var(--muted); font-size:16px; }
+        .okbox { padding:18px; border-radius:16px; border: 1px solid rgba(47,158,58,0.35); color: var(--green); background: rgba(30,57,42,0.25); font-size:20px; }
         .section-title { margin:22px 0 12px 0; font-size:24px; font-weight:700; }
         .history-table { width:100%; border-collapse:collapse; }
-        .history-table th, .history-table td { text-align:left; padding:12px 10px; border-bottom:1px solid #818181; font-size:16px; vertical-align:top; }
-        .history-table th { color:var(--muted); font-weight:700; }
-        .history-pill { display:inline-block; padding:4px 10px; border-radius:999px; border:1px solid #818181; font-size:13px; font-weight:700; }
-        .history-pill.bad { border-color:rgba(255,119,119,0.45); color:var(--red); }
-        .history-pill.ok { border-color:rgba(123,225,170,0.45); color:var(--green); }
-        button { display:block; width:100%; min-height:68px; border-radius:16px; border:1px solid #8a8a8a; background:linear-gradient(180deg, #7d7d7d, #696969); color:var(--text); font-size:20px; font-weight:700; cursor:pointer; margin-top:16px; }
+        .history-table th, .history-table td { text-align:left; padding:12px 10px; border-bottom: 1px solid #d5dde6; font-size:16px; vertical-align:top; }
+        .history-table th { color: var(--muted); font-weight:700; }
+        .history-pill { display:inline-block; padding:4px 10px; border-radius:999px; border: 1px solid #d5dde6; font-size:13px; font-weight:700; }
+        .history-pill.bad { border-color: rgba(214,69,69,0.45); color: var(--red); }
+        .history-pill.ok { border-color: rgba(47,158,58,0.45); color: var(--green); }
+        button { display:block; width:100%; min-height:68px; border-radius:16px; border: 1px solid #d5dde6; background: #ffffff; color: var(--text); font-size:20px; font-weight:700; cursor:pointer; margin-top:16px; }
     </style>
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
+        <nav class="page-nav" aria-label="Page navigation"><a class="page-nav-btn" href="{{ url_for('controller_settings_view') }}" data-nav-back>← Back</a><a class="page-nav-btn" href="{{ url_for('index') }}">⌂ Overview</a></nav>
         <div class="panel">
             <h1>Shed {{ shed_no }} Alarms</h1>
             <div class="sub">Stale sensor checks, office link checks, push failures, and controller alarms.</div>
@@ -6488,21 +7861,21 @@ CONTROLLER_EVENTS_HTML = """
     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
     <style>
         :root { --panel:rgba(115,115,115,0.96); --line:#8a8a8a; --text:#ececec; --muted:#d2d2d2; }
-        body { margin:0; color:var(--text); font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; background:#5b5b5b; }
+        body { margin:0; color: var(--text); font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; background: #5b5b5b; }
         .wrap { max-width:1300px; margin:0 auto; padding:18px; }
         .topbar { margin-bottom:16px; }
-        .topbar a { color:var(--text); text-decoration:none; font-size:18px; }
-        .panel { background:var(--panel); border:1px solid var(--line); border-radius:20px; padding:18px; }
+        .topbar a { color: var(--text); text-decoration:none; font-size:18px; }
+        .panel { background: var(--panel); border: 1px solid var(--line); border-radius:20px; padding:18px; }
         h1 { margin:0 0 8px 0; font-size:38px; }
-        .sub { color:var(--muted); margin-bottom:16px; font-size:18px; }
+        .sub { color: var(--muted); margin-bottom:16px; font-size:18px; }
         table { width:100%; border-collapse:collapse; font-size:14px; }
-        th, td { padding:10px 8px; border-bottom:1px solid #818181; text-align:left; vertical-align:top; }
-        th { color:#f0f0f0; }
+        th, td { padding:10px 8px; border-bottom: 1px solid #d5dde6; text-align:left; vertical-align:top; }
+        th { color: #0d2b4a; }
     </style>
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
+        <nav class="page-nav" aria-label="Page navigation"><a class="page-nav-btn" href="{{ url_for('controller_settings_view') }}" data-nav-back>← Back</a><a class="page-nav-btn" href="{{ url_for('index') }}">⌂ Overview</a></nav>
         <div class="panel">
             <h1>Shed {{ shed_no }} Event Log</h1>
             <div class="sub">Recent local controller events and sync actions.</div>
@@ -6530,24 +7903,24 @@ COMMISSIONING_HTML = """
     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
     <style>
         :root { --panel:rgba(115,115,115,0.96); --panel2:#686868; --line:#8a8a8a; --text:#ececec; --muted:#d2d2d2; }
-        body { margin:0; color:var(--text); font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; background:#5b5b5b; }
+        body { margin:0; color: var(--text); font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; background: #5b5b5b; }
         .wrap { max-width:1200px; margin:0 auto; padding:18px; }
         .topbar { margin-bottom:16px; }
-        .topbar a { color:var(--text); text-decoration:none; font-size:18px; }
+        .topbar a { color: var(--text); text-decoration:none; font-size:18px; }
         .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-        .panel { background:var(--panel); border:1px solid var(--line); border-radius:20px; padding:18px; }
+        .panel { background: var(--panel); border: 1px solid var(--line); border-radius:20px; padding:18px; }
         h1 { margin:0 0 8px 0; font-size:38px; }
-        .sub { color:var(--muted); margin-bottom:16px; font-size:18px; }
-        .detail { display:flex; justify-content:space-between; gap:12px; padding:10px 0; border-bottom:1px solid #818181; font-size:16px; }
-        .detail:last-child { border-bottom:0; }
-        .label { color:var(--muted); }
-        .mono { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; color:#f0f0f0; word-break:break-word; background:var(--panel2); border:1px solid #818181; border-radius:14px; padding:12px; }
+        .sub { color: var(--muted); margin-bottom:16px; font-size:18px; }
+        .detail { display:flex; justify-content:space-between; gap:12px; padding:10px 0; border-bottom: 1px solid #d5dde6; font-size:16px; }
+        .detail:last-child { border-bottom: 0; }
+        .label { color: var(--muted); }
+        .mono { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; color: #0d2b4a; word-break:break-word; background: var(--panel2); border: 1px solid #d5dde6; border-radius:14px; padding:12px; }
         @media (max-width: 900px) { .grid { grid-template-columns:1fr; } }
     </style>
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
+        <nav class="page-nav" aria-label="Page navigation"><a class="page-nav-btn" href="{{ url_for('controller_settings_view') }}" data-nav-back>← Back</a><a class="page-nav-btn" href="{{ url_for('index') }}">⌂ Overview</a></nav>
         <div class="panel" style="margin-bottom:16px;">
             <h1>Shed {{ shed_no }} Commissioning</h1>
             <div class="sub">Raw sensor values, sync versions, and wiring diagnostics.</div>
@@ -6637,7 +8010,7 @@ HISTORY_HTML = """
             min-height: 44px;
             padding: 10px 14px;
             border-radius: 12px;
-            border: 1px solid #8a8a8a;
+            border: 1px solid #d5dde6;
             background: var(--panel-2);
             color: var(--text);
             text-decoration: none;
@@ -6654,7 +8027,7 @@ HISTORY_HTML = """
         }
         .chart-wrap {
             background: var(--panel-2);
-            border: 1px solid #818181;
+            border: 1px solid #d5dde6;
             border-radius: 16px;
             padding: 14px;
         }
@@ -6668,7 +8041,7 @@ HISTORY_HTML = """
             font-size: 15px;
         }
         th, td {
-            border-bottom: 1px solid #818181;
+            border-bottom: 1px solid #d5dde6;
             padding: 10px 8px;
             text-align: left;
         }
@@ -6679,6 +8052,12 @@ HISTORY_HTML = """
             color: var(--muted);
             font-size: 18px;
         }
+        .view-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+        .view-head .action-link { min-height: 48px; padding: 0 18px; font-size: 17px; cursor: pointer; }
+        #allDaysBtn[hidden] { display: none !important; }
+        .chart-scroll { overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; }
+        .day-link { all: unset; cursor: pointer; color: #1676b8; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; min-height: 32px; display: inline-flex; align-items: center; }
+        .day-link:focus-visible { outline: 3px solid #f08a12; outline-offset: 2px; }
         .table-controls {
             display: flex;
             gap: 10px;
@@ -6691,118 +8070,216 @@ HISTORY_HTML = """
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
+        <nav class="page-nav" aria-label="Page navigation"><a class="page-nav-btn" href="{{ url_for('controller_settings_view') }}" data-nav-back>← Back</a><a class="page-nav-btn" href="{{ url_for('index') }}">⌂ Overview</a></nav>
+        {% if log_tab in ['feed', 'water'] %}
+        <div class="log-tabs" role="tablist" aria-label="Log type">
+            <a class="log-tab {% if log_tab == 'feed' %}active{% endif %}" role="tab" aria-selected="{{ 'true' if log_tab == 'feed' else 'false' }}" href="{{ url_for('feed_history_view') }}">Feed</a>
+            <a class="log-tab {% if log_tab == 'water' %}active{% endif %}" role="tab" aria-selected="{{ 'true' if log_tab == 'water' else 'false' }}" href="{{ url_for('water_history_view') }}">Water</a>
+        </div>
+        {% endif %}
         <div class="panel">
-            <h1>Shed {{ shed_no }} {{ metric_title }}</h1>
-            <div class="sub">Current crop {{ crop_code }} hourly {{ metric_title|lower }} history.</div>
-            {% if extra_link_href %}
-            <div class="action-row">
-                <a class="action-link" href="{{ extra_link_href }}">{{ extra_link_label }}</a>
+            <div class="view-head">
+                <div>
+                    <h1>Shed {{ shed_no }} {{ metric_title }}</h1>
+                    <div class="sub" id="viewSub">Current crop {{ crop_code }}. Daily totals, 6am to 6am. Tap a day to see its hours.</div>
+                </div>
+                <button type="button" id="allDaysBtn" class="action-link" hidden>← All days</button>
             </div>
-            {% endif %}
             {% if rows %}
             <div class="chart-wrap">
-                <div class="chart-box"><canvas id="historyChart"></canvas></div>
+                <div class="chart-scroll" id="chartScroll">
+                    <div class="chart-box" id="chartInner"><canvas id="historyChart" aria-label="{{ metric_title }} chart"></canvas></div>
+                </div>
             </div>
             {% else %}
-            <div class="empty">No hourly history available for the current crop.</div>
+            <div class="empty">No history available for the current crop yet.</div>
             {% endif %}
         </div>
+        {% if rows %}
         <div class="panel">
-            <h1 style="font-size:26px;">Hourly Table</h1>
-            {% if rows %}
+            <h1 style="font-size:26px;" id="tableTitle">Daily totals</h1>
             <table>
-                <thead>
-                    <tr>
-                        <th>Hour</th>
-                        <th>{{ y_axis_title }}</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for row in table_rows %}
-                    <tr class="paged-row">
-                        <td>{{ row.label }}</td>
-                        <td>{{ row.value }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
+                <thead><tr><th id="colWhen">Day</th><th id="colValue">{{ series[0].axis_title }}</th><th id="colMore"></th></tr></thead>
+                <tbody id="historyBody"></tbody>
             </table>
-            <div class="table-controls">
-                <button type="button" id="historyTableLoadMore" class="action-link">Load next 20</button>
-                <div class="empty" id="historyTableInfo" style="font-size:15px; padding:0;"></div>
-            </div>
-            {% else %}
-            <div class="empty">No rows to display.</div>
-            {% endif %}
         </div>
+        {% endif %}
     </div>
     <script>
     const labels = {{ labels|tojson }};
-    const values = {{ values|tojson }};
+    const epochs = {{ epochs|tojson }};
+    const series = {{ series|tojson }};
+    const metric = series.length ? series[0] : null;
+    const unit = metric ? metric.axis_title.split(' ').pop().replace('KG', 'kg') : '';
+    const DAY_START_HOUR = 6;   // farm day runs 6am to 6am, matching the yesterday figures
 
-    function setupPagedTable(buttonId, infoId, initialCount = 20, step = 20) {
-        const rows = Array.from(document.querySelectorAll('.paged-row'));
-        const button = document.getElementById(buttonId);
-        const info = document.getElementById(infoId);
-        if (!rows.length) {
-            if (button) button.style.display = 'none';
-            if (info) info.textContent = '';
-            return;
-        }
-
-        let visibleCount = Math.min(initialCount, rows.length);
-
-        function render() {
-            rows.forEach((row, index) => {
-                row.style.display = index < visibleCount ? '' : 'none';
-            });
-            if (info) {
-                info.textContent = `Showing ${Math.min(visibleCount, rows.length)} of ${rows.length}`;
-            }
-            if (button) {
-                button.style.display = visibleCount < rows.length ? '' : 'none';
-            }
-        }
-
-        if (button) {
-            button.addEventListener('click', () => {
-                visibleCount = Math.min(rows.length, visibleCount + step);
-                render();
-            });
-        }
-
-        render();
+    function pad(n) { return String(n).padStart(2, '0'); }
+    function fmt(v) { return v === null || v === undefined ? '--' : Number(v).toLocaleString('en-GB', { maximumFractionDigits: 1 }); }
+    function dayKeyFor(epoch) {
+        const d = new Date((epoch - DAY_START_HOUR * 3600) * 1000);
+        return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
     }
 
-    const ctx = document.getElementById('historyChart');
-    if (ctx) {
-        new Chart(ctx, {
-            type: 'line',
+    // Group the hourly points into farm days.
+    const days = [];
+    const dayMap = {};
+    if (metric) {
+        epochs.forEach((epoch, i) => {
+            if (epoch === null || epoch === undefined) return;
+            const key = dayKeyFor(epoch);
+            if (!dayMap[key]) {
+                const parts = key.split('-').map(Number);
+                const start = new Date(parts[0], parts[1] - 1, parts[2], DAY_START_HOUR, 0, 0);
+                dayMap[key] = {
+                    key: key,
+                    start: start,
+                    label: start.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' }),
+                    total: 0, seen: 0, hours: {}
+                };
+                days.push(dayMap[key]);
+            }
+            const v = metric.values[i];
+            if (v !== null && v !== undefined) {
+                dayMap[key].total += Number(v);
+                dayMap[key].seen += 1;
+            }
+            dayMap[key].hours[epoch] = v;
+        });
+        days.sort((a, b) => a.start - b.start);
+        if (days.length) days[days.length - 1].partial = (Date.now() - days[days.length - 1].start.getTime()) < 24 * 3600 * 1000;
+    }
+
+    // Writes each bar's figure on the bar: across the top when the bar is wide enough,
+    // up the bar when it is narrow, or just above it when the bar is too short.
+    // Writes each bar's figure up the bar, inside it when it fits, otherwise just above it.
+    const barValueLabels = {
+        id: 'barValueLabels',
+        afterDatasetsDraw(c) {
+            const meta = c.getDatasetMeta(0);
+            const data = c.data.datasets[0].data;
+            const g = c.ctx;
+            g.save();
+            g.font = '600 13px "Barlow Semi Condensed", Barlow, sans-serif';
+            g.fillStyle = '#0d2b4a';
+            meta.data.forEach((bar, i) => {
+                const v = data[i];
+                if (v === null || v === undefined) return;
+                const text = fmt(v);
+                const p = bar.getProps(['x', 'y', 'base'], true);
+                const h = p.base - p.y;
+                const inside = h >= g.measureText(text).width + 10;
+                g.save();
+                g.translate(p.x, inside ? p.y + 5 : p.y - 4);
+                g.rotate(-Math.PI / 2);
+                g.textAlign = inside ? 'right' : 'left';
+                g.textBaseline = 'middle';
+                g.fillText(text, 0, 0);
+                g.restore();
+            });
+            g.restore();
+        }
+    };
+
+    const MIN_BAR_PX = 38;   // bars never squeeze below this; the chart scrolls sideways instead
+    let chart = null;
+    function drawChart(type, chartLabels, values, onPick) {
+        const el = document.getElementById('historyChart');
+        if (!el) return;
+        if (chart) chart.destroy();
+        const scroller = document.getElementById('chartScroll');
+        const inner = document.getElementById('chartInner');
+        const needed = chartLabels.length * MIN_BAR_PX + 70;
+        inner.style.width = needed > scroller.clientWidth ? needed + 'px' : '100%';
+        chart = new Chart(el, {
+            plugins: [barValueLabels],
+            type: type,
             data: {
-                labels: labels,
+                labels: chartLabels,
                 datasets: [{
-                    label: {{ metric_title|tojson }},
+                    label: metric.label + ' (' + unit + ')',
                     data: values,
                     borderWidth: 2,
-                    pointRadius: 2,
+                    pointRadius: 3,
                     tension: 0.2,
-                    borderColor: {{ color|tojson }},
-                    backgroundColor: {{ color|tojson }}
+                    borderRadius: 4,
+                    borderColor: metric.color,
+                    backgroundColor: metric.color
                 }]
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
                 animation: false,
-                plugins: { legend: { labels: { color: '#f1f8fb' } } },
+                onClick: (event, elements) => { if (onPick && elements.length) onPick(elements[0].index); },
+                onHover: (event, elements) => { event.native.target.style.cursor = (onPick && elements.length) ? 'pointer' : 'default'; },
+                layout: { padding: { top: 46 } },
+                plugins: { legend: { labels: { color: '#0d2b4a' } } },
                 scales: {
-                    x: { ticks: { color: '#d2d2d2' }, grid: { color: '#818181' } },
-                    y: { ticks: { color: '#d2d2d2' }, grid: { color: '#818181' } }
+                    x: { ticks: { color: '#4a6078', autoSkip: false, maxRotation: 50, minRotation: 0 }, grid: { color: '#e3e9ef' } },
+                    y: { beginAtZero: true, grace: '8%', ticks: { color: '#4a6078' }, grid: { color: '#e3e9ef' } }
                 }
             }
         });
+        scroller.scrollLeft = scroller.scrollWidth;   // open on the latest days
     }
-    setupPagedTable('historyTableLoadMore', 'historyTableInfo');
+
+    function showDays() {
+        document.getElementById('allDaysBtn').hidden = true;
+        document.getElementById('viewSub').textContent = 'Current crop {{ crop_code }}. Daily totals, 6am to 6am. Tap a day to see its hours.';
+        document.getElementById('tableTitle').textContent = 'Daily totals';
+        document.getElementById('colWhen').textContent = 'Day';
+        document.getElementById('colMore').textContent = '';
+        drawChart('bar', days.map(d => d.label + (d.partial ? ' (so far)' : '')), days.map(d => d.seen ? Math.round(d.total * 10) / 10 : null), (i) => showDay(days[i].key));
+        const body = document.getElementById('historyBody');
+        body.innerHTML = '';
+        days.slice().reverse().forEach((d) => {
+            const tr = document.createElement('tr');
+            const when = document.createElement('td');
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'day-link';
+            btn.textContent = d.label + (d.partial ? ' (so far)' : '');
+            btn.addEventListener('click', () => showDay(d.key));
+            when.appendChild(btn);
+            const val = document.createElement('td');
+            val.textContent = d.seen ? fmt(d.total) + ' ' + unit : '--';
+            const more = document.createElement('td');
+            more.textContent = d.seen + ' h';
+            more.style.color = '#4a6078';
+            tr.append(when, val, more);
+            body.appendChild(tr);
+        });
+    }
+
+    function showDay(key) {
+        const d = dayMap[key];
+        if (!d) return;
+        const slots = [];
+        for (let h = 0; h < 24; h++) {
+            const t = new Date(d.start.getTime() + h * 3600 * 1000);
+            const epoch = Math.round(t.getTime() / 1000);
+            slots.push({ label: pad(t.getHours()) + ':00', value: Object.prototype.hasOwnProperty.call(d.hours, epoch) ? d.hours[epoch] : null });
+        }
+        document.getElementById('allDaysBtn').hidden = false;
+        document.getElementById('viewSub').textContent = d.label + ', 6am to 6am' + (d.partial ? ' (so far)' : '') + ' · ' + fmt(d.total) + ' ' + unit + ' in total';
+        document.getElementById('tableTitle').textContent = 'Hourly, ' + d.label;
+        document.getElementById('colWhen').textContent = 'Hour';
+        document.getElementById('colMore').textContent = '';
+        drawChart('bar', slots.map(s => s.label), slots.map(s => s.value), null);
+        const body = document.getElementById('historyBody');
+        body.innerHTML = '';
+        slots.forEach((s) => {
+            const tr = document.createElement('tr');
+            const when = document.createElement('td'); when.textContent = s.label;
+            const val = document.createElement('td'); val.textContent = s.value === null ? '--' : fmt(s.value) + ' ' + unit;
+            tr.append(when, val, document.createElement('td'));
+            body.appendChild(tr);
+        });
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    document.getElementById('allDaysBtn').addEventListener('click', showDays);
+    if (metric && days.length) showDays();
     </script>
 </body>
 </html>
@@ -6832,14 +8309,14 @@ AUGER_RUNS_HTML = """
         h1 { margin: 0 0 8px 0; font-size: 38px; }
         .sub { color: var(--muted); margin-bottom: 16px; font-size: 18px; }
         table { width: 100%; border-collapse: collapse; font-size: 15px; }
-        th, td { border-bottom: 1px solid #818181; padding: 10px 8px; text-align: left; }
+        th, td { border-bottom: 1px solid #d5dde6; padding: 10px 8px; text-align: left; }
         th { color: var(--muted); }
         .empty { color: var(--muted); font-size: 18px; }
     </style>
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('feed_history_view') }}">← Back to Feed History</a></div>
+        <nav class="page-nav" aria-label="Page navigation"><a class="page-nav-btn" href="{{ url_for('index') }}" data-nav-back>← Back</a><a class="page-nav-btn" href="{{ url_for('index') }}">⌂ Overview</a></nav>
         <div class="panel">
             <h1>Shed {{ shed_no }} Auger Runs</h1>
             <div class="sub">Completed auger run timestamps and durations recorded by this controller.</div>
@@ -6876,221 +8353,204 @@ AUGER_RUNS_HTML = """
 """
 
 
+# Shared look for the shed's number entry pages (allocation, mortality and the setup pages), matching Settings.
+ENTRY_PAGE_HEAD = """
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <meta name="cdf-theme-native" content="1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@500;600&display=swap">
+    <style>
+        :root {
+            --page: #eef2f6; --card: #ffffff; --card-2: #f5f8fb; --rule: #d5dde6; --track: #dbe3ec;
+            --navy: #0b3a6b; --text: #0d2b4a; --muted: #4a6078; --soft: #31475e;
+            --green: #2f9e3a; --amber: #f08a12; --red: #d64545;
+        }
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        body { margin: 0; min-height: 100vh; background: var(--page); color: var(--text); font-family: "Barlow", "Helvetica Neue", Helvetica, sans-serif; }
+        .cond { font-family: "Barlow Semi Condensed", "Barlow", "Helvetica Neue", Helvetica, sans-serif; }
+        .topbar { min-height: 64px; background: #ffffff; padding: 10px 28px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--rule); }
+        .back { display: flex; align-items: center; justify-content: center; min-height: 48px; padding: 0 16px; border-radius: 12px; border: 1px solid #c5d0dc; background: var(--card); color: var(--text); text-decoration: none; font-size: 17px; font-weight: 600; white-space: nowrap; }
+        .title { margin-left: 6px; font-size: 34px; font-weight: 600; color: var(--navy); }
+        .brand-logo { height: 44px; width: auto; display: block; margin-left: auto; }
+        .wrap { max-width: 1200px; margin: 0 auto; padding: 16px 24px 24px; }
+        .msg { margin-bottom: 14px; padding: 12px 16px; border-radius: 12px; background: #e3f4e1; border: 1px solid #9fd39a; color: #1e6b16; font-size: 17px; font-weight: 600; }
+        .msg.error { background: #fdecec; border-color: #e3a0a0; color: #8f1f1f; }
+        .section-title { margin: 0 0 8px 4px; font-size: 14px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+        section + section { margin-top: 20px; }
+        .card { border-radius: 14px; background: var(--card); padding: 18px; }
+        .hint { font-size: 15px; color: var(--muted); line-height: 1.35; }
+        .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
+        .stat { border-radius: 14px; background: var(--card); padding: 14px 18px; }
+        .stat-label { font-size: 14px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+        .stat-value { margin-top: 2px; font-size: 32px; font-weight: 600; color: var(--navy); line-height: 1.1; }
+        .stat-sub { font-size: 14px; color: var(--muted); }
+        .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 14px; font-weight: 600; background: var(--card-2); color: var(--muted); }
+        .pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+        .pill.on { background: #e3f4e1; color: #1e6b16; } .pill.on::before { background: var(--green); }
+        .pill.wait { background: #fff4e5; color: #9a4b00; } .pill.wait::before { background: var(--amber); }
+        .pill.bad { background: #fdecec; color: #8f1f1f; } .pill.bad::before { background: var(--red); }
+        label.field { display: block; font-size: 14px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; margin: 0 0 6px 2px; }
+        input[type="number"], input[type="text"], select {
+            width: 100%; min-height: 60px; padding: 0 16px; border-radius: 12px; border: 1px solid #c5d0dc;
+            background: var(--card-2); color: var(--text); font-family: inherit; font-size: 22px; font-weight: 600;
+        }
+        input[type="text"], select { font-size: 19px; font-weight: 500; }
+        input:focus, select:focus { outline: none; border-color: var(--navy); background: #ffffff; }
+        button {
+            width: 100%; min-height: 60px; border-radius: 12px; border: 1px solid #c5d0dc; background: var(--card-2);
+            color: var(--text); font-family: inherit; font-size: 18px; font-weight: 600; cursor: pointer; white-space: nowrap;
+        }
+        button:active { background: var(--track); }
+        button:disabled { opacity: 0.4; cursor: default; }
+        button.primary { background: var(--navy); color: #ffffff; border-color: var(--navy); }
+        button.primary:active { background: var(--text); }
+        button.go { background: var(--green); color: #ffffff; border-color: var(--green); }
+        button.danger { background: #fdecec; border-color: #e3a0a0; color: #8f1f1f; }
+        form { margin: 0; }
+        .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+        .col { display: flex; flex-direction: column; gap: 20px; }
+        .col > section + section { margin-top: 0; }
+        .card.form { display: grid; gap: 12px; }
+        .now { display: flex; align-items: baseline; gap: 8px; }
+        .now b { font-size: 56px; font-weight: 600; color: var(--navy); line-height: 1; }
+        .now span { font-size: 22px; color: var(--muted); font-weight: 600; }
+        .now.ok b { color: var(--green); } .now.warn b { color: var(--amber); } .now.alarm b { color: var(--red); }
+        .details { margin-top: 10px; }
+        .detail { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--track); font-size: 17px; }
+        .detail > span:first-child { color: var(--muted); }
+        .detail > span:last-child { font-weight: 600; text-align: right; }
+        .inline { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
+        .inline button { width: auto; min-width: 150px; padding: 0 22px; }
+        .link-item { display: flex; align-items: center; justify-content: space-between; min-height: 54px; padding: 0 18px; border-radius: 14px; background: var(--card); color: var(--text); text-decoration: none; font-size: 18px; font-weight: 500; }
+        .link-item span:last-child { color: var(--muted); font-size: 22px; }
+        .table-wrap { overflow: auto; border-radius: 12px; border: 1px solid var(--track); }
+        table { width: 100%; border-collapse: collapse; font-size: 15px; }
+        th, td { padding: 9px 10px; border-top: 1px solid var(--track); text-align: left; vertical-align: top; }
+        thead th { border-top: 0; background: var(--card-2); font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+        a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid var(--navy); outline-offset: 2px; }
+        @media (max-width: 860px) {
+            .topbar { padding: 10px 16px; }
+            .title { font-size: 26px; }
+            .brand-logo { display: none; }
+            .wrap { padding: 14px 16px 20px; }
+            .stats { grid-template-columns: 1fr 1fr; }
+            .cols { grid-template-columns: 1fr; }
+        }
+    </style>
+"""
+
+
 RANGE_SETTINGS_HTML = """
 <!doctype html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
     <title>Shed {{ shed_no }} {{ title }}</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+""" + ENTRY_PAGE_HEAD + """
     <style>
-        :root {
-            --bg: #5b5b5b;
-            --panel: rgba(115, 115, 115, 0.96);
-            --line: #8a8a8a;
-            --text: #ececec;
-            --muted: #d2d2d2;
-        }
-        body {
-            margin: 0;
-            color: var(--text);
-            font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-            background: #5b5b5b;
-        }
-        .wrap {
-            max-width: 860px;
-            margin: 0 auto;
-            padding: 18px;
-        }
-        .topbar {
-            margin-bottom: 16px;
-        }
-        .topbar a {
-            color: var(--text);
-            text-decoration: none;
-            font-size: 18px;
-        }
-        .panel {
-            background: var(--panel);
-            border: 1px solid var(--line);
-            border-radius: 20px;
-            padding: 18px;
-            margin-bottom: 16px;
-        }
-        h1 {
-            margin: 0 0 8px 0;
-            font-size: 38px;
-        }
-        .sub {
-            color: var(--muted);
-            margin-bottom: 16px;
-            font-size: 18px;
-        }
-        .current {
-            font-size: 34px;
-            font-weight: 700;
-        }
-        .form-rows {
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 12px;
-        }
-        .form-row {
-            display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 12px;
-        }
-        label {
-            display: block;
-            color: var(--muted);
-            font-size: 16px;
-            margin-bottom: 8px;
-        }
-        input[type="number"] {
-            width: 100%;
-            min-height: 72px;
-            border-radius: 16px;
-            border: 1px solid var(--line);
-            background: #686868;
-            color: var(--text);
-            font-size: 30px;
-            padding: 12px 16px;
-            box-sizing: border-box;
-        }
-        button {
-            min-height: 72px;
-            width: 100%;
-            border-radius: 16px;
-            border: 1px solid #8a8a8a;
-            background: linear-gradient(180deg, #7d7d7d, #696969);
-            color: var(--text);
-            font-size: 22px;
-            font-weight: 700;
-            padding: 0 18px;
-            cursor: pointer;
-            margin-top: 14px;
-        }
-        .hint {
-            color: var(--muted);
-            font-size: 16px;
-            margin-top: 12px;
-        }
-        .preview {
-            margin-top: 14px;
-            padding: 14px;
-            border-radius: 16px;
-            background: #686868;
-            border: 1px solid var(--line);
-        }
-        .preview-title {
-            font-size: 16px;
-            font-weight: 700;
-            margin-bottom: 10px;
-        }
-        .preview-grid {
-            display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 10px;
-        }
-        .preview-item {
-            min-width: 0;
-        }
-        .preview-pill {
-            display: inline-block;
-            padding: 4px 10px;
-            border-radius: 999px;
-            font-size: 13px;
-            font-weight: 700;
-            margin-bottom: 6px;
-            border: 1px solid var(--line);
-        }
-        .preview-pill.red {
-            color: #ffd6d6;
-            border-color: #ff5b5b;
-            box-shadow: 0 0 8px rgba(255,91,91,0.4);
-        }
-        .preview-pill.amber {
-            color: #ffe7b0;
-            border-color: #ffd06a;
-            box-shadow: 0 0 8px rgba(255,208,106,0.35);
-        }
-        .preview-pill.green {
-            color: #dff9ea;
-            border-color: #35d07f;
-            box-shadow: 0 0 8px rgba(53,208,127,0.35);
-        }
-        .preview-text {
-            color: var(--muted);
-            font-size: 14px;
-            line-height: 1.35;
-        }
-        @media (max-width: 900px) {
-            .form-row {
-                grid-template-columns: repeat(3, minmax(0, 1fr));
-                gap: 10px;
-            }
-            label {
-                font-size: 14px;
-            }
-            input[type="number"] {
-                min-height: 64px;
-                font-size: 24px;
-                padding: 10px 12px;
-            }
-            .preview-grid {
-                grid-template-columns: 1fr;
-            }
-        }
+        .limits { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+        .band { position: relative; height: 22px; margin: 26px 0 8px; border-radius: 999px; overflow: hidden; display: flex; }
+        .band div { height: 100%; }
+        .band .r { background: #f3b5b5; } .band .a { background: #f8cf97; } .band .g { background: #a9dca6; }
+        .band-wrap { position: relative; }
+        .marker { position: absolute; top: -26px; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; font-size: 14px; font-weight: 600; color: var(--navy); }
+        .marker::after { content: ""; width: 3px; height: 36px; margin-top: 2px; border-radius: 2px; background: var(--navy); }
+        .band-scale { display: flex; justify-content: space-between; font-size: 14px; color: var(--muted); }
+        .guide { display: grid; gap: 8px; }
+        .guide div { display: flex; gap: 10px; align-items: baseline; font-size: 15px; color: var(--soft); }
+        .guide b { flex: 0 0 74px; }
+        .guide .pill { justify-content: center; }
     </style>
 </head>
 <body>
+    <header class="topbar">
+        <a class="back" href="{{ url_for('controller_settings_view') }}" data-nav-back>← Back</a>
+        <a class="back" href="{{ url_for('index') }}">⌂ Overview</a>
+        <div class="title cond">{{ title }} range</div>
+        <img class="brand-logo" src="/static/stocksense-logo.png" alt="StockSense, Smarter Livestock Monitoring">
+    </header>
+
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
-        <div class="panel">
-            <h1>Shed {{ shed_no }} {{ title }}</h1>
-            <div class="sub">{{ subtitle }}</div>
-            <div class="current">Current: {{ current_value }} {{ unit }}</div>
-        </div>
-        <div class="panel">
-            <form method="post" action="{{ save_url }}">
-                <div class="form-rows">
-                    <div class="form-row">
+        {% if request.args.get('msg') %}<div class="msg auto-dismiss {% if request.args.get('ok') == '0' %}error{% endif %}">{{ request.args.get('msg') }}</div>{% endif %}
+        <div class="cols">
+            <div class="col">
+                <section>
+                    <h2 class="section-title">Now in the shed</h2>
+                    <div class="card">
+                        <div class="now" id="nowValue"><b class="cond">{{ current_value }}</b><span>{{ unit }}</span></div>
+                        <div class="band-wrap">
+                            <div class="band" id="band"></div>
+                            <div class="marker" id="marker" hidden><span id="markerText"></span></div>
+                        </div>
+                        <div class="band-scale"><span id="scaleLo"></span><span id="scaleHi"></span></div>
+                    </div>
+                </section>
+                <section>
+                    <h2 class="section-title">How the colours work</h2>
+                    <div class="card guide">
+                        <div><b><span class="pill on">Green</span></b>Comfortably inside the range.</div>
+                        <div><b><span class="pill wait">Amber</span></b>Still in range, but within the amber margin of a red limit.</div>
+                        <div><b><span class="pill bad">Red</span></b>Outside the range. The shed tile shows an alarm.</div>
+                    </div>
+                </section>
+            </div>
+            <section>
+                <h2 class="section-title">Limits</h2>
+                <form class="card form" method="post" action="{{ save_url }}">
+                    <div class="limits">
                         <div>
-                            <label for="low_value">{{ low_label }}</label>
+                            <label class="field" for="low_value">Red below</label>
                             <input id="low_value" type="number" name="low_value" step="{{ step }}" inputmode="{{ inputmode }}" enterkeyhint="done" value="{{ low_value }}">
                         </div>
                         <div>
-                            <label for="high_value">{{ high_label }}</label>
+                            <label class="field" for="high_value">Red above</label>
                             <input id="high_value" type="number" name="high_value" step="{{ step }}" inputmode="{{ inputmode }}" enterkeyhint="done" value="{{ high_value }}">
                         </div>
                         <div>
-                            <label for="amber_margin">{{ amber_label }}</label>
+                            <label class="field" for="amber_margin">Amber margin</label>
                             <input id="amber_margin" type="number" name="amber_margin" step="{{ step }}" inputmode="{{ inputmode }}" enterkeyhint="done" value="{{ amber_margin }}">
                         </div>
                     </div>
-                </div>
-                <button type="submit">{{ button_label }}</button>
-            </form>
-            <div class="hint">{{ hint }}</div>
-            <div class="preview">
-                <div class="preview-title">How The Colours Work</div>
-                <div class="preview-grid">
-                    <div class="preview-item">
-                        <div class="preview-pill red">RED</div>
-                        <div class="preview-text">Outside the safe range.</div>
-                    </div>
-                    <div class="preview-item">
-                        <div class="preview-pill amber">AMBER</div>
-                        <div class="preview-text">Still in range, but within the amber margin near either red limit.</div>
-                    </div>
-                    <div class="preview-item">
-                        <div class="preview-pill green">GREEN</div>
-                        <div class="preview-text">Comfortably inside the normal operating range.</div>
-                    </div>
-                </div>
-            </div>
+                    <div class="hint">All in {{ unit }}. The amber margin is a warning zone just inside each red limit. The bar on the left updates as you type.</div>
+                    <button class="primary" type="submit">{{ button_label }}</button>
+                </form>
+            </section>
         </div>
     </div>
+<script>
+(function () {
+    const lowEl = document.getElementById('low_value'), highEl = document.getElementById('high_value'), marginEl = document.getElementById('amber_margin');
+    const band = document.getElementById('band'), marker = document.getElementById('marker'), markerText = document.getElementById('markerText');
+    const nowEl = document.getElementById('nowValue');
+    const current = parseFloat({{ current_value|tojson }});
+    function fmt(v) { return (Math.round(v * 10) / 10).toString(); }
+    function draw() {
+        const lo = parseFloat(lowEl.value), hi = parseFloat(highEl.value), m = Math.max(0, parseFloat(marginEl.value) || 0);
+        if (!isFinite(lo) || !isFinite(hi) || hi <= lo) { band.innerHTML = ''; marker.hidden = true; return; }
+        const pad = Math.max(m * 2, (hi - lo) * 0.3);
+        let min = lo - pad, max = hi + pad;
+        if (isFinite(current)) { min = Math.min(min, current - pad * 0.2); max = Math.max(max, current + pad * 0.2); }
+        const pct = (v) => ((v - min) / (max - min)) * 100;
+        const a1 = Math.min(lo + m, hi), a2 = Math.max(hi - m, a1);
+        const parts = [['r', min, lo], ['a', lo, a1], ['g', a1, a2], ['a', a2, hi], ['r', hi, max]];
+        band.innerHTML = parts.map(([c, x, y]) => '<div class="' + c + '" style="width:' + Math.max(0, pct(y) - pct(x)) + '%"></div>').join('');
+        document.getElementById('scaleLo').textContent = fmt(min);
+        document.getElementById('scaleHi').textContent = fmt(max);
+        nowEl.classList.remove('ok', 'warn', 'alarm');
+        if (isFinite(current)) {
+            marker.hidden = false;
+            marker.style.left = pct(current) + '%';
+            markerText.textContent = 'Now';
+            nowEl.classList.add(current < lo || current > hi ? 'alarm' : (current < a1 || current > a2 ? 'warn' : 'ok'));
+        } else {
+            marker.hidden = true;
+        }
+    }
+    [lowEl, highEl, marginEl].forEach((el) => el.addEventListener('input', draw));
+    draw();
+    setTimeout(() => { document.querySelectorAll('.auto-dismiss').forEach((el) => { el.style.display = 'none'; }); }, 10000);
+})();
+</script>
 </body>
 </html>
 """
@@ -7102,85 +8562,100 @@ WATER_SETTINGS_HTML = """
 <head>
     <meta charset="utf-8">
     <title>Shed {{ shed_no }} Water Settings</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-    <style>
-        :root { --bg:#5b5b5b; --panel:rgba(115,115,115,0.96); --line:#8a8a8a; --text:#ececec; --muted:#d2d2d2; }
-        body { margin:0; color:var(--text); font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; background:#5b5b5b; }
-        .wrap { max-width:860px; margin:0 auto; padding:18px; }
-        .topbar { margin-bottom:16px; }
-        .topbar a { color:var(--text); text-decoration:none; font-size:18px; }
-        .panel { background:var(--panel); border:1px solid var(--line); border-radius:20px; padding:18px; margin-bottom:16px; }
-        h1 { margin:0 0 8px 0; font-size:38px; }
-        .sub { color:var(--muted); margin-bottom:16px; font-size:18px; }
-        .current { font-size:34px; font-weight:700; }
-        .detail { display:flex; justify-content:space-between; gap:12px; padding:10px 0; border-bottom:1px solid #818181; font-size:18px; }
-        .detail:last-child { border-bottom:0; }
-        label { display:block; color:var(--muted); font-size:16px; margin-bottom:8px; }
-        input[type="number"] { width:100%; min-height:72px; border-radius:16px; border:1px solid var(--line); background:#686868; color:var(--text); font-size:30px; padding:12px 16px; box-sizing:border-box; }
-        button { min-height:72px; border-radius:16px; border:1px solid #8a8a8a; background:linear-gradient(180deg, #7d7d7d, #696969); color:var(--text); font-size:22px; font-weight:700; padding:0 18px; cursor:pointer; margin-top:14px; width:100%; }
-        .danger { border-color:#7f4b53; background:linear-gradient(180deg, #542e34, #3e2328); }
-        .hint { color:var(--muted); font-size:16px; margin-top:12px; }
-        .status { font-size:22px; font-weight:700; }
-    </style>
+""" + ENTRY_PAGE_HEAD + """
 </head>
 <body>
+    <header class="topbar">
+        <a class="back" href="{{ url_for('controller_settings_view') }}" data-nav-back>← Back</a>
+        <a class="back" href="{{ url_for('index') }}">⌂ Overview</a>
+        <div class="title cond">Water meter</div>
+        <img class="brand-logo" src="/static/stocksense-logo.png" alt="StockSense, Smarter Livestock Monitoring">
+    </header>
+
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
-        <div class="panel">
-            <h1>Shed {{ shed_no }} Water Settings</h1>
-            <div class="sub">Adjust the low-flow threshold and calibrate pulses per litre against the shed water meter.</div>
-            <div class="current">Current: <span id="waterCurrentValue">{{ current_value }}</span> L/PM</div>
-            <div class="detail"><span>Raw pulse L/PM</span><span id="waterCurrentRawValue">{{ current_value_raw }}</span></div>
-            <div class="detail"><span>Low flow threshold</span><span>{{ water_low_lpm }} L/PM</span></div>
-            <div class="detail"><span>Pulses per litre</span><span id="waterPulsesPerLitre">{{ water_pulses_per_litre }}</span></div>
-            <div class="detail"><span>Total flow pulses</span><span id="waterTotalPulses">{{ total_flow_pulses }}</span></div>
-        </div>
-        <div class="panel">
-            <div class="sub">Live pulse activity</div>
-            <div class="detail"><span>Latest pulse delta</span><span><span id="livePulseLastDelta">{{ live_pulse_last_delta }}</span> in <span id="livePulseLastSeconds">{{ live_pulse_last_seconds }}</span></span></div>
-            <div class="detail"><span>Pulse delta in smoothing window</span><span><span id="livePulseWindowDelta">{{ live_pulse_window_delta }}</span> in <span id="livePulseWindowSeconds">{{ live_pulse_window_seconds }}</span></span></div>
-            <div class="detail"><span>Total pulses seen</span><span id="waterTotalPulsesMirror">{{ total_flow_pulses }}</span></div>
-            <div class="hint">The main L/PM number uses a short smoothing window. This section still shows the latest raw pulse movement coming back from the Pico.</div>
-        </div>
-        <div class="panel">
-            <form method="post" action="{{ url_for('save_water_settings') }}">
-                <label for="threshold_value">Low flow threshold L/PM</label>
-                <input id="threshold_value" type="number" name="threshold_value" step="0.01" inputmode="decimal" enterkeyhint="done" value="{{ water_low_lpm }}">
-                <button type="submit">Save Low Flow Threshold</button>
-            </form>
-            <div class="hint">Green is at or above the threshold. Red is below it or missing.</div>
-        </div>
-        <div class="panel">
-            <form method="post" action="{{ url_for('save_water_pulses_per_litre') }}">
-                <label for="manual_pulses_per_litre">Manual pulses per litre</label>
-                <input id="manual_pulses_per_litre" type="number" name="pulses_per_litre" step="0.01" inputmode="decimal" enterkeyhint="done" value="{{ water_pulses_per_litre }}">
-                <button type="submit">Save Pulses Per Litre</button>
-            </form>
-            <div class="hint">Use this to set a known starting point before running the 5 minute calibration.</div>
-        </div>
-        <div class="panel">
-            <div class="sub">5 minute calibration</div>
-            <div class="detail"><span>Status</span><span id="calibrationStatus" class="status">{{ calibration_status }}</span></div>
-            <div class="detail"><span>Pulse count in run</span><span id="calibrationPulseDelta">{{ calibration_pulse_delta }}</span></div>
-            <div class="detail"><span>Time remaining</span><span id="calibrationRemaining">{{ calibration_remaining }}</span></div>
-            <form id="startCalibrationForm" method="post" action="{{ url_for('start_water_calibration') }}" {% if not calibration_can_start %}style="display:none"{% endif %}>
-                <button type="submit">Start 5 Minute Calibration</button>
-            </form>
-            <form id="cancelCalibrationForm" method="post" action="{{ url_for('cancel_water_calibration') }}" {% if not calibration_active %}style="display:none"{% endif %}>
-                <button class="danger" type="submit">Cancel Calibration</button>
-            </form>
-            <form id="finishCalibrationForm" method="post" action="{{ url_for('finish_water_calibration') }}">
-                <label for="meter_litres">Litres shown on physical water meter for this 5 minute run</label>
-                <input id="meter_litres" type="number" name="meter_litres" step="0.01" inputmode="decimal" enterkeyhint="done" value="" {% if not calibration_ready %}disabled{% endif %}>
-                <button id="finishCalibrationButton" type="submit" {% if not calibration_ready %}disabled{% endif %}>Save New Pulses Per Litre</button>
-            </form>
-            <div id="calibrationHint" class="hint">
-                New pulses per litre = counted pulses divided by the litres from the physical meter.
-                {% if not calibration_ready %}Complete the 5 minute calibration first to enable saving.{% endif %}
+        {% if request.args.get('msg') %}<div class="msg auto-dismiss {% if request.args.get('ok') == '0' %}error{% endif %}">{{ request.args.get('msg') }}</div>{% endif %}
+        <div class="cols">
+            <div class="col">
+                <section>
+                    <h2 class="section-title">Flow now</h2>
+                    <div class="card">
+                        <div class="now"><b class="cond" id="waterCurrentValue">{{ current_value }}</b><span>L/min</span></div>
+                        <div class="details">
+                            <div class="detail"><span>Raw pulse L/min</span><span id="waterCurrentRawValue">{{ current_value_raw }}</span></div>
+                            <div class="detail"><span>Low flow alarm below</span><span>{{ water_low_lpm }} L/min</span></div>
+                            <div class="detail"><span>Pulses per litre</span><span id="waterPulsesPerLitre">{{ water_pulses_per_litre }}</span></div>
+                            <div class="detail"><span>Total flow pulses</span><span id="waterTotalPulses">{{ total_flow_pulses }}</span></div>
+                        </div>
+                    </div>
+                </section>
+                <section>
+                    <h2 class="section-title">Live pulses from the Pico</h2>
+                    <div class="card">
+                        <div class="detail" style="border-top:0"><span>Latest pulse change</span><span><span id="livePulseLastDelta">{{ live_pulse_last_delta }}</span> in <span id="livePulseLastSeconds">{{ live_pulse_last_seconds }}</span></span></div>
+                        <div class="detail"><span>Smoothing window</span><span><span id="livePulseWindowDelta">{{ live_pulse_window_delta }}</span> in <span id="livePulseWindowSeconds">{{ live_pulse_window_seconds }}</span></span></div>
+                        <div class="detail"><span>Total pulses seen</span><span id="waterTotalPulsesMirror">{{ total_flow_pulses }}</span></div>
+                        <div class="hint" style="margin-top:8px">The flow figure above is smoothed over a short window. These are the raw pulses as they arrive.</div>
+                    </div>
+                </section>
+            </div>
+            <div class="col">
+                <section>
+                    <h2 class="section-title">Low flow alarm</h2>
+                    <form class="card form" method="post" action="{{ url_for('save_water_settings') }}">
+                        <div class="inline">
+                            <div>
+                                <label class="field" for="threshold_value">Alarm below (L/min)</label>
+                                <input id="threshold_value" type="number" name="threshold_value" step="0.01" inputmode="decimal" enterkeyhint="done" value="{{ water_low_lpm }}">
+                            </div>
+                            <button class="primary" type="submit">Save</button>
+                        </div>
+                        <div class="hint">Green at or above this flow. Red below it, or when there's no reading.</div>
+                    </form>
+                </section>
+                <section>
+                    <h2 class="section-title">Meter calibration</h2>
+                    <div class="card form">
+                        <form method="post" action="{{ url_for('save_water_pulses_per_litre') }}">
+                            <div class="inline">
+                                <div>
+                                    <label class="field" for="manual_pulses_per_litre">Pulses per litre</label>
+                                    <input id="manual_pulses_per_litre" type="number" name="pulses_per_litre" step="0.01" inputmode="decimal" enterkeyhint="done" value="{{ water_pulses_per_litre }}">
+                                </div>
+                                <button class="primary" type="submit">Save</button>
+                            </div>
+                        </form>
+                        <div class="hint">Type a known figure, or run a 5 minute test against the shed's water meter:</div>
+                        <div>
+                            <div class="detail"><span>Test</span><span id="calibrationStatus" class="status">{{ calibration_status }}</span></div>
+                            <div class="detail"><span>Pulses counted</span><span id="calibrationPulseDelta">{{ calibration_pulse_delta }}</span></div>
+                            <div class="detail"><span>Time left</span><span id="calibrationRemaining">{{ calibration_remaining }}</span></div>
+                        </div>
+                        <form id="startCalibrationForm" method="post" action="{{ url_for('start_water_calibration') }}" {% if not calibration_can_start %}style="display:none"{% endif %}>
+                            <button class="go" type="submit">Start 5 minute test</button>
+                        </form>
+                        <form id="cancelCalibrationForm" method="post" action="{{ url_for('cancel_water_calibration') }}" {% if not calibration_active %}style="display:none"{% endif %}>
+                            <button class="danger" type="submit">Cancel test</button>
+                        </form>
+                        <form id="finishCalibrationForm" method="post" action="{{ url_for('finish_water_calibration') }}">
+                            <div class="inline">
+                                <div>
+                                    <label class="field" for="meter_litres">Litres on the meter for the test</label>
+                                    <input id="meter_litres" type="number" name="meter_litres" step="0.01" inputmode="decimal" enterkeyhint="done" value="" {% if not calibration_ready %}disabled{% endif %}>
+                                </div>
+                                <button id="finishCalibrationButton" class="primary" type="submit" {% if not calibration_ready %}disabled{% endif %}>Save</button>
+                            </div>
+                        </form>
+                        <div id="calibrationHint" class="hint">
+                            New pulses per litre = counted pulses divided by the litres from the physical meter.
+                            {% if not calibration_ready %}Complete the 5 minute calibration first to enable saving.{% endif %}
+                        </div>
+                    </div>
+                </section>
             </div>
         </div>
     </div>
 <script>
+setTimeout(() => { document.querySelectorAll('.auto-dismiss').forEach((el) => { el.style.display = 'none'; }); }, 10000);
 (function () {
     const currentEl = document.getElementById('waterCurrentValue');
     const currentRawEl = document.getElementById('waterCurrentRawValue');
@@ -7251,153 +8726,179 @@ FEED_SETTINGS_HTML = """
 <head>
     <meta charset="utf-8">
     <title>Shed {{ shed_no }} Feed Settings</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+""" + ENTRY_PAGE_HEAD + """
     <style>
-        :root { --bg:#5b5b5b; --panel:rgba(115,115,115,0.96); --line:#8a8a8a; --text:#ececec; --muted:#d2d2d2; }
-        body { margin:0; color:var(--text); font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; background:#5b5b5b; }
-        .wrap { max-width:860px; margin:0 auto; padding:18px; }
-        .topbar { margin-bottom:16px; }
-        .topbar a { color:var(--text); text-decoration:none; font-size:18px; }
-        .panel { background:var(--panel); border:1px solid var(--line); border-radius:20px; padding:18px; margin-bottom:16px; }
-        h1 { margin:0 0 8px 0; font-size:38px; }
-        .sub { color:var(--muted); margin-bottom:16px; font-size:18px; }
-        .current { font-size:34px; font-weight:700; }
-        .detail { display:flex; justify-content:space-between; gap:12px; padding:10px 0; border-bottom:1px solid #818181; font-size:18px; }
-        .detail:last-child { border-bottom:0; }
-        label { display:block; color:var(--muted); font-size:16px; margin-bottom:8px; }
-        input[type="number"] { width:100%; min-height:72px; border-radius:16px; border:1px solid var(--line); background:#686868; color:var(--text); font-size:30px; padding:12px 16px; box-sizing:border-box; }
-        button { min-height:72px; border-radius:16px; border:1px solid #8a8a8a; background:linear-gradient(180deg, #7d7d7d, #696969); color:var(--text); font-size:22px; font-weight:700; padding:0 18px; cursor:pointer; margin-top:14px; width:100%; }
-        .button-link { min-height:58px; border-radius:16px; border:1px solid #8a8a8a; background:linear-gradient(180deg, #7d7d7d, #696969); color:var(--text); font-size:20px; font-weight:700; text-decoration:none; line-height:58px; box-sizing:border-box; }
-        .hint { color:var(--muted); font-size:16px; margin-top:12px; }
-        .state-pill { display:inline-flex; align-items:center; justify-content:center; min-height:34px; padding:7px 12px; border-radius:999px; border:1px solid var(--line); background:#686868; font-weight:700; font-size:15px; }
-        .state-pill.in-crop { border-color:#35d07f; color:#e4ffed; }
-        .state-pill.out-crop { border-color:#d4aa4f; color:#fff1ca; }
-        .chart-box { width:100%; height:220px; border:1px solid var(--line); border-radius:12px; background:#686868; overflow:hidden; }
-        canvas { width:100%; height:100%; display:block; }
-        .table-wrap { overflow:auto; border:1px solid var(--line); border-radius:12px; }
-        table { width:100%; border-collapse:collapse; font-size:15px; table-layout:fixed; }
-        th, td { padding:10px 8px; border-bottom:1px solid #818181; text-align:left; vertical-align:top; overflow-wrap:anywhere; }
-        .compact { min-height:52px; font-size:18px; }
+        .binbar { margin-top: 12px; height: 14px; border-radius: 999px; background: var(--track); overflow: hidden; }
+        .binbar div { height: 100%; width: 0; background: var(--green); border-radius: 999px; }
+        .binbar.low div { background: var(--amber); }
+        .chart-box { width: 100%; height: 200px; border-radius: 12px; background: var(--card-2); overflow: hidden; }
+        canvas { width: 100%; height: 100%; display: block; }
+        .state-pill { display: inline-flex; padding: 3px 10px; border-radius: 999px; font-size: 14px; font-weight: 600; background: var(--card-2); color: var(--muted); }
+        .state-pill.in-crop { background: #e3f4e1; color: #1e6b16; }
+        .state-pill.out-crop { background: #fff4e5; color: #9a4b00; }
+        .table-wrap { margin-top: 10px; max-height: 300px; }
     </style>
 </head>
 <body>
+    <header class="topbar">
+        <a class="back" href="{{ url_for('controller_settings_view') }}" data-nav-back>← Back</a>
+        <a class="back" href="{{ url_for('index') }}">⌂ Overview</a>
+        <div class="title cond">Feed bin</div>
+        <img class="brand-logo" src="/static/stocksense-logo.png" alt="StockSense, Smarter Livestock Monitoring">
+    </header>
+
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('controller_settings_view') }}">← Back</a></div>
-        <div class="panel">
-            <h1>Shed {{ shed_no }} Feed Settings</h1>
-            <div class="sub">Low-feed warning plus feed bin calibration using tare, bin capacity, and a known weight.</div>
-            <a class="button-link" href="{{ url_for('hx711_diagnostics_view') }}" style="display:block;text-align:center;margin-bottom:14px;">HX711 Diagnostics</a>
-            <div class="current">Current: <span id="currentFeedKg">{{ current_feed_kg }}</span> KG</div>
-            <div class="detail"><span>Live calculated KG</span><span id="feedLiveKg">{{ feed_live_kg }}</span></div>
-            <div class="detail"><span>Smoothed raw feed units</span><span id="currentFeedRaw">{{ current_feed_raw }}</span></div>
-            <div class="detail"><span>Published 60 second average raw</span><span id="feedAverageRaw">{{ feed_average_raw }}</span></div>
-            <div class="detail"><span>KG updated</span><span id="feedKgUpdated">{{ feed_kg_updated_age }}</span></div>
-            <div class="detail"><span>Low feed threshold</span><span>{{ feed_low_kg }} KG</span></div>
-            <div class="detail"><span>Feed bin capacity</span><span>{{ feed_capacity_kg }} KG</span></div>
-            <div class="detail"><span>Tare raw</span><span>{{ feed_tare_raw }}</span></div>
-            <div class="detail"><span>KG per raw unit</span><span>{{ feed_kg_per_raw_unit }}</span></div>
-        </div>
-        <div class="panel">
-            <div class="sub">Weighing Diagnostics</div>
-            <div class="detail"><span>Signal state</span><span id="feedStabilityLabel">{{ feed_stability_label }}</span></div>
-            <div class="detail"><span>60 second noise range</span><span><span id="feedNoiseKg">{{ feed_noise_kg }}</span> KG</span></div>
-            <div class="detail"><span>60 second raw range</span><span id="feedNoiseRaw">{{ feed_noise_raw_units }}</span></div>
-            <div class="detail"><span>Last 60 second movement</span><span><span id="feedMinuteChange">{{ feed_minute_change_kg }}</span> KG</span></div>
-            <div class="detail"><span>Refill recording state</span><span id="feedRefillStatus">{{ feed_refill_status }}</span></div>
-        </div>
-        <div class="panel">
-            <div class="sub">Feed Movement Tracker</div>
-            <div class="detail"><span>State</span><span><span id="feedMovementState" class="state-pill {{ feed_movement.state_class }}">{{ feed_movement.state_label }}</span></span></div>
-            <div class="detail"><span>Crop</span><span id="feedMovementCrop">{{ feed_movement.crop_code }}</span></div>
-            <div class="table-wrap">
-                <table>
-                    <thead><tr><th>Time</th><th>Movement</th><th>KG</th><th>Crop State</th><th>Crop</th><th>Feed KG After</th></tr></thead>
-                    <tbody id="feedMovementRows">
-                        {% for row in feed_movement.event_rows %}
-                        <tr>
-                            <td>{{ row.ts_label }}</td>
-                            <td>{{ row.movement_label }}</td>
-                            <td>{{ row.kg_label }}</td>
-                            <td><span class="state-pill {{ row.crop_state_class }}">{{ row.crop_state_label }}</span></td>
-                            <td>{{ row.crop_label }}</td>
-                            <td>{{ row.feed_kg_after_label }}</td>
-                        </tr>
-                        {% endfor %}
-                        {% if not feed_movement.event_rows %}
-                        <tr><td colspan="6">No feed movement lines recorded yet.</td></tr>
+        {% if request.args.get('msg') %}<div class="msg auto-dismiss {% if request.args.get('ok') == '0' %}error{% endif %}">{{ request.args.get('msg') }}</div>{% endif %}
+        <div class="cols">
+            <div class="col">
+                <section>
+                    <h2 class="section-title">In the bin now</h2>
+                    <div class="card">
+                        <div class="now"><b class="cond" id="currentFeedKg">{{ current_feed_kg }}</b><span>kg</span><span id="binPct" style="margin-left:auto; font-size:20px"></span></div>
+                        <div class="binbar" id="binBar"><div></div></div>
+                        <div class="details">
+                            <div class="detail"><span>Live calculated kg</span><span id="feedLiveKg">{{ feed_live_kg }}</span></div>
+                            <div class="detail"><span>Updated</span><span id="feedKgUpdated">{{ feed_kg_updated_age }}</span></div>
+                            <div class="detail"><span>Signal</span><span id="feedStabilityLabel">{{ feed_stability_label }}</span></div>
+                            <div class="detail"><span>Refill recording</span><span id="feedRefillStatus">{{ feed_refill_status }}</span></div>
+                        </div>
+                    </div>
+                </section>
+                <section>
+                    <h2 class="section-title">Last 24 hours</h2>
+                    <div class="card"><div class="chart-box"><canvas id="feedTraceChart"></canvas></div></div>
+                </section>
+                <section>
+                    <h2 class="section-title">Scale readings</h2>
+                    <div class="card">
+                        <div class="detail" style="border-top:0"><span>Smoothed raw units</span><span id="currentFeedRaw">{{ current_feed_raw }}</span></div>
+                        <div class="detail"><span>60 second average raw</span><span id="feedAverageRaw">{{ feed_average_raw }}</span></div>
+                        <div class="detail"><span>60 second noise</span><span><span id="feedNoiseKg">{{ feed_noise_kg }}</span> kg</span></div>
+                        <div class="detail"><span>60 second raw range</span><span id="feedNoiseRaw">{{ feed_noise_raw_units }}</span></div>
+                        <div class="detail"><span>Last 60 second movement</span><span><span id="feedMinuteChange">{{ feed_minute_change_kg }}</span> kg</span></div>
+                        <div class="detail"><span>Tare raw</span><span>{{ feed_tare_raw }}</span></div>
+                        <div class="detail"><span>kg per raw unit</span><span>{{ feed_kg_per_raw_unit }}</span></div>
+                    </div>
+                </section>
+                <a class="link-item" href="{{ url_for('hx711_diagnostics_view') }}"><span>Feed scale diagnostics</span><span>›</span></a>
+            </div>
+            <div class="col">
+                <section>
+                    <h2 class="section-title">Bin</h2>
+                    <div class="card form">
+                        <form method="post" action="{{ url_for('save_feed_settings') }}">
+                            <div class="inline">
+                                <div>
+                                    <label class="field" for="threshold_value">Low feed warning below (kg)</label>
+                                    <input id="threshold_value" type="number" name="threshold_value" step="1" inputmode="numeric" enterkeyhint="done" value="{{ feed_low_kg|replace(',', '')|replace('--', '') }}">
+                                </div>
+                                <button class="primary" type="submit">Save</button>
+                            </div>
+                        </form>
+                        <form method="post" action="{{ url_for('save_feed_capacity') }}">
+                            <div class="inline">
+                                <div>
+                                    <label class="field" for="feed_capacity_kg">Bin capacity when full (kg)</label>
+                                    <input id="feed_capacity_kg" type="number" name="feed_capacity_kg" step="1" inputmode="numeric" enterkeyhint="done" value="{{ feed_capacity_kg|replace(',', '')|replace('--', '') }}">
+                                </div>
+                                <button class="primary" type="submit">Save</button>
+                            </div>
+                        </form>
+                    </div>
+                </section>
+                <section>
+                    <h2 class="section-title">Scale calibration</h2>
+                    <div class="card form">
+                        <div class="hint"><b>1.</b> Empty the bin, then set the tare.</div>
+                        <form method="post" action="{{ url_for('set_feed_tare') }}">
+                            <button id="setFeedTareButton" type="submit" {% if not feed_raw_available %}disabled{% endif %}>Set tare from the empty bin</button>
+                        </form>
+                        <div class="hint"><b>2.</b> Put a known weight in the bin and enter it.</div>
+                        <form method="post" action="{{ url_for('save_feed_known_weight') }}">
+                            <div class="inline">
+                                <div>
+                                    <label class="field" for="known_weight_kg">Known weight (kg)</label>
+                                    <input id="known_weight_kg" type="number" name="known_weight_kg" step="0.1" inputmode="decimal" enterkeyhint="done" value="">
+                                </div>
+                                <button id="calibrateFeedButton" class="primary" type="submit" {% if not feed_calibration_ready %}disabled{% endif %}>Calibrate</button>
+                            </div>
+                        </form>
+                        {% if not feed_calibration_ready %}<div class="hint">Needs a live scale reading and a tare before it can calibrate.</div>{% endif %}
+                        <form method="post" action="{{ url_for('undo_feed_calibration') }}">
+                            <button type="submit" {% if not feed_calibration_can_undo %}disabled{% endif %}>Undo last calibration change</button>
+                        </form>
+                        {% if feed_calibration_rows %}
+                        <div class="table-wrap">
+                            <table>
+                                <thead><tr><th>Time</th><th>Action</th><th>Tare raw</th><th>kg / raw</th><th>Detail</th></tr></thead>
+                                <tbody>
+                                    {% for row in feed_calibration_rows %}
+                                    <tr>
+                                        <td>{{ row.ts_label }}</td>
+                                        <td>{{ row.action_label }}</td>
+                                        <td>{{ row.previous_tare }} to {{ row.updated_tare }}</td>
+                                        <td>{{ row.previous_scale }} to {{ row.updated_scale }}</td>
+                                        <td>{{ row.detail or "--" }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
                         {% endif %}
-                    </tbody>
-                </table>
+                    </div>
+                </section>
+                <section>
+                    <h2 class="section-title">Feed movements</h2>
+                    <div class="card">
+                        <div class="detail" style="border-top:0"><span>State</span><span><span id="feedMovementState" class="state-pill {{ feed_movement.state_class }}">{{ feed_movement.state_label }}</span></span></div>
+                        <div class="detail"><span>Crop</span><span id="feedMovementCrop">{{ feed_movement.crop_code }}</span></div>
+                        <div class="detail"><span>Last feed kg</span><span id="feedMovementLastFeed">{{ feed_movement.last_feed_kg }}</span></div>
+                        <div class="detail"><span>Last movement</span><span id="feedMovementLastMovement">{{ feed_movement.last_movement_label }}</span></div>
+                        <div class="detail"><span>Updated</span><span id="feedMovementUpdated">{{ feed_movement.updated_age }}</span></div>
+                        <div class="table-wrap">
+                            <table>
+                                <thead><tr><th>Time</th><th>Movement</th><th>kg</th><th>Crop state</th><th>Crop</th><th>kg after</th></tr></thead>
+                                <tbody id="feedMovementRows">
+                                    {% for row in feed_movement.event_rows %}
+                                    <tr>
+                                        <td>{{ row.ts_label }}</td>
+                                        <td>{{ row.movement_label }}</td>
+                                        <td>{{ row.kg_label }}</td>
+                                        <td><span class="state-pill {{ row.crop_state_class }}">{{ row.crop_state_label }}</span></td>
+                                        <td>{{ row.crop_label }}</td>
+                                        <td>{{ row.feed_kg_after_label }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                    {% if not feed_movement.event_rows %}
+                                    <tr><td colspan="6">No feed movement lines recorded yet.</td></tr>
+                                    {% endif %}
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="hint" style="margin-top:8px">Local controller activity. Add out-of-crop feed to a crop from the office dashboard feed page.</div>
+                    </div>
+                </section>
             </div>
-            <div class="detail"><span>Last feed KG</span><span id="feedMovementLastFeed">{{ feed_movement.last_feed_kg }}</span></div>
-            <div class="detail"><span>Last movement</span><span id="feedMovementLastMovement">{{ feed_movement.last_movement_label }}</span></div>
-            <div class="detail"><span>Updated</span><span id="feedMovementUpdated">{{ feed_movement.updated_age }}</span></div>
-            <div class="hint">These figures are local controller activity. Add out-of-crop feed to a crop from the office dashboard feed page.</div>
-        </div>
-        <div class="panel">
-            <div class="sub">Published KG - Last 24 Hours</div>
-            <div class="chart-box"><canvas id="feedTraceChart"></canvas></div>
-        </div>
-        <div class="panel">
-            <form method="post" action="{{ url_for('save_feed_settings') }}">
-                <label for="threshold_value">Low feed threshold KG</label>
-                <input id="threshold_value" type="number" name="threshold_value" step="1" inputmode="numeric" enterkeyhint="done" value="{{ feed_low_kg }}">
-                <button type="submit">Save Low Feed Threshold</button>
-            </form>
-        </div>
-        <div class="panel">
-            <form method="post" action="{{ url_for('save_feed_capacity') }}">
-                <label for="feed_capacity_kg">Feed bin capacity KG</label>
-                <input id="feed_capacity_kg" type="number" name="feed_capacity_kg" step="1" inputmode="numeric" enterkeyhint="done" value="{{ feed_capacity_kg }}">
-                <button type="submit">Save Feed Bin Capacity</button>
-            </form>
-            <div class="hint">Set this to the full usable weight of feed in the bin.</div>
-        </div>
-        <div class="panel">
-            <div class="sub">Tare</div>
-            <form method="post" action="{{ url_for('set_feed_tare') }}">
-                <button id="setFeedTareButton" type="submit" {% if not feed_raw_available %}disabled{% endif %}>Set Tare From Current Empty Bin Reading</button>
-            </form>
-            <div class="hint">Empty the bin, then press this to store the current raw reading as tare.</div>
-        </div>
-        <div class="panel">
-            <div class="sub">Known Weight Calibration</div>
-            <form method="post" action="{{ url_for('save_feed_known_weight') }}">
-                <label for="known_weight_kg">Known weight placed in bin KG</label>
-                <input id="known_weight_kg" type="number" name="known_weight_kg" step="0.1" inputmode="decimal" enterkeyhint="done" value="">
-                <button id="calibrateFeedButton" type="submit" {% if not feed_calibration_ready %}disabled{% endif %}>Calibrate From Current Raw Reading</button>
-            </form>
-            <div class="hint">
-                Put a known weight into the bin after tare has been set.
-                {% if not feed_calibration_ready %}A live raw feed reading and tare value are required before calibration can be saved.{% endif %}
-            </div>
-        </div>
-        <div class="panel">
-            <div class="sub">Calibration History</div>
-            <form method="post" action="{{ url_for('undo_feed_calibration') }}">
-                <button class="compact" type="submit" {% if not feed_calibration_can_undo %}disabled{% endif %}>Undo Last Calibration Change</button>
-            </form>
-            {% if feed_calibration_rows %}
-            <div class="table-wrap">
-                <table>
-                    <thead><tr><th>Time</th><th>Action</th><th>Tare Raw</th><th>KG / Raw Unit</th><th>Detail</th></tr></thead>
-                    <tbody>
-                        {% for row in feed_calibration_rows %}
-                        <tr>
-                            <td>{{ row.ts_label }}</td>
-                            <td>{{ row.action_label }}</td>
-                            <td>{{ row.previous_tare }} to {{ row.updated_tare }}</td>
-                            <td>{{ row.previous_scale }} to {{ row.updated_scale }}</td>
-                            <td>{{ row.detail or "--" }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-            {% endif %}
         </div>
     </div>
     <script>
+        setTimeout(() => { document.querySelectorAll('.auto-dismiss').forEach((el) => { el.style.display = 'none'; }); }, 10000);
+        const FEED_LOW_KG = {{ feed_low_kg|tojson }};
+        const FEED_CAPACITY_KG = {{ feed_capacity_kg|tojson }};
+        function updateBinBar(kgText) {
+            const kg = parseFloat(String(kgText || '').replace(/,/g, ''));
+            const cap = parseFloat(String(FEED_CAPACITY_KG || '').replace(/,/g, ''));
+            const low = parseFloat(String(FEED_LOW_KG || '').replace(/,/g, ''));
+            const bar = document.getElementById('binBar'), pctEl = document.getElementById('binPct');
+            if (!bar) return;
+            if (!isFinite(kg) || !isFinite(cap) || cap <= 0) { bar.style.display = 'none'; pctEl.textContent = ''; return; }
+            const pct = Math.max(0, Math.min(100, Math.round(kg * 100 / cap)));
+            bar.style.display = '';
+            bar.firstElementChild.style.width = pct + '%';
+            bar.classList.toggle('low', isFinite(low) && kg < low);
+            pctEl.textContent = pct + '% full';
+        }
+        updateBinBar({{ current_feed_kg|tojson }});
         function setFeedText(id, value) {
             const el = document.getElementById(id);
             if (el) el.textContent = value;
@@ -7447,11 +8948,11 @@ FEED_SETTINGS_HTML = """
             const width = box.width;
             const height = box.height;
             ctx.clearRect(0, 0, width, height);
-            ctx.fillStyle = '#686868';
+            ctx.fillStyle = '#f5f8fb';
             ctx.fillRect(0, 0, width, height);
             if (!Array.isArray(rows) || rows.length < 2) {
-                ctx.fillStyle = '#d2d2d2';
-                ctx.font = '16px Arial';
+                ctx.fillStyle = '#4a6078';
+                ctx.font = '16px Barlow, Arial';
                 ctx.fillText('Waiting for 60 second readings', 14, 28);
                 return;
             }
@@ -7461,7 +8962,7 @@ FEED_SETTINGS_HTML = """
             let max = Math.max(...values);
             if (max <= min) { max += 1; min -= 1; }
             const pad = 16;
-            ctx.strokeStyle = '#35d07f';
+            ctx.strokeStyle = '#2f9e3a';
             ctx.lineWidth = 2;
             ctx.beginPath();
             rows.forEach((row, index) => {
@@ -7481,6 +8982,7 @@ FEED_SETTINGS_HTML = """
                 if (!resp.ok) return;
                 const data = await resp.json();
                 setFeedText('currentFeedKg', data.current_feed_kg);
+                updateBinBar(data.current_feed_kg);
                 setFeedText('feedLiveKg', data.feed_live_kg);
                 setFeedText('currentFeedRaw', data.current_feed_raw);
                 setFeedText('feedAverageRaw', data.feed_average_raw);
@@ -7517,32 +9019,32 @@ HX711_DIAGNOSTICS_HTML = """
     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
     <style>
         :root { --bg:#5b5b5b; --panel:rgba(115,115,115,0.96); --panel-2:rgba(104,104,104,0.98); --line:#8a8a8a; --text:#ececec; --muted:#d2d2d2; --ok:#bff2cb; --warn:#ffe19a; --bad:#ffc4cb; }
-        body { margin:0; color:var(--text); font-family:"Helvetica Neue",Helvetica,Arial,sans-serif; background:var(--bg); }
+        body { margin:0; color: var(--text); font-family:"Helvetica Neue",Helvetica,Arial,sans-serif; background: var(--bg); }
         .wrap { max-width:1100px; margin:0 auto; padding:18px; }
         .topbar { margin-bottom:16px; }
-        .topbar a { color:var(--text); text-decoration:none; font-size:18px; }
+        .topbar a { color: var(--text); text-decoration:none; font-size:18px; }
         .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-        .panel { background:var(--panel); border:1px solid var(--line); border-radius:20px; padding:18px; }
+        .panel { background: var(--panel); border: 1px solid var(--line); border-radius:20px; padding:18px; }
         h1 { margin:0 0 8px 0; font-size:34px; }
         h2 { margin:0 0 12px 0; font-size:24px; }
-        .sub { color:var(--muted); margin-bottom:16px; font-size:18px; }
-        .detail { display:flex; justify-content:space-between; gap:12px; padding:12px 0; border-bottom:1px solid #818181; font-size:18px; }
-        .detail:last-child { border-bottom:0; }
-        .label { color:var(--muted); }
+        .sub { color: var(--muted); margin-bottom:16px; font-size:18px; }
+        .detail { display:flex; justify-content:space-between; gap:12px; padding:12px 0; border-bottom: 1px solid #d5dde6; font-size:18px; }
+        .detail:last-child { border-bottom: 0; }
+        .label { color: var(--muted); }
         .value { text-align:right; overflow-wrap:anywhere; }
-        .pill { display:inline-block; border-radius:999px; padding:4px 10px; border:1px solid var(--line); font-weight:700; }
-        .ok { color:var(--ok); border-color:#579261; }
-        .warn { color:var(--warn); border-color:#a88b3d; }
-        .bad { color:var(--bad); border-color:#9b4d58; }
+        .pill { display:inline-block; border-radius:999px; padding:4px 10px; border: 1px solid var(--line); font-weight:700; }
+        .ok { color: var(--ok); border-color: #2f9e3a; }
+        .warn { color: var(--warn); border-color: #f08a12; }
+        .bad { color: var(--bad); border-color: #d64545; }
         .actions { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:14px; }
-        button { min-height:62px; border-radius:16px; border:1px solid #8a8a8a; background:linear-gradient(180deg,#7a7a7a,#676767); color:var(--text); font-size:19px; font-weight:700; cursor:pointer; }
-        pre { white-space:pre-wrap; word-break:break-word; margin:0; padding:12px; border-radius:14px; background:#4f4f4f; border:1px solid #777; max-height:300px; overflow:auto; }
+        button { min-height:62px; border-radius:16px; border: 1px solid #d5dde6; background: #ffffff; color: var(--text); font-size:19px; font-weight:700; cursor:pointer; }
+        pre { white-space:pre-wrap; word-break:break-word; margin:0; padding:12px; border-radius:14px; background: #4f4f4f; border: 1px solid #d5dde6; max-height:300px; overflow:auto; }
         @media (max-width: 900px) { .grid, .actions { grid-template-columns:1fr; } h1 { font-size:28px; } }
     </style>
 </head>
 <body>
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('feed_settings_view') }}">← Back to Feed</a></div>
+        <nav class="page-nav" aria-label="Page navigation"><a class="page-nav-btn" href="{{ url_for('feed_settings_view') }}" data-nav-back>← Back</a><a class="page-nav-btn" href="{{ url_for('index') }}">⌂ Overview</a></nav>
         <div class="grid">
             <div class="panel">
                 <h1>Shed {{ shed_no }} HX711 Diagnostics</h1>
@@ -7655,163 +9157,105 @@ ALLOCATION_HTML = """
 <head>
     <meta charset="utf-8">
     <title>{{ shed_display_name }} Allocation</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+""" + ENTRY_PAGE_HEAD + """
     <style>
-        :root {
-            --bg: #5b5b5b;
-            --panel: rgba(115, 115, 115, 0.96);
-            --panel-2: rgba(104, 104, 104, 0.98);
-            --line: #8a8a8a;
-            --text: #ececec;
-            --muted: #d2d2d2;
-        }
-        body {
-            margin: 0;
-            color: var(--text);
-            font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-            background: #5b5b5b;
-        }
-        .wrap {
-            max-width: 1024px;
-            margin: 0 auto;
-            padding: 18px;
-        }
-        .topbar {
-            margin-bottom: 16px;
-        }
-        .topbar a {
-            color: var(--text);
-            text-decoration: none;
-            font-size: 18px;
-        }
-        .panel {
-            background: var(--panel);
-            border: 1px solid var(--line);
-            border-radius: 20px;
-            padding: 18px;
-        }
-        h1 {
-            margin: 0 0 8px 0;
-            font-size: 38px;
-        }
-        .sub {
-            color: var(--muted);
-            margin-bottom: 16px;
-            font-size: 18px;
-        }
-        .allocation-list {
-            display: grid;
-            gap: 12px;
-        }
-        .allocation-card {
-            padding: 14px;
-            border-radius: 16px;
-            background: var(--panel-2);
-            border: 1px solid #818181;
-        }
-        .allocation-top {
-            display: flex;
-            justify-content: space-between;
-            gap: 12px;
-            margin-bottom: 10px;
-            align-items: center;
-        }
-        .allocation-title {
-            font-size: 24px;
-            font-weight: 700;
-        }
-        .allocation-meta {
-            color: var(--muted);
-            font-size: 16px;
-        }
-        .allocation-form {
-            display: grid;
-            grid-template-columns: minmax(140px, 1.15fr) repeat(4, minmax(92px, 0.88fr));
-            gap: 8px;
-            align-items: stretch;
-        }
-        .allocation-form > * {
-            min-width: 0;
-        }
-        input[type="number"] {
-            width: 100%;
-            min-height: 64px;
-            border-radius: 16px;
-            border: 1px solid var(--line);
-            background: #686868;
-            color: var(--text);
-            font-size: 28px;
-            padding: 10px 14px;
-            box-sizing: border-box;
-        }
-        button {
-            min-height: 64px;
-            width: 100%;
-            border-radius: 16px;
-            border: 1px solid #8a8a8a;
-            background: linear-gradient(180deg, #7d7d7d, #696969);
-            color: var(--text);
-            font-size: 19px;
-            font-weight: 700;
-            padding: 0 12px;
-            cursor: pointer;
-            white-space: nowrap;
-            box-sizing: border-box;
-        }
-        .secondary {
-            border-color: #8f8f8f;
-            background: linear-gradient(180deg, #7a7a7a, #656565);
-        }
-        button:disabled {
-            opacity: 0.45;
-            cursor: default;
-        }
-        .danger {
-            border-color: #7f4b53;
-            background: linear-gradient(180deg, #542e34, #3e2328);
-        }
-        @media (max-width: 700px) {
-            .allocation-form {
-                grid-template-columns: 1fr;
-            }
+        .pens { display: grid; gap: 12px; }
+        .pen { border-radius: 14px; background: var(--card); padding: 16px 18px; border-left: 6px solid var(--green); }
+        .pen-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+        .pen-name { font-size: 26px; font-weight: 600; color: var(--navy); }
+        .pen-birds { margin-left: auto; text-align: right; }
+        .pen-birds b { font-size: 28px; font-weight: 600; color: var(--navy); }
+        .pen-birds span { display: block; font-size: 13px; color: var(--muted); }
+        .pen-meta { margin: 2px 0 12px; font-size: 15px; color: var(--muted); }
+        .pen-form { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 10px; align-items: end; }
+        .list { border-radius: 14px; background: var(--card); overflow: hidden; }
+        .row { display: grid; grid-template-columns: 1.1fr 1.6fr 1fr 1fr 1fr; gap: 10px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--track); }
+        .row:first-child { border-top: 0; }
+        .row-name { font-size: 20px; font-weight: 600; color: var(--text); }
+        .row-name small { display: block; font-size: 14px; font-weight: 500; color: var(--muted); }
+        .row input[type="number"], .row button { min-height: 54px; }
+        @media (max-width: 860px) {
+            .pen-form { grid-template-columns: 1fr 1fr 1fr; }
+            .pen-form .field-wrap { grid-column: 1 / -1; }
+            .row { grid-template-columns: 1fr 1fr 1fr; }
+            .row-name, .row input { grid-column: 1 / -1; }
         }
     </style>
 </head>
 <body>
+    <header class="topbar">
+        <a class="back" href="{{ url_for('controller_settings_view') }}" data-nav-back>← Back</a>
+        <a class="back" href="{{ url_for('index') }}">⌂ Overview</a>
+        <div class="title cond">Shed allocation</div>
+        <img class="brand-logo" src="/static/stocksense-logo.png" alt="StockSense, Smarter Livestock Monitoring">
+    </header>
+
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('index') }}">← Back</a></div>
-        <div class="panel">
-            <h1>{{ shed_display_name }} Allocation</h1>
-            <div class="sub">Birds physically in this shed, grouped by their destination shed.</div>
-            <div class="allocation-list">
-                {% for row in allocation_rows %}
-                <div class="allocation-card">
-                    <div class="allocation-top">
-                        <div>
-                            <div class="allocation-title">For {{ row.dest_shed_label }}</div>
-                            <div class="allocation-meta">Started {{ row.started_at }} • Crop {{ row.crop_code }} • Live {{ row.bird_count }}</div>
-                        </div>
-                        <div class="allocation-meta">{{ "Active" if row.crop_active == 1 else "Not active" }}</div>
+        {% if msg %}<div class="msg auto-dismiss {% if not ok %}error{% endif %}">{{ msg }}</div>{% endif %}
+
+        <div class="stats">
+            <div class="stat"><div class="stat-label">Birds in {{ shed_display_name }}</div><div class="stat-value cond">{{ total_birds }}</div><div class="stat-sub">Placed (live)</div></div>
+            <div class="stat"><div class="stat-label">Pens</div><div class="stat-value cond">{{ active_rows|length }}</div><div class="stat-sub">{{ "Active" if active_rows else "None running" }}</div></div>
+            <div class="stat"><div class="stat-label">Crop</div><div class="stat-value cond" style="font-size: 24px; padding-top: 6px">{{ crop_code }}</div><div class="stat-sub">{{ "Started " ~ crop_started if crop_started else "No active crop" }}</div></div>
+        </div>
+
+        <section>
+            <h2 class="section-title">Birds in this shed</h2>
+            {% if active_rows %}
+            <div class="pens">
+                {% for row in active_rows %}
+                <div class="pen">
+                    <div class="pen-head">
+                        <div class="pen-name cond">For {{ row.dest_shed_label }}</div>
+                        <span class="pill on">Active</span>
+                        <div class="pen-birds"><b class="cond">{{ row.placed_display }} ({{ row.live_display }})</b><span>Placed (live)</span></div>
                     </div>
-                    <form class="allocation-form" method="post" action="{{ url_for('save_entry_for_dest', dest_shed=row.dest_shed) }}">
+                    <div class="pen-meta">Started {{ row.started_at }} · Crop {{ row.crop_code }}</div>
+                    <form class="pen-form" method="post" action="{{ url_for('save_entry_for_dest', dest_shed=row.dest_shed) }}">
                         <input type="hidden" name="return_to" value="allocation">
-                        <input type="number" name="placed_bird_count" min="0" step="1" inputmode="numeric" enterkeyhint="done" value="{{ '' if row.placed_bird_count == 0 else row.placed_bird_count }}">
-                        <button type="submit">Save</button>
-                        {% if row.crop_active != 1 %}
-                        <button formaction="{{ url_for('start_entry_for_dest', dest_shed=row.dest_shed) }}" type="submit">Start</button>
-                        {% endif %}
+                        <div class="field-wrap">
+                            <label class="field" for="placed{{ row.dest_shed }}">Birds placed</label>
+                            <input id="placed{{ row.dest_shed }}" type="number" name="placed_bird_count" min="0" step="1" inputmode="numeric" enterkeyhint="done" value="{{ '' if row.placed_bird_count == 0 else row.placed_bird_count }}">
+                        </div>
+                        <button class="primary" type="submit">Save</button>
                         {% if row.can_move %}
-                        <button class="secondary" formaction="{{ url_for('move_entry_for_dest', dest_shed=row.dest_shed) }}" type="submit" onclick="return confirm('Move birds from {{ shed_display_name }} to {{ row.dest_shed_label }}?');">Move</button>
+                        <button formaction="{{ url_for('move_entry_for_dest', dest_shed=row.dest_shed) }}" type="submit" onclick="return confirm('Move these birds from {{ shed_display_name }} to {{ row.dest_shed_label }}?');">Move to {{ row.dest_shed_label }}</button>
                         {% else %}
-                        <button class="secondary" type="button" disabled>Move</button>
+                        <button type="button" disabled>Move</button>
                         {% endif %}
-                        <button class="danger" formaction="{{ url_for('end_entry_for_dest', dest_shed=row.dest_shed) }}" type="submit">End</button>
+                        <button class="danger" formaction="{{ url_for('end_entry_for_dest', dest_shed=row.dest_shed) }}" type="submit" onclick="return confirm('End the {{ row.dest_shed_label }} pen in {{ shed_display_name }}?');">End</button>
                     </form>
                 </div>
                 {% endfor %}
             </div>
-        </div>
+            {% else %}
+            <div class="card hint">No birds in {{ shed_display_name }} at the moment. Enter a count for a shed below and press Start.</div>
+            {% endif %}
+        </section>
+
+        <section>
+            <h2 class="section-title">Start a pen</h2>
+            <div class="list">
+                {% for row in idle_rows %}
+                <form class="row" method="post" action="{{ url_for('start_entry_for_dest', dest_shed=row.dest_shed) }}">
+                    <input type="hidden" name="return_to" value="allocation">
+                    <div class="row-name cond">For {{ row.dest_shed_label }}{% if row.placed_bird_count %}<small>{{ row.placed_display }} saved, not started</small>{% endif %}</div>
+                    <input type="number" name="placed_bird_count" min="0" step="1" inputmode="numeric" enterkeyhint="done" placeholder="Birds placed" aria-label="Birds placed for {{ row.dest_shed_label }}" value="{{ '' if row.placed_bird_count == 0 else row.placed_bird_count }}">
+                    <button formaction="{{ url_for('save_entry_for_dest', dest_shed=row.dest_shed) }}" type="submit">Save</button>
+                    <button class="go" type="submit">Start</button>
+                    {% if row.placed_bird_count %}
+                    <button class="danger" formaction="{{ url_for('end_entry_for_dest', dest_shed=row.dest_shed) }}" type="submit" onclick="return confirm('Clear the saved count for {{ row.dest_shed_label }}?');">Clear</button>
+                    {% else %}
+                    <span></span>
+                    {% endif %}
+                </form>
+                {% endfor %}
+            </div>
+        </section>
     </div>
+<script>
+setTimeout(() => { document.querySelectorAll('.auto-dismiss').forEach((el) => { el.style.display = 'none'; }); }, 10000);
+</script>
 </body>
 </html>
 """
@@ -7823,199 +9267,100 @@ MORTALITY_HTML = """
 <head>
     <meta charset="utf-8">
     <title>Shed {{ shed_no }} Mortality</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+""" + ENTRY_PAGE_HEAD + """
     <style>
-        :root {
-            --bg: #5b5b5b;
-            --panel: rgba(115, 115, 115, 0.96);
-            --panel-2: rgba(104, 104, 104, 0.98);
-            --line: #8a8a8a;
-            --text: #ececec;
-            --muted: #d2d2d2;
-        }
-        body {
-            margin: 0;
-            color: var(--text);
-            font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-            background: #5b5b5b;
-        }
-        .wrap {
-            max-width: 1100px;
-            margin: 0 auto;
-            padding: 18px;
-        }
-        .topbar {
-            margin-bottom: 16px;
-        }
-        .topbar a {
-            color: var(--text);
-            text-decoration: none;
-            font-size: 18px;
-        }
-        .status {
-            margin-bottom: 14px;
-            padding: 10px 12px;
-            border-radius: 12px;
-            background: var(--panel);
-            border: 1px solid var(--line);
-        }
-        .status.ok {
-            border-color: #41c87d;
-            color: #e4ffed;
-        }
-        .status.err {
-            border-color: #c65460;
-            color: #ffdbe1;
-        }
-        .grid {
-            display: grid;
-            grid-template-columns: 0.92fr 1.08fr;
-            gap: 14px;
-        }
-        .card {
-            background: var(--panel);
-            border: 1px solid var(--line);
-            border-radius: 20px;
-            padding: 18px;
-        }
-        h1 {
-            margin: 0 0 8px 0;
-            font-size: 38px;
-        }
-        .sub {
-            color: var(--muted);
-            margin-bottom: 16px;
-            font-size: 18px;
-        }
-        .card h2 {
-            margin: 0 0 14px 0;
-            font-size: 26px;
-        }
-        label {
-            display: block;
-            color: var(--muted);
-            margin-bottom: 6px;
-            font-size: 15px;
-        }
-        input[type="number"], input[type="text"], select {
-            width: 100%;
-            box-sizing: border-box;
-            min-height: 58px;
-            border-radius: 14px;
-            border: 1px solid var(--line);
-            background: var(--panel-2);
-            color: var(--text);
-            font-size: 20px;
-            padding: 12px 14px;
-            margin-bottom: 12px;
-        }
-        button {
-            min-height: 58px;
-            width: 100%;
-            border-radius: 14px;
-            border: 1px solid #8a8a8a;
-            background: linear-gradient(180deg, #7d7d7d, #696969);
-            color: var(--text);
-            font-size: 20px;
-            font-weight: 700;
-            padding: 0 18px;
-            cursor: pointer;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 15px;
-        }
-        th, td {
-            border-bottom: 1px solid #818181;
-            padding: 10px 8px;
-            text-align: left;
-            vertical-align: middle;
-        }
-        th {
-            color: var(--muted);
-        }
-        .empty {
-            color: var(--muted);
-        }
-        @media (max-width: 900px) {
-            .grid {
-                grid-template-columns: 1fr;
-            }
+        .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+        .form { display: grid; gap: 16px; }
+        .sheds { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+        .shed-opt input { position: absolute; opacity: 0; pointer-events: none; }
+        .shed-opt span { display: flex; flex-direction: column; justify-content: center; min-height: 64px; padding: 6px 14px; border-radius: 12px; border: 1px solid #c5d0dc; background: var(--card-2); cursor: pointer; }
+        .shed-opt b { font-size: 20px; font-weight: 600; }
+        .shed-opt small { font-size: 14px; color: var(--muted); }
+        .shed-opt input:checked + span { background: var(--navy); border-color: var(--navy); color: #ffffff; }
+        .shed-opt input:checked + span small { color: #d5e2f0; }
+        .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .stats { grid-template-columns: 1fr 1fr; margin-bottom: 14px; }
+        .log { border-radius: 14px; background: var(--card); overflow: hidden; }
+        .log-row { display: grid; grid-template-columns: 1.3fr 1fr 0.6fr 1.2fr; gap: 10px; align-items: center; min-height: 50px; padding: 8px 16px; border-top: 1px solid var(--track); font-size: 16px; }
+        .log-row:first-child { border-top: 0; }
+        .log-row.head { min-height: 40px; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; background: var(--card-2); }
+        .log-row .loss { font-weight: 600; font-size: 18px; color: var(--navy); }
+        .log-row .note { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        @media (max-width: 860px) {
+            .cols { grid-template-columns: 1fr; }
         }
     </style>
 </head>
 <body>
+    <header class="topbar">
+        <a class="back" href="{{ url_for('controller_settings_view') }}" data-nav-back>← Back</a>
+        <a class="back" href="{{ url_for('index') }}">⌂ Overview</a>
+        <div class="title cond">Mortality</div>
+        <img class="brand-logo" src="/static/stocksense-logo.png" alt="StockSense, Smarter Livestock Monitoring">
+    </header>
+
     <div class="wrap">
-        <div class="topbar"><a href="{{ url_for('index') }}">← Back</a></div>
-        <h1>{{ shed_display_name }} Mortality</h1>
-        <div class="sub">Current crop {{ active_crop_code }}. Record losses against an active entry shed.</div>
-        {% if status_msg %}
-        <div class="status auto-dismiss {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
-        {% endif %}
-        <div class="grid">
-            <div class="card">
-                <h2>Add Mortality</h2>
-                {% if target_rows %}
-                <form method="post" action="{{ url_for('mortality_add_view') }}">
-                    <label for="dest_shed">Entry Shed</label>
-                    <select id="dest_shed" name="dest_shed">
-                        {% for row in target_rows %}
-                        <option value="{{ row.dest_shed }}">{{ row.dest_shed_label }} ({{ row.bird_count }} birds)</option>
-                        {% endfor %}
-                    </select>
-                    <label for="bird_loss">Bird Loss</label>
-                    <input id="bird_loss" type="number" name="bird_loss" min="1" step="1" inputmode="numeric" enterkeyhint="done" value="">
-                    <label for="note">Note</label>
-                    <input id="note" type="text" name="note" value="">
-                    <button type="submit">Record Mortality</button>
-                </form>
-                {% else %}
-                <div class="empty">No active entries available for mortality.</div>
-                {% endif %}
-            </div>
-            <div class="card">
-                <h2>This Crop</h2>
-                <table>
-                    <tbody>
-                        <tr><th>Total mortality</th><td>{{ mortality_total }}</td></tr>
-                        <tr><th>Active birds</th><td>{{ active_birds }}</td></tr>
-                    </tbody>
-                </table>
-                <h2 style="margin-top:18px;">Mortality Log</h2>
-                {% if history_rows %}
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Time</th>
-                            <th>Entry Shed</th>
-                            <th>Loss</th>
-                            <th>Note</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for row in history_rows %}
-                        <tr>
-                            <td>{{ row.ts_label }}</td>
-                            <td>{{ row.dest_shed_label }}</td>
-                            <td>{{ row.bird_loss }}</td>
-                            <td>{{ row.note if row.note else "--" }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-                {% else %}
-                <div class="empty">No mortality logged for this crop yet.</div>
-                {% endif %}
-            </div>
+        {% if status_msg %}<div class="msg auto-dismiss {% if not status_ok %}error{% endif %}">{{ status_msg }}</div>{% endif %}
+        <div class="cols">
+            <section>
+                <h2 class="section-title">Record losses</h2>
+                <div class="card">
+                    {% if target_rows %}
+                    <form class="form" method="post" action="{{ url_for('mortality_add_view') }}">
+                        <div>
+                            <label class="field">Which birds</label>
+                            <div class="sheds">
+                                {% for row in target_rows %}
+                                <label class="shed-opt">
+                                    <input type="radio" name="dest_shed" value="{{ row.dest_shed }}" {% if loop.first %}checked{% endif %}>
+                                    <span><b class="cond">For {{ row.dest_shed_label }}</b><small>{{ row.birds_display }} live</small></span>
+                                </label>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        <div class="two">
+                            <div>
+                                <label class="field" for="bird_loss">Birds lost</label>
+                                <input id="bird_loss" type="number" name="bird_loss" min="1" step="1" inputmode="numeric" enterkeyhint="done" value="" required>
+                            </div>
+                            <div>
+                                <label class="field" for="mortality_date">Day</label>
+                                <select id="mortality_date" name="mortality_date">
+                                    {% for day in mortality_days %}<option value="{{ day.value }}">{{ day.label }}</option>{% endfor %}
+                                </select>
+                            </div>
+                        </div>
+                        <div>
+                            <label class="field" for="note">Note (optional)</label>
+                            <input id="note" type="text" name="note" value="" placeholder="e.g. culls, heat">
+                        </div>
+                        <button class="primary" type="submit">Record mortality</button>
+                    </form>
+                    {% else %}
+                    <div class="hint">No birds in this shed to record losses against. Start a pen on the Shed allocation page first.</div>
+                    {% endif %}
+                </div>
+            </section>
+
+            <section style="margin-top: 0">
+                <h2 class="section-title">This crop · {{ active_crop_code }}</h2>
+                <div class="stats">
+                    <div class="stat"><div class="stat-label">Mortality</div><div class="stat-value cond">{{ mortality_total }}</div><div class="stat-sub">Birds lost this crop</div></div>
+                    <div class="stat"><div class="stat-label">Live birds</div><div class="stat-value cond">{{ active_birds }}</div><div class="stat-sub">In active pens</div></div>
+                </div>
+                <div class="log">
+                    <div class="log-row head"><span>When</span><span>Pen</span><span>Lost</span><span>Note</span></div>
+                    {% for row in history_rows %}
+                    <div class="log-row"><span>{{ row.ts_label }}</span><span>{{ row.dest_shed_label }}</span><span class="loss cond">{{ row.bird_loss }}</span><span class="note">{{ row.note if row.note else "--" }}</span></div>
+                    {% else %}
+                    <div class="log-row"><span class="hint" style="grid-column: 1 / -1">No mortality logged for this crop yet.</span></div>
+                    {% endfor %}
+                </div>
+            </section>
         </div>
     </div>
 <script>
-setTimeout(() => {
-    document.querySelectorAll('.auto-dismiss').forEach((el) => {
-        el.style.display = 'none';
-    });
-}, 10000);
+setTimeout(() => { document.querySelectorAll('.auto-dismiss').forEach((el) => { el.style.display = 'none'; }); }, 10000);
 </script>
 </body>
 </html>
@@ -8033,7 +9378,36 @@ def index():
     ctx["msg"] = msg
     ctx["ok"] = ok
     ctx["hide_home_alerts"] = HIDE_HOME_ALERTS_DURING_SETUP and commissioning_mode_enabled(cfg)
+    return render_template_string(OVERVIEW_HTML, **ctx)
+
+
+@app.route("/classic")
+def classic_view():
+    maybe_refresh_from_dashboard()
+    maybe_heartbeat_to_dashboard()
+    ctx = build_home_context()
+    cfg = load_config()
+    msg = request.args.get("msg", "")
+    ok = request.args.get("ok", "1") == "1"
+    ctx["msg"] = msg
+    ctx["ok"] = ok
+    ctx["hide_home_alerts"] = HIDE_HOME_ALERTS_DURING_SETUP and commissioning_mode_enabled(cfg)
     return render_template_string(HTML, **ctx)
+
+
+@app.route("/history/climate")
+def climate_history_view():
+    cfg = load_config()
+    state = load_state()
+    sensors = state.get("sensors", default_sensor_state())
+    days = list(sensors.get("climate_days") or [])
+    days.reverse()
+    return render_template_string(
+        CLIMATE_HISTORY_HTML,
+        shed_no=cfg["shed_no"],
+        today=datetime.now().strftime("%Y-%m-%d"),
+        rows=[climate_day_display(rec) for rec in days],
+    )
 
 
 @app.route("/settings")
@@ -8055,6 +9429,9 @@ def controller_settings_view():
     checked_at = update_status.get("checked_at")
     ctx["update_status"] = update_status
     ctx["update_checked_at"] = fmt_ts(checked_at) if checked_at else "--"
+    ctx["auto_update_enabled"] = cfg.get("auto_update_enabled", False)
+    auto_status = load_auto_update_status()
+    ctx["auto_update_last"] = ("%s · %s" % (fmt_ts(auto_status.get("last_run_ts")), auto_status.get("result") or "--")) if auto_status.get("last_run_ts") else "Not run yet"
     ctx["msg"] = request.args.get("msg", "")
     ctx["current_mode"] = current_mode_label(cfg)
     ctx["current_mode_key"] = cfg.get("deployment_mode", "commissioning")
@@ -8075,14 +9452,17 @@ def check_update_view():
     return redirect(url_for("controller_settings_view"))
 
 
-@app.route("/settings/update/apply", methods=["POST"])
-def apply_update_view():
+def install_controller_update(trigger="manual"):
+    # Pull the latest code for this controller's branch, deploy Pico firmware if it
+    # changed, then restart. Returns (installed, pico_message). Used by the Install
+    # update button and the nightly auto update.
     status = check_for_update()
     if not status.get("update_available"):
-        return redirect(url_for("controller_settings_view"))
+        return False, ""
 
     branch = status.get("branch") or "main"
     remote_commit = status.get("remote_commit") or "--"
+    previous_commit = status.get("local_commit") or "--"
     code, stdout, stderr = run_git_command(["pull", "--ff-only", "origin", branch], timeout=60)
     save_update_status({
         "checked_at": int(time.time()),
@@ -8096,7 +9476,11 @@ def apply_update_view():
     })
 
     if code != 0:
-        return redirect(url_for("controller_settings_view"))
+        try:
+            record_controller_event("controller_update_failed", "Controller update failed (%s)" % trigger, stderr or stdout or "", push_to_office=True)
+        except Exception:
+            pass
+        return False, ""
 
     pico_message = "Pico firmware already current."
     pico_status_ok = True
@@ -8125,6 +9509,15 @@ def apply_update_view():
         "local_commit": remote_commit,
         "remote_commit": remote_commit,
     })
+    try:
+        record_controller_event(
+            "controller_updated",
+            "Controller updated (%s)" % trigger,
+            "%s -> %s. %s" % (previous_commit, remote_commit, pico_message),
+            push_to_office=True,
+        )
+    except Exception:
+        pass
 
     restart_delay_seconds = 2.5
     if pico_deployed:
@@ -8146,6 +9539,23 @@ def apply_update_view():
             pass
 
     restart_service_or_self(restart_delay_seconds)
+    return True, pico_message
+
+
+@app.route("/settings/update/auto", methods=["POST"])
+def toggle_auto_update_view():
+    cfg = load_config()
+    cfg["auto_update_enabled"] = request.form.get("enabled") == "1"
+    save_config(cfg)
+    record_controller_event("auto_update_toggled", "Nightly auto update %s" % ("on" if cfg["auto_update_enabled"] else "off"), "")
+    return redirect(url_for("controller_settings_view"))
+
+
+@app.route("/settings/update/apply", methods=["POST"])
+def apply_update_view():
+    installed, pico_message = install_controller_update("manual")
+    if not installed:
+        return redirect(url_for("controller_settings_view"))
     return render_template_string(
         """
 <!doctype html>
@@ -8156,11 +9566,11 @@ def apply_update_view():
     <meta http-equiv="refresh" content="6; url={{ url_for('controller_settings_view') }}">
     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
     <style>
-        body { margin:0; background:#5b5b5b; color:#ececec; font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; }
+        body { margin:0; background: #5b5b5b; color: #0d2b4a; font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; }
         .wrap { max-width:760px; margin:0 auto; padding:32px 18px; }
-        .panel { background:rgba(115,115,115,0.96); border:1px solid #8a8a8a; border-radius:20px; padding:24px; }
+        .panel { background: #ffffff; border: 1px solid #d5dde6; border-radius:20px; padding:24px; }
         h1 { margin:0 0 12px 0; font-size:34px; }
-        .sub { color:#d2d2d2; font-size:18px; }
+        .sub { color: #0d2b4a; font-size:18px; }
     </style>
 </head>
 <body>
@@ -8194,6 +9604,38 @@ def switch_controller_mode_view():
     return redirect(url_for("controller_settings_view", msg="Controller switched to %s mode" % current_mode_label(cfg)))
 
 
+KIOSK_BROWSER_PATTERN = r"chromium.*--kiosk"
+
+
+def kiosk_browser_running():
+    try:
+        return subprocess.run(["pgrep", "-f", KIOSK_BROWSER_PATTERN], capture_output=True, timeout=5).returncode == 0
+    except Exception:
+        return False
+
+
+def close_kiosk_browser_delayed(delay_seconds=1.5):
+    # Closes only the full-screen Chromium the kiosk launcher started; the controller
+    # service keeps running. Delayed so this response reaches the screen first.
+    def worker():
+        time.sleep(delay_seconds)
+        try:
+            subprocess.run(["pkill", "-f", KIOSK_BROWSER_PATTERN], capture_output=True, timeout=5)
+        except Exception:
+            pass
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+@app.route("/settings/system/exit-kiosk", methods=["POST"])
+def controller_exit_kiosk_view():
+    if not kiosk_browser_running():
+        return redirect(url_for("controller_settings_view", msg="The shed screen is not running in kiosk mode on this controller"))
+    record_controller_event("kiosk_closed", "Closed shed screen", "Returned to the Raspberry Pi desktop")
+    close_kiosk_browser_delayed()
+    return render_template_string(EXIT_KIOSK_HTML)
+
+
 @app.route("/settings/system/reboot", methods=["POST"])
 def controller_reboot_view():
     ok, detail = run_system_action("reboot")
@@ -8208,11 +9650,11 @@ def controller_reboot_view():
     <title>Rebooting Controller</title>
     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
     <style>
-        body { margin:0; background:#5b5b5b; color:#ececec; font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; }
+        body { margin:0; background: #5b5b5b; color: #0d2b4a; font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; }
         .wrap { max-width:760px; margin:0 auto; padding:32px 18px; }
-        .panel { background:rgba(115,115,115,0.96); border:1px solid #8a8a8a; border-radius:20px; padding:24px; }
+        .panel { background: #ffffff; border: 1px solid #d5dde6; border-radius:20px; padding:24px; }
         h1 { margin:0 0 12px 0; font-size:34px; }
-        .sub { color:#d2d2d2; font-size:18px; }
+        .sub { color: #0d2b4a; font-size:18px; }
     </style>
 </head>
 <body>
@@ -8242,11 +9684,11 @@ def controller_shutdown_view():
     <title>Shutting Down Controller</title>
     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
     <style>
-        body { margin:0; background:#5b5b5b; color:#ececec; font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; }
+        body { margin:0; background: #5b5b5b; color: #0d2b4a; font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; }
         .wrap { max-width:760px; margin:0 auto; padding:32px 18px; }
-        .panel { background:rgba(115,115,115,0.96); border:1px solid #8a8a8a; border-radius:20px; padding:24px; }
+        .panel { background: #ffffff; border: 1px solid #d5dde6; border-radius:20px; padding:24px; }
         h1 { margin:0 0 12px 0; font-size:34px; }
-        .sub { color:#d2d2d2; font-size:18px; }
+        .sub { color: #0d2b4a; font-size:18px; }
     </style>
 </head>
 <body>
@@ -8276,13 +9718,26 @@ def allocation_view():
             and allocation_rows[i]["crop_active"] == 1
             and int(allocation_rows[i]["bird_count"] or 0) > 0
         )
+        allocation_rows[i]["placed_display"] = fmt_value(allocation_rows[i]["placed_bird_count"], "i")
+        allocation_rows[i]["live_display"] = fmt_value(allocation_rows[i]["bird_count"], "i")
         i += 1
 
+    active_rows = [r for r in allocation_rows if r["crop_active"] == 1]
+    idle_rows = [r for r in allocation_rows if r["crop_active"] != 1]
+    placed_total = sum(int(r["placed_bird_count"] or 0) for r in active_rows)
+    live_total = sum(int(r["bird_count"] or 0) for r in active_rows)
+    first_epoch = min([r["placement_epoch"] for r in active_rows if r["placement_epoch"]] or [None])
     return render_template_string(
         ALLOCATION_HTML,
         shed_no=cfg["shed_no"],
         shed_display_name=shed_display_name_from_number(cfg["shed_no"]),
-        allocation_rows=allocation_rows,
+        active_rows=active_rows,
+        idle_rows=idle_rows,
+        total_birds="%s (%s)" % (fmt_value(placed_total, "i"), fmt_value(live_total, "i")) if active_rows else "--",
+        crop_code=active_rows[0]["crop_code"] if active_rows else "--",
+        crop_started=fmt_ts(first_epoch) if first_epoch else "",
+        msg=request.args.get("msg", ""),
+        ok=request.args.get("ok", "1") == "1",
     )
 
 
@@ -8301,6 +9756,7 @@ def mortality_view():
     i = 0
     while i < len(target_rows):
         target_rows[i]["dest_shed_label"] = target_rows[i].get("dest_shed_label") or entry_shed_label(target_rows[i].get("dest_shed"))
+        target_rows[i]["birds_display"] = fmt_value(target_rows[i].get("bird_count"), "i")
         i += 1
     i = 0
     while i < len(history_rows):
@@ -8318,6 +9774,7 @@ def mortality_view():
         history_rows=history_rows,
         mortality_total=fmt_value(payload.get("mortality_total"), "i"),
         active_birds=fmt_value(payload.get("active_birds"), "i"),
+        mortality_days=mortality_day_options(active_crop_epoch_from_entries(state.get("entries", {}), active_crop_id_from_entries(state.get("entries", {})))),
         status_msg=status_msg,
         status_ok=status_ok,
     )
@@ -8332,14 +9789,15 @@ def mortality_add_view():
         if not valid_entry_shed(dest_shed) or bird_loss <= 0:
             raise ValueError()
     except Exception:
-        return redirect(url_for("mortality_view", ok=0, msg="Invalid mortality entry"))
+        return redirect_back_with_status("mortality_view", False, "Invalid mortality entry")
 
     note = str(request.form.get("note", "") or "").strip()
-    ok, msg = post_mortality_to_dashboard(cfg["shed_no"], dest_shed, bird_loss, note=note)
+    date_text = str(request.form.get("mortality_date", "") or "").strip()
+    ok, msg = post_mortality_to_dashboard(cfg["shed_no"], dest_shed, bird_loss, note=note, date_text=date_text)
     if ok:
         pull_from_dashboard(load_state())
-        record_controller_event("mortality_recorded", "Recorded mortality", "%s Loss %d" % (entry_shed_label(dest_shed), bird_loss), push_to_office=True)
-    return redirect(url_for("mortality_view", ok=1 if ok else 0, msg=msg if msg else ("Mortality recorded" if ok else "Mortality failed")))
+        record_controller_event("mortality_recorded", "Recorded mortality", "%s Loss %d%s" % (entry_shed_label(dest_shed), bird_loss, (" for %s" % date_text) if date_text else ""), push_to_office=True)
+    return redirect_back_with_status("mortality_view", ok, msg if msg else ("Mortality recorded" if ok else "Mortality failed"))
 
 
 @app.route("/health")
@@ -8494,6 +9952,12 @@ def save_controller_config_view():
     cfg["auger_left_label"] = str(request.form.get("auger_left_label", cfg["auger_left_label"]) or "").strip() or "Auger Left"
     cfg["auger_right_label"] = str(request.form.get("auger_right_label", cfg["auger_right_label"]) or "").strip() or "Auger Right"
     cfg["lighting_label"] = str(request.form.get("lighting_label", cfg["lighting_label"]) or "").strip() or "Lighting"
+    if request.form.get("layout_front_end") in SHED_LAYOUT_ENDS:
+        cfg["layout_front_end"] = request.form.get("layout_front_end")
+    if request.form.get("layout_bin_corner") in SHED_LAYOUT_CORNERS:
+        cfg["layout_bin_corner"] = request.form.get("layout_bin_corner")
+    if request.form.get("layout_door_end") in SHED_LAYOUT_ENDS:
+        cfg["layout_door_end"] = request.form.get("layout_door_end")
     save_config(cfg)
     return redirect(url_for("controller_config_view"))
 
@@ -8594,18 +10058,20 @@ def save_temp_settings():
         temp_high_c = float(request.form.get("high_value", "").strip())
         temp_amber_margin_c = float(request.form.get("amber_margin", "").strip())
     except Exception:
-        return redirect(url_for("temp_settings_view"))
+        return redirect(url_for("temp_settings_view", ok=0, msg='Not saved, check the numbers'))
 
     if temp_low_c >= temp_high_c:
-        return redirect(url_for("temp_settings_view"))
+        return redirect(url_for("temp_settings_view", ok=0, msg='Not saved, check the numbers'))
     if temp_amber_margin_c < 0:
-        return redirect(url_for("temp_settings_view"))
+        return redirect(url_for("temp_settings_view", ok=0, msg='Not saved, check the numbers'))
 
     cfg["temp_low_c"] = temp_low_c
     cfg["temp_high_c"] = temp_high_c
     cfg["temp_amber_margin_c"] = temp_amber_margin_c
+    cfg["climate_limits_updated_ts"] = int(time.time())
     save_config(cfg)
-    return redirect(url_for("temp_settings_view"))
+    sync_climate_limits_to_office()
+    return redirect(url_for("temp_settings_view", ok=1, msg='Temperature limits saved'))
 
 
 @app.route("/settings/rh")
@@ -8642,18 +10108,20 @@ def save_rh_settings():
         rh_high_pct = float(request.form.get("high_value", "").strip())
         rh_amber_margin_pct = float(request.form.get("amber_margin", "").strip())
     except Exception:
-        return redirect(url_for("rh_settings_view"))
+        return redirect(url_for("rh_settings_view", ok=0, msg='Not saved, check the numbers'))
 
     if rh_low_pct >= rh_high_pct:
-        return redirect(url_for("rh_settings_view"))
+        return redirect(url_for("rh_settings_view", ok=0, msg='Not saved, check the numbers'))
     if rh_amber_margin_pct < 0:
-        return redirect(url_for("rh_settings_view"))
+        return redirect(url_for("rh_settings_view", ok=0, msg='Not saved, check the numbers'))
 
     cfg["rh_low_pct"] = rh_low_pct
     cfg["rh_high_pct"] = rh_high_pct
     cfg["rh_amber_margin_pct"] = rh_amber_margin_pct
+    cfg["climate_limits_updated_ts"] = int(time.time())
     save_config(cfg)
-    return redirect(url_for("rh_settings_view"))
+    sync_climate_limits_to_office()
+    return redirect(url_for("rh_settings_view", ok=1, msg='Humidity limits saved'))
 
 
 def build_water_settings_context(cfg, state):
@@ -8781,10 +10249,10 @@ def save_water_settings():
     try:
         threshold_value = float(request.form.get("threshold_value", "").strip())
     except Exception:
-        return redirect(url_for("water_settings_view"))
+        return redirect(url_for("water_settings_view", ok=0, msg='Not saved, check the number'))
     cfg["water_low_lpm"] = threshold_value
     save_config(cfg)
-    return redirect(url_for("water_settings_view"))
+    return redirect(url_for("water_settings_view", ok=1, msg='Low flow alarm saved'))
 
 
 @app.route("/settings/water/pulses-per-litre", methods=["POST"])
@@ -8795,10 +10263,10 @@ def save_water_pulses_per_litre():
         if pulses_per_litre <= 0:
             raise ValueError()
     except Exception:
-        return redirect(url_for("water_settings_view"))
+        return redirect(url_for("water_settings_view", ok=0, msg='Not saved, check the number'))
     cfg["water_pulses_per_litre"] = pulses_per_litre
     save_config(cfg)
-    return redirect(url_for("water_settings_view"))
+    return redirect(url_for("water_settings_view", ok=1, msg='Pulses per litre saved'))
 
 
 @app.route("/settings/water/calibration/start", methods=["POST"])
@@ -8808,7 +10276,7 @@ def start_water_calibration():
     try:
         total_pulses = int(sensors.get("flow_total_pulses"))
     except Exception:
-        return redirect(url_for("water_settings_view"))
+        return redirect(url_for("water_settings_view", ok=0, msg='The test could not start'))
 
     def mutator(state):
         now_ts = int(time.time())
@@ -8823,7 +10291,7 @@ def start_water_calibration():
         }
 
     mutate_state(mutator)
-    return redirect(url_for("water_settings_view"))
+    return redirect(url_for("water_settings_view", ok=1, msg='5 minute test started'))
 
 
 @app.route("/settings/water/calibration/cancel", methods=["POST"])
@@ -8840,7 +10308,7 @@ def cancel_water_calibration():
         }
 
     mutate_state(mutator)
-    return redirect(url_for("water_settings_view"))
+    return redirect(url_for("water_settings_view", ok=1, msg='Test cancelled'))
 
 
 @app.route("/settings/water/calibration/finish", methods=["POST"])
@@ -8850,7 +10318,7 @@ def finish_water_calibration():
         if meter_litres <= 0:
             raise ValueError()
     except Exception:
-        return redirect(url_for("water_settings_view"))
+        return redirect(url_for("water_settings_view", ok=0, msg='Not saved, check the meter litres'))
 
     state = load_state()
     calib = state.get("water_calibration", {})
@@ -8859,7 +10327,7 @@ def finish_water_calibration():
     except Exception:
         pulse_delta = None
     if pulse_delta is None or pulse_delta <= 0:
-        return redirect(url_for("water_settings_view"))
+        return redirect(url_for("water_settings_view", ok=0, msg='Run the 5 minute test first'))
 
     cfg = load_config()
     cfg["water_pulses_per_litre"] = float(pulse_delta) / meter_litres
@@ -8877,7 +10345,7 @@ def finish_water_calibration():
         }
 
     mutate_state(mutator)
-    return redirect(url_for("water_settings_view"))
+    return redirect(url_for("water_settings_view", ok=1, msg='New pulses per litre saved'))
 
 
 def build_feed_settings_context(cfg, state):
@@ -9098,10 +10566,10 @@ def save_feed_settings():
     try:
         threshold_value = float(request.form.get("threshold_value", "").strip())
     except Exception:
-        return redirect(url_for("feed_settings_view"))
+        return redirect(url_for("feed_settings_view", ok=0, msg='Not saved, check the number'))
     cfg["feed_low_kg"] = threshold_value
     save_config(cfg)
-    return redirect(url_for("feed_settings_view"))
+    return redirect(url_for("feed_settings_view", ok=1, msg='Low feed warning saved'))
 
 
 @app.route("/settings/feed/capacity/save", methods=["POST"])
@@ -9112,10 +10580,10 @@ def save_feed_capacity():
         if capacity <= 0:
             raise ValueError()
     except Exception:
-        return redirect(url_for("feed_settings_view"))
+        return redirect(url_for("feed_settings_view", ok=0, msg='Not saved, check the number'))
     cfg["feed_capacity_kg"] = capacity
     save_config(cfg)
-    return redirect(url_for("feed_settings_view"))
+    return redirect(url_for("feed_settings_view", ok=1, msg='Bin capacity saved'))
 
 
 @app.route("/settings/feed/tare", methods=["POST"])
@@ -9125,7 +10593,7 @@ def set_feed_tare():
     try:
         feed_raw = float(sensors.get("feed_raw_units"))
     except Exception:
-        return redirect(url_for("feed_settings_view"))
+        return redirect(url_for("feed_settings_view", ok=0, msg='No live scale reading to tare from'))
     cfg = load_config()
     previous = feed_calibration_snapshot(cfg)
     cfg["feed_tare_raw"] = feed_raw
@@ -9137,7 +10605,7 @@ def set_feed_tare():
         detail="Tare set from raw %.1f" % feed_raw,
     )
     mutate_state(lambda s: reset_feed_average_state(s.get("sensors", default_sensor_state())))
-    return redirect(url_for("feed_settings_view"))
+    return redirect(url_for("feed_settings_view", ok=1, msg='Tare set'))
 
 
 @app.route("/settings/feed/known-weight/save", methods=["POST"])
@@ -9151,17 +10619,17 @@ def save_feed_known_weight():
         if known_weight_kg <= 0:
             raise ValueError()
     except Exception:
-        return redirect(url_for("feed_settings_view"))
+        return redirect(url_for("feed_settings_view", ok=0, msg='Not calibrated, check the weight and tare'))
 
     try:
         feed_raw = float(sensors.get("feed_raw_units"))
         tare_raw = float(cfg.get("feed_tare_raw"))
     except Exception:
-        return redirect(url_for("feed_settings_view"))
+        return redirect(url_for("feed_settings_view", ok=0, msg='Not calibrated, check the weight and tare'))
 
     raw_delta = feed_raw - tare_raw
     if raw_delta <= 0:
-        return redirect(url_for("feed_settings_view"))
+        return redirect(url_for("feed_settings_view", ok=0, msg='Not calibrated, check the weight and tare'))
 
     previous = feed_calibration_snapshot(cfg)
     cfg["feed_kg_per_raw_unit"] = known_weight_kg / raw_delta
@@ -9179,20 +10647,20 @@ def save_feed_known_weight():
         update_feed_from_raw(sensors)
 
     mutate_state(reset_and_publish)
-    return redirect(url_for("feed_settings_view"))
+    return redirect(url_for("feed_settings_view", ok=1, msg='Scale calibrated'))
 
 
 @app.route("/settings/feed/calibration/undo", methods=["POST"])
 def undo_feed_calibration():
     rows = load_feed_calibration_history()
     if not rows:
-        return redirect(url_for("feed_settings_view"))
+        return redirect(url_for("feed_settings_view", ok=0, msg='Nothing to undo'))
     target = rows[-1]
     if not isinstance(target, dict) or not bool(target.get("undoable", False)) or target.get("undone_ts") not in [None, ""]:
-        return redirect(url_for("feed_settings_view"))
+        return redirect(url_for("feed_settings_view", ok=0, msg='Nothing to undo'))
     previous = target.get("previous", {})
     if not isinstance(previous, dict):
-        return redirect(url_for("feed_settings_view"))
+        return redirect(url_for("feed_settings_view", ok=0, msg='Nothing to undo'))
 
     cfg = load_config()
     current = feed_calibration_snapshot(cfg)
@@ -9218,31 +10686,35 @@ def undo_feed_calibration():
         update_feed_from_raw(sensors)
 
     mutate_state(reset_and_publish)
-    return redirect(url_for("feed_settings_view"))
+    return redirect(url_for("feed_settings_view", ok=1, msg='Last calibration change undone'))
 
 
-def render_metric_history(metric_key, metric_title, y_axis_title, color, fmt):
+def render_metric_history(metric_key, metric_title, y_axis_title, color, fmt, series_defs=None):
+    # series_defs: [(metric_key, label, axis_title, color, fmt), ...]; one entry draws a
+    # single-metric page, several draw them together on their own axes.
+    series_defs = series_defs or [(metric_key, metric_title, y_axis_title, color, fmt)]
     shed_no = load_config()["shed_no"]
-    payload = fetch_current_crop_hourly_history(shed_no)
+    payload = fetch_current_crop_hourly_history(shed_no, hourly=True)
     rows = payload.get("rows", []) if isinstance(payload, dict) else []
     crop_id = payload.get("crop_id") if isinstance(payload, dict) else None
     crop_code = payload.get("crop_code") if isinstance(payload, dict) else fmt_crop_code(crop_id)
 
+    labels = [row.get("label") for row in rows]
+    epochs = [row.get("epoch") for row in rows]
+    series = []
+    for key, label, axis_title, series_color, series_fmt in series_defs:
+        series.append({
+            "label": label,
+            "axis_title": axis_title,
+            "color": series_color,
+            "values": [row.get(key) for row in rows],
+        })
     view_rows = []
-    labels = []
-    values = []
-
-    i = 0
-    while i < len(rows):
-        row = rows[i]
-        raw_val = row.get(metric_key)
-        labels.append(row.get("label"))
-        values.append(raw_val)
+    for row in rows:
         view_rows.append({
             "label": row.get("label"),
-            "value": fmt_value(raw_val, fmt),
+            "values": [fmt_value(row.get(d[0]), d[4]) for d in series_defs],
         })
-        i += 1
 
     return render_template_string(
         HISTORY_HTML,
@@ -9250,14 +10722,12 @@ def render_metric_history(metric_key, metric_title, y_axis_title, color, fmt):
         crop_id=crop_id,
         crop_code=crop_code,
         metric_title=metric_title,
-        y_axis_title=y_axis_title,
-        color=color,
+        series=series,
         rows=view_rows,
         table_rows=list(reversed(view_rows)),
         labels=labels,
-        values=values,
-        extra_link_href=url_for("auger_runs_view") if metric_key == "feed" else None,
-        extra_link_label="Auger Run Timestamps" if metric_key == "feed" else "",
+        epochs=epochs,
+        log_tab=metric_key,
     )
 
 
@@ -9275,12 +10745,13 @@ def redirect_back_with_status(default_endpoint, ok, msg):
 
 @app.route("/history/water")
 def water_history_view():
-    return render_metric_history("water", "Water History", "Water L", "#4db6ff", "f1")
+    return render_metric_history("water", "Water History", "Water L", "#5fd0d8", "f1")
 
 
 @app.route("/history/feed")
 def feed_history_view():
-    return render_metric_history("feed", "Feed History", "Feed KG", "#7be1aa", "f1")
+    return render_metric_history("feed", "Feed History", "Feed KG", "#d9b86a", "f1")
+
 
 
 @app.route("/history/feed/augers")
@@ -9397,6 +10868,41 @@ def start_entry_for_dest_impl(dest_shed, placed_bird_count_override=None):
     return push_to_dashboard(state, pull_back=False)
 
 
+@app.route("/pen/add", methods=["POST"])
+def add_pen():
+    side = str(request.form.get("side", "rear") or "rear").strip().lower()
+    try:
+        dest_shed = int(request.form.get("dest_shed", ""))
+    except Exception:
+        return redirect_back_with_status("index", False, "Pick which shed the birds are for")
+    if not valid_entry_shed(dest_shed):
+        return redirect_back_with_status("index", False, "Invalid shed")
+    try:
+        placed_bird_count = int(str(request.form.get("placed_bird_count", "") or "").strip())
+        if placed_bird_count <= 0:
+            raise ValueError()
+    except Exception:
+        return redirect_back_with_status("index", False, "Enter how many birds were placed")
+    if get_entry_for_dest(load_state(), dest_shed)["bird_count"] > 0:
+        return redirect_back_with_status("index", False, "%s already has a pen in this shed" % entry_shed_label(dest_shed))
+
+    ok, sync_msg = start_entry_for_dest_impl(dest_shed, placed_bird_count_override=placed_bird_count)
+
+    def mutator(state):
+        if get_entry_for_dest(state, dest_shed)["bird_count"] <= 0:
+            return
+        entries = state.get("entries", {})
+        order = [k for k in ordered_entry_keys(entries, state.get("pen_order", [])) if k != str(dest_shed)]
+        if side == "front":
+            order.insert(0, str(dest_shed))
+        else:
+            order.append(str(dest_shed))
+        state["pen_order"] = order
+
+    mutate_state(mutator)
+    return redirect_back_with_status("index", ok, sync_msg if sync_msg else "Pen added")
+
+
 @app.route("/entry/<int:dest_shed>/start", methods=["POST"])
 def start_entry_for_dest(dest_shed):
     placed_bird_count_override = None
@@ -9507,6 +11013,8 @@ def dashboard_sync():
     if incoming_shed_no != cfg["shed_no"]:
         return jsonify({"ok": False, "error": "Shed number mismatch"}), 400
 
+    adopt_office_climate_limits(payload.get("climate_limits"))
+
     def mutator(state):
         incoming_entries = payload.get("entries", {})
         if isinstance(incoming_entries, dict):
@@ -9583,4 +11091,5 @@ if __name__ == "__main__":
     start_serial_thread()
     start_monitor_thread()
     start_background_sync_thread()
+    start_auto_update_thread()
     app.run(host="0.0.0.0", port=cfg["listen_port"])
