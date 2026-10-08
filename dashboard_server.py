@@ -62,6 +62,113 @@ def render_page_nav():
 app.jinja_env.globals["render_page_nav"] = render_page_nav
 
 
+# ---------------------------------------------------------------------------
+# Office pages in the shed controller's style: OFFICE_PAGE_HEAD is the controller's
+# ENTRY_PAGE_HEAD (same fonts, cards, buttons, inputs), and office_topbar() is the same
+# white header with Back / Overview, the page title and the logo.
+# ---------------------------------------------------------------------------
+OFFICE_PAGE_HEAD = """
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <meta name="cdf-theme-native" content="1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@500;600&display=swap">
+    <style>
+        :root {
+            --page: #eef2f6; --card: #ffffff; --card-2: #f5f8fb; --rule: #d5dde6; --track: #dbe3ec;
+            --navy: #0b3a6b; --text: #0d2b4a; --muted: #4a6078; --soft: #31475e;
+            --green: #2f9e3a; --amber: #f08a12; --red: #d64545;
+        }
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        body { margin: 0; min-height: 100vh; background: var(--page); color: var(--text); font-family: "Barlow", "Helvetica Neue", Helvetica, sans-serif; }
+        .cond { font-family: "Barlow Semi Condensed", "Barlow", "Helvetica Neue", Helvetica, sans-serif; }
+        .topbar { min-height: 64px; background: #ffffff; padding: 10px 28px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--rule); }
+        .back { display: flex; align-items: center; justify-content: center; min-height: 48px; padding: 0 16px; border-radius: 12px; border: 1px solid #c5d0dc; background: var(--card); color: var(--text); text-decoration: none; font-size: 17px; font-weight: 600; white-space: nowrap; }
+        .title { margin-left: 6px; font-size: 34px; font-weight: 600; color: var(--navy); }
+        .brand-logo { height: 44px; width: auto; display: block; margin-left: auto; }
+        .wrap { max-width: 1200px; margin: 0 auto; padding: 16px 24px 24px; }
+        .msg { margin-bottom: 14px; padding: 12px 16px; border-radius: 12px; background: #e3f4e1; border: 1px solid #9fd39a; color: #1e6b16; font-size: 17px; font-weight: 600; }
+        .msg.error { background: #fdecec; border-color: #e3a0a0; color: #8f1f1f; }
+        .section-title { margin: 0 0 8px 4px; font-size: 14px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+        section + section { margin-top: 20px; }
+        .card { border-radius: 14px; background: var(--card); padding: 18px; }
+        .hint { font-size: 15px; color: var(--muted); line-height: 1.35; }
+        .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
+        .stat { border-radius: 14px; background: var(--card); padding: 14px 18px; }
+        .stat-label { font-size: 14px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+        .stat-value { margin-top: 2px; font-size: 32px; font-weight: 600; color: var(--navy); line-height: 1.1; }
+        .stat-sub { font-size: 14px; color: var(--muted); }
+        .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 14px; font-weight: 600; background: var(--card-2); color: var(--muted); }
+        .pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+        .pill.on { background: #e3f4e1; color: #1e6b16; } .pill.on::before { background: var(--green); }
+        .pill.wait { background: #fff4e5; color: #9a4b00; } .pill.wait::before { background: var(--amber); }
+        .pill.bad { background: #fdecec; color: #8f1f1f; } .pill.bad::before { background: var(--red); }
+        label.field { display: block; font-size: 14px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; margin: 0 0 6px 2px; }
+        input[type="number"], input[type="text"], select {
+            width: 100%; min-height: 60px; padding: 0 16px; border-radius: 12px; border: 1px solid #c5d0dc;
+            background: var(--card-2); color: var(--text); font-family: inherit; font-size: 22px; font-weight: 600;
+        }
+        input[type="text"], select { font-size: 19px; font-weight: 500; }
+        input:focus, select:focus { outline: none; border-color: var(--navy); background: #ffffff; }
+        button {
+            width: 100%; min-height: 60px; border-radius: 12px; border: 1px solid #c5d0dc; background: var(--card-2);
+            color: var(--text); font-family: inherit; font-size: 18px; font-weight: 600; cursor: pointer; white-space: nowrap;
+        }
+        button:active { background: var(--track); }
+        button:disabled { opacity: 0.4; cursor: default; }
+        button.primary { background: var(--navy); color: #ffffff; border-color: var(--navy); }
+        button.primary:active { background: var(--text); }
+        button.go { background: var(--green); color: #ffffff; border-color: var(--green); }
+        button.danger { background: #fdecec; border-color: #e3a0a0; color: #8f1f1f; }
+        form { margin: 0; }
+        .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+        .col { display: flex; flex-direction: column; gap: 20px; }
+        .col > section + section { margin-top: 0; }
+        .card.form { display: grid; gap: 12px; }
+        .now { display: flex; align-items: baseline; gap: 8px; }
+        .now b { font-size: 56px; font-weight: 600; color: var(--navy); line-height: 1; }
+        .now span { font-size: 22px; color: var(--muted); font-weight: 600; }
+        .now.ok b { color: var(--green); } .now.warn b { color: var(--amber); } .now.alarm b { color: var(--red); }
+        .details { margin-top: 10px; }
+        .detail { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--track); font-size: 17px; }
+        .detail > span:first-child { color: var(--muted); }
+        .detail > span:last-child { font-weight: 600; text-align: right; }
+        .inline { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
+        .inline button { width: auto; min-width: 150px; padding: 0 22px; }
+        .link-item { display: flex; align-items: center; justify-content: space-between; min-height: 54px; padding: 0 18px; border-radius: 14px; background: var(--card); color: var(--text); text-decoration: none; font-size: 18px; font-weight: 500; }
+        .link-item span:last-child { color: var(--muted); font-size: 22px; }
+        .table-wrap { overflow: auto; border-radius: 12px; border: 1px solid var(--track); }
+        table { width: 100%; border-collapse: collapse; font-size: 15px; }
+        th, td { padding: 9px 10px; border-top: 1px solid var(--track); text-align: left; vertical-align: top; }
+        thead th { border-top: 0; background: var(--card-2); font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+        a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid var(--navy); outline-offset: 2px; }
+        @media (max-width: 860px) {
+            .topbar { padding: 10px 16px; }
+            .title { font-size: 26px; }
+            .brand-logo { display: none; }
+            .wrap { padding: 14px 16px 20px; }
+            .stats { grid-template-columns: 1fr 1fr; }
+            .cols { grid-template-columns: 1fr; }
+        }
+    </style>
+"""
+
+
+def office_topbar(title):
+    back_href = request.referrer or url_for("dashboard")
+    return Markup(
+        '<header class="topbar ss-topbar">'
+        '<a class="back" href="{back}" onclick="if (window.history.length > 1) {{ window.history.back(); return false; }}">&larr; Back</a>'
+        '<a class="back" href="{home}">&#8962; Overview</a>'
+        '<div class="title cond">{title}</div>'
+        '<img class="brand-logo" src="/static/stocksense-logo.png" alt="StockSense, Smarter Livestock Monitoring">'
+        '</header>'
+    ).format(back=escape(back_href), home=escape(url_for("dashboard")), title=escape(title))
+
+
+app.jinja_env.globals["office_page_head"] = Markup(OFFICE_PAGE_HEAD)
+app.jinja_env.globals["office_topbar"] = office_topbar
+
+
 @app.route("/favicon.ico")
 @app.route("/favicon.png")
 @app.route("/favicon.svg")
@@ -151,7 +258,7 @@ def service_worker_view():
 OFFICE_THEME_HEAD = (
     '<link rel="preconnect" href="https://fonts.googleapis.com">'
     '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Semi+Condensed:wght@500;600;700&display=swap">'
-    '<link id="cdf-theme" rel="stylesheet" href="/static/stocksense-theme.css?v=1">'
+    '<link id="cdf-theme" rel="stylesheet" href="/static/stocksense-theme.css?v=2">'
 )
 
 
@@ -8342,10 +8449,9 @@ EVENTS_HTML = """
     </style>
 </head>
 <body>
+    {{ office_topbar('Event log') }}
     <div class="wrap">
-        <div class="topbar">{{ render_page_nav() }}</div>
         <div class="panel">
-            <h1>Office Event Log</h1>
             <div class="sub">Recent office, controller, crop, sync, and mortality events.</div>
             <details class="collapse" open>
                 <summary>Open event log table</summary>
@@ -8422,9 +8528,8 @@ RESTORE_HTML = """
     </style>
 </head>
 <body>
+    {{ office_topbar('Restore backup') }}
     <div class="wrap">
-        <div class="topbar">{{ render_page_nav() }}</div>
-        <h1>Backup Restore</h1>
         <div class="sub">Restore the full office data set, office backup state, or latest collected controller copies.</div>
         {% if status_msg %}
         <div class="status auto-dismiss {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
@@ -8599,9 +8704,8 @@ MANUAL_FEED_ENTRY_HTML = """
     </style>
 </head>
 <body>
+    {{ office_topbar('Manual feed entry') }}
     <div class="wrap">
-        <div class="topbar">{{ render_page_nav() }}</div>
-        <h1>Manual Feed Entry</h1>
         <div class="sub">Normal in-crop silo feeding is recorded automatically from the weigh cells. Feed movement is tracked below whether the shed is in crop or out of crop, with out-of-crop setup feed kept separate until you add it to the crop.</div>
         {% if status_msg %}
         <div class="status auto-dismiss {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
@@ -8923,9 +9027,8 @@ OFFICE_SETTINGS_HTML = """
     </style>
 </head>
 <body>
+    {{ office_topbar('Settings') }}
     <div class="wrap">
-        <div class="topbar">{{ render_page_nav() }}</div>
-        <h1>Office Settings</h1>
         <div class="sub">Core office tools, notifications, email, backups, and update control.</div>
         {% if status_msg %}
         <div class="status auto-dismiss {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
@@ -9338,9 +9441,8 @@ VERSIONS_HTML = """
     </style>
 </head>
 <body>
+    {{ office_topbar('Versions') }}
     <div class="wrap">
-        <div class="topbar">{{ render_page_nav() }}</div>
-        <h1>Versions</h1>
         <div class="sub">Office, shed controller, bore hole controller, and Pico version visibility.</div>
         <div class="panel">
             <h2>Office Dashboard</h2>
@@ -9435,9 +9537,8 @@ FARM_HEALTH_HTML = """
     </style>
 </head>
 <body>
+    {{ office_topbar('Farm health') }}
     <div class="wrap">
-        <div class="topbar">{{ render_page_nav() }}</div>
-        <h1>Farm Health</h1>
         <div class="sub">Live controller heartbeat, Pico link, and backup health across sheds and the bore hole.</div>
         <div class="action-grid">
             <a class="action-link" href="{{ url_for('office_crop_reports_view') }}">🧾 Crop Reports</a>
@@ -9539,335 +9640,120 @@ def compute_farm_health_summary(controller_meta=None, borehole_meta=None, collec
 
 
 DETAIL_HTML = """
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
 <head>
     <meta charset="utf-8">
-    <title>{{ shed_name }} Detail</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ shed_name }}</title>
+    {{ office_page_head }}
     <style>
-        * {
-            box-sizing: border-box;
-        }
-        body {
-            margin: 0;
-            font-family: Arial, sans-serif;
-            background: #5b5b5b;
-            color: #0d2b4a;
-            overflow-x: hidden;
-        }
-        .wrap {
-            max-width: 1500px;
-            margin: 0 auto;
-            padding: 16px;
-        }
-        a {
-            color: #0d2b4a;
-            text-decoration: none;
-        }
-        a:hover {
-            text-decoration: underline;
-        }
-        h1 {
-            margin: 0 0 6px 0;
-            font-size: 30px;
-        }
-        .sub {
-            color: #0d2b4a;
-            margin-bottom: 16px;
-            font-size: 14px;
-        }
-        .topbar {
-            margin-bottom: 14px;
-        }
-        .status {
-            margin-bottom: 14px;
-            padding: 10px 12px;
-            border-radius: 10px;
-            background: #f5f8fb;
-            border: 1px solid #d5dde6;
-        }
-        .status.ok {
-            border-color: #2f9e3a;
-            color: #0d2b4a;
-        }
-        .status.err {
-            border-color: #d64545;
-            color: #b42318;
-        }
-        .grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-            gap: 14px;
-            margin-bottom: 16px;
-        }
-        .navcard {
-            display: block;
-            background: #f5f8fb;
-            border: 2px solid #d5dde6;
-            border-radius: 12px;
-            padding: 18px;
-            color: inherit;
-            text-decoration: none;
-            min-width: 0;
-            overflow-wrap: anywhere;
-            word-break: break-word;
-        }
-        .navcard:hover {
-            border-color: #d5dde6;
-        }
-        .navtitle {
-            font-size: 24px;
-            font-weight: bold;
-            margin-bottom: 8px;
-        }
-        .navsub {
-            font-size: 14px;
-            color: #0d2b4a;
-        }
-        .table-card {
-            background: #f5f8fb;
-            border: 2px solid #d5dde6;
-            border-radius: 12px;
-            padding: 14px;
-            min-width: 0;
-        }
-        .table-card h2 {
-            margin-top: 0;
-            font-size: 22px;
-        }
-        .collapse {
-            margin-top: 14px;
-        }
-        .collapse summary {
-            cursor: pointer;
-            list-style: none;
-            padding: 12px 14px;
-            border: 1px solid #d5dde6;
-            border-radius: 10px;
-            background: #f5f8fb;
-            font-weight: 700;
-        }
-        .collapse summary::-webkit-details-marker {
-            display: none;
-        }
-        .collapse[open] summary {
-            margin-bottom: 12px;
-        }
-        .table-wrap {
-            overflow: auto;
-            -webkit-overflow-scrolling: touch;
-            border: 1px solid #d5dde6;
-            border-radius: 10px;
-            background: #f5f8fb;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 14px;
-            table-layout: fixed;
-        }
-        th, td {
-            border-bottom: 1px solid #d5dde6;
-            padding: 10px 8px;
-            text-align: left;
-            vertical-align: middle;
-            overflow-wrap: anywhere;
-            word-break: break-word;
-        }
-        th {
-            color: #0d2b4a;
-        }
-        input[type="number"], input[type="datetime-local"] {
-            width: 110px;
-            box-sizing: border-box;
-            padding: 8px 10px;
-            border-radius: 8px;
-            border: 1px solid #d5dde6;
-            background: #f5f8fb;
-            color: #0d2b4a;
-        }
-        input[type="datetime-local"] {
-            width: 190px;
-        }
-        button {
-            background: #f5f8fb;
-            color: #0d2b4a;
-            border: 1px solid #d5dde6;
-            border-radius: 8px;
-            padding: 8px 12px;
-            cursor: pointer;
-            min-width: 88px;
-            text-align: center;
-        }
-        button:hover {
-            background: #f5f8fb;
-        }
-        .danger {
-            border-color: #d64545;
-        }
-        .move {
-            border-color: #f08a12;
-        }
-        .empty {
-            color: #0d2b4a;
-        }
-        .entry-yes {
-            color: #1e6b16;
-            font-weight: bold;
-        }
-        .entry-no {
-            color: #b42318;
-            font-weight: bold;
-        }
-        .form-inline {
-            display: inline-flex;
-            margin-right: 6px;
-            margin-bottom: 4px;
-            vertical-align: top;
-            flex-wrap: wrap;
-            max-width: 100%;
-        }
-        @media (max-width: 1200px) {
-            table {
-                font-size: 13px;
-            }
-            input[type="number"] {
-                width: 90px;
-            }
-            input[type="datetime-local"] {
-                width: 170px;
-            }
-        }
-        @media (max-width: 700px) {
-            .wrap {
-                padding: 12px;
-            }
-            h1 {
-                font-size: 24px;
-            }
-            .navcard {
-                padding: 14px;
-            }
-            .navtitle {
-                font-size: 20px;
-            }
-            .table-card {
-                padding: 12px;
-            }
-            button {
-                width: 100%;
-            }
-            .form-inline {
-                display: flex;
-                margin-right: 0;
-                width: 100%;
-            }
+        .links { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+        .link-card { display: flex; flex-direction: column; gap: 4px; padding: 14px 18px; border-radius: 14px; background: var(--card); color: var(--text); text-decoration: none; }
+        .link-card b { font-size: 19px; font-weight: 600; color: var(--navy); }
+        .link-card span { font-size: 14px; color: var(--muted); }
+        .link-card:hover { box-shadow: 0 0 0 2px var(--navy); }
+        .pens { display: grid; gap: 12px; }
+        .pen { border-radius: 14px; background: var(--card); padding: 16px 18px; border-left: 6px solid var(--green); }
+        .pen-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+        .pen-name { font-size: 26px; font-weight: 600; color: var(--navy); }
+        .pen-birds { margin-left: auto; text-align: right; }
+        .pen-birds b { font-size: 28px; font-weight: 600; color: var(--navy); }
+        .pen-birds span { display: block; font-size: 13px; color: var(--muted); }
+        .pen-meta { margin: 2px 0 12px; font-size: 15px; color: var(--muted); }
+        .pen-form { display: grid; grid-template-columns: 1.3fr 1.3fr 1fr 1fr 1fr; gap: 10px; align-items: end; }
+        input[type="datetime-local"] { width: 100%; min-height: 60px; padding: 0 12px; border-radius: 12px; border: 1px solid #c5d0dc; background: var(--card-2); color: var(--text); font-family: inherit; font-size: 17px; }
+        .list { border-radius: 14px; background: var(--card); overflow: hidden; }
+        .row { display: grid; grid-template-columns: 1fr 1.3fr 1.3fr 0.8fr 0.8fr 0.8fr; gap: 10px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--track); }
+        .row:first-child { border-top: 0; }
+        .row-name { font-size: 20px; font-weight: 600; color: var(--text); }
+        .row-name small { display: block; font-size: 14px; font-weight: 500; color: var(--muted); }
+        .row input, .row button { min-height: 54px; }
+        @media (max-width: 1100px) {
+            .links { grid-template-columns: 1fr 1fr; }
+            .pen-form { grid-template-columns: 1fr 1fr 1fr; }
+            .pen-form .field-wrap { grid-column: span 3; }
+            .row { grid-template-columns: 1fr 1fr 1fr; }
+            .row-name, .row .field-wrap { grid-column: 1 / -1; }
         }
     </style>
 </head>
 <body>
+    {{ office_topbar(shed_name) }}
     <div class="wrap">
-        <div class="topbar">{{ render_page_nav() }}</div>
+        {% if status_msg %}<div class="msg auto-dismiss {% if not status_ok %}error{% endif %}">{{ status_msg }}</div>{% endif %}
 
-        <h1>{{ shed_name }}</h1>
-        <div class="sub">Current crop {{ active_crop_code }}</div>
-
-        {% if status_msg %}
-        <div class="status auto-dismiss {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
-        {% endif %}
-
-        <div class="grid">
-            <a class="navcard" href="{{ url_for('shed_tables_graphs_view', shed_no=shed_no) }}">
-                <div class="navtitle">Feed & Water</div>
-                <div class="navsub">Feed and water tables with pill selectors for 6-hour or daily charts.</div>
-            </a>
-
-            <a class="navcard" href="{{ url_for('shed_crop_history', shed_no=shed_no) }}">
-                <div class="navtitle">Crop history</div>
-                <div class="navsub">Open the last 6 crops for this shed.</div>
-            </a>
-
-            <a class="navcard" href="{{ url_for('shed_mortality_view', shed_no=shed_no) }}">
-                <div class="navtitle">Mortality</div>
-                <div class="navsub">Enter losses and deduct them from live bird numbers.</div>
-            </a>
-
-            <a class="navcard" href="{{ url_for('shed_thresholds_view', shed_no=shed_no) }}">
-                <div class="navtitle">Tile thresholds</div>
-                <div class="navsub">Set temp, humidity, live water, and feed glow thresholds for this shed.</div>
-            </a>
+        <div class="stats">
+            <div class="stat"><div class="stat-label">Birds in {{ shed_name }}</div><div class="stat-value cond">{{ total_birds }}</div><div class="stat-sub">Placed (live)</div></div>
+            <div class="stat"><div class="stat-label">Pens</div><div class="stat-value cond">{{ active_rows|length }}</div><div class="stat-sub">{{ "Active" if active_rows else "None running" }}</div></div>
+            <div class="stat"><div class="stat-label">Crop</div><div class="stat-value cond" style="font-size: 24px; padding-top: 6px">{{ active_crop_code }}</div><div class="stat-sub">{{ "Started " ~ crop_started if crop_started else "No active crop" }}</div></div>
         </div>
 
-        <div class="table-card">
-            <h2>Shed entries</h2>
-            <details class="collapse" open>
-                <summary>Open shed entry table</summary>
-                <div class="table-wrap">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Entry Shed</th>
-                                <th>Placed Birds</th>
-                                <th>Live Birds</th>
-                                <th>Placed At</th>
-                                <th>Active</th>
-                                <th>Update</th>
-                                <th>Controls</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for r in entry_rows %}
-                            <tr>
-                                <td>{{ r.dest_shed_label }}</td>
-                                <td>
-                                    <form id="entry-form-{{ r.dest_shed }}" class="form-inline" method="post" action="{{ url_for('shed_entry_save', shed_no=shed_no, dest_shed=r.dest_shed) }}">
-                                        <input type="number" name="placed_bird_count" min="0" step="1" value="{{ '' if r.placed_bird_count == 0 else r.placed_bird_count }}">
-                                        <input type="datetime-local" name="placement_at" value="{{ r.placement_input_value }}">
-                                    </form>
-                                </td>
-                                <td>{{ r.bird_count }}{% if r.entry_mortality > 0 %}<div class="empty">Mortality {{ r.entry_mortality }}</div>{% endif %}</td>
-                                <td>{{ r.placement_str }}</td>
-                                <td>
-                                    {% if r.crop_active == 1 %}
-                                        <span class="entry-yes">Yes</span>
-                                    {% else %}
-                                        <span class="entry-no">No</span>
-                                    {% endif %}
-                                </td>
-                                <td>
-                                    <button form="entry-form-{{ r.dest_shed }}" type="submit">Save</button>
-                                    {% if r.crop_active != 1 %}
-                                    <button form="entry-form-{{ r.dest_shed }}" formaction="{{ url_for('shed_entry_start', shed_no=shed_no, dest_shed=r.dest_shed) }}" type="submit">Start</button>
-                                    {% endif %}
-                                    <form class="form-inline" method="post" action="{{ url_for('shed_entry_end', shed_no=shed_no, dest_shed=r.dest_shed) }}">
-                                        <button class="danger" type="submit">End</button>
-                                    </form>
-                                </td>
-                                <td>
-                                    {% if r.can_move %}
-                                    <form class="form-inline" method="post" action="{{ url_for('shed_entry_move', shed_no=shed_no, dest_shed=r.dest_shed) }}" onsubmit="return confirm('Move birds from {{ shed_display_name }} to {{ r.dest_shed_label }}?');">
-                                        <button class="move" type="submit">Move to {{ r.dest_shed_label }}</button>
-                                    </form>
-                                    {% else %}
-                                    <span class="empty">--</span>
-                                    {% endif %}
-                                </td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
+        <div class="links">
+            <a class="link-card" href="{{ url_for('shed_tables_graphs_view', shed_no=shed_no) }}"><b>Feed &amp; water</b><span>Daily totals, click a day for its hours</span></a>
+            <a class="link-card" href="{{ url_for('shed_mortality_view', shed_no=shed_no) }}"><b>Mortality</b><span>Record losses and see the log</span></a>
+            <a class="link-card" href="{{ url_for('shed_thresholds_view', shed_no=shed_no) }}"><b>Thresholds</b><span>Temperature, humidity, water and feed limits</span></a>
+            <a class="link-card" href="{{ url_for('shed_crop_history', shed_no=shed_no) }}"><b>Crop history</b><span>The last crops in this shed</span></a>
+        </div>
+
+        <section>
+            <h2 class="section-title">Birds in this shed</h2>
+            {% if active_rows %}
+            <div class="pens">
+                {% for r in active_rows %}
+                <div class="pen">
+                    <div class="pen-head">
+                        <div class="pen-name cond">For {{ r.dest_shed_label }}</div>
+                        <span class="pill on">Active</span>
+                        <div class="pen-birds"><b class="cond">{{ r.placed_display }} ({{ r.live_display }})</b><span>Placed (live){% if r.entry_mortality > 0 %} · {{ r.entry_mortality }} lost{% endif %}</span></div>
+                    </div>
+                    <div class="pen-meta">Started {{ r.placement_str }} · Crop {{ r.crop_code }}</div>
+                    <form id="entry-form-{{ r.dest_shed }}" class="pen-form" method="post" action="{{ url_for('shed_entry_save', shed_no=shed_no, dest_shed=r.dest_shed) }}">
+                        <div class="field-wrap">
+                            <label class="field" for="placed{{ r.dest_shed }}">Birds placed</label>
+                            <input id="placed{{ r.dest_shed }}" type="number" name="placed_bird_count" min="0" step="1" inputmode="numeric" value="{{ '' if r.placed_bird_count == 0 else r.placed_bird_count }}">
+                        </div>
+                        <div class="field-wrap">
+                            <label class="field" for="placedat{{ r.dest_shed }}">Placed at</label>
+                            <input id="placedat{{ r.dest_shed }}" type="datetime-local" name="placement_at" value="{{ r.placement_input_value }}">
+                        </div>
+                        <button class="primary" type="submit">Save</button>
+                        {% if r.can_move %}
+                        <button formaction="{{ url_for('shed_entry_move', shed_no=shed_no, dest_shed=r.dest_shed) }}" type="submit" onclick="return confirm('Move these birds from {{ shed_name }} to {{ r.dest_shed_label }}?');">Move to {{ r.dest_shed_label }}</button>
+                        {% else %}
+                        <button type="button" disabled>Move</button>
+                        {% endif %}
+                        <button class="danger" formaction="{{ url_for('shed_entry_end', shed_no=shed_no, dest_shed=r.dest_shed) }}" type="submit" onclick="return confirm('End the {{ r.dest_shed_label }} pen in {{ shed_name }}?');">End</button>
+                    </form>
                 </div>
-            </details>
-        </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="card hint">No birds in {{ shed_name }} at the moment. Enter a count for a shed below and press Start.</div>
+            {% endif %}
+        </section>
 
+        <section>
+            <h2 class="section-title">Start a pen</h2>
+            <div class="list">
+                {% for r in idle_rows %}
+                <form class="row" method="post" action="{{ url_for('shed_entry_start', shed_no=shed_no, dest_shed=r.dest_shed) }}">
+                    <div class="row-name cond">For {{ r.dest_shed_label }}{% if r.placed_bird_count %}<small>{{ r.placed_display }} saved, not started</small>{% endif %}</div>
+                    <div class="field-wrap"><input type="number" name="placed_bird_count" min="0" step="1" inputmode="numeric" placeholder="Birds placed" aria-label="Birds placed for {{ r.dest_shed_label }}" value="{{ '' if r.placed_bird_count == 0 else r.placed_bird_count }}"></div>
+                    <div class="field-wrap"><input type="datetime-local" name="placement_at" aria-label="Placed at" value="{{ r.placement_input_value }}"></div>
+                    <button formaction="{{ url_for('shed_entry_save', shed_no=shed_no, dest_shed=r.dest_shed) }}" type="submit">Save</button>
+                    <button class="go" type="submit">Start</button>
+                    {% if r.placed_bird_count %}
+                    <button class="danger" formaction="{{ url_for('shed_entry_end', shed_no=shed_no, dest_shed=r.dest_shed) }}" type="submit" onclick="return confirm('Clear the saved count for {{ r.dest_shed_label }}?');">Clear</button>
+                    {% else %}
+                    <span></span>
+                    {% endif %}
+                </form>
+                {% endfor %}
+            </div>
+        </section>
     </div>
 <script>
-setTimeout(() => {
-    document.querySelectorAll('.auto-dismiss').forEach((el) => {
-        el.style.display = 'none';
-    });
-}, 10000);
+setTimeout(() => { document.querySelectorAll('.auto-dismiss').forEach((el) => { el.style.display = 'none'; }); }, 10000);
 </script>
 </body>
 </html>
@@ -9875,126 +9761,96 @@ setTimeout(() => {
 
 
 MORTALITY_HTML = """
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
 <head>
     <meta charset="utf-8">
     <title>{{ shed_name }} Mortality</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    {{ office_page_head }}
     <style>
-        * { box-sizing: border-box; }
-        body { margin: 0; font-family: Arial, sans-serif; background: #5b5b5b; color: #0d2b4a; overflow-x:hidden; }
-        .wrap { max-width: 1200px; margin: 0 auto; padding: 16px; }
-        a { color: #0d2b4a; text-decoration: none; }
-        h1 { margin: 0 0 6px 0; font-size: 30px; }
-        .sub { color: #0d2b4a; margin-bottom: 16px; font-size: 14px; }
-        .topbar { margin-bottom: 14px; }
-        .status { margin-bottom: 14px; padding: 10px 12px; border-radius: 10px; background: #f5f8fb; border: 1px solid #d5dde6; }
-        .status.ok { border-color: #2f9e3a; color: #0d2b4a; }
-        .status.err { border-color: #d64545; color: #b42318; }
-        .grid { display: grid; grid-template-columns: 0.9fr 1.1fr; gap: 14px; }
-        .card { background: #f5f8fb; border: 2px solid #d5dde6; border-radius: 12px; padding: 14px; min-width:0; }
-        .card h2 { margin-top: 0; font-size: 22px; }
-        label { display: block; color: #0d2b4a; margin-bottom: 6px; font-size: 14px; }
-        input[type="number"], input[type="text"], input[type="date"], select { width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 8px; border: 1px solid #d5dde6; background: #f5f8fb; color: #0d2b4a; margin-bottom: 12px; }
-        button { background: #f5f8fb; color: #0d2b4a; border: 1px solid #d5dde6; border-radius: 8px; padding: 10px 14px; cursor: pointer; }
-        .collapse { margin-top: 14px; }
-        .collapse summary { cursor: pointer; list-style: none; padding: 12px 14px; border: 1px solid #d5dde6; border-radius: 10px; background: #f5f8fb; font-weight: 700; }
-        .collapse summary::-webkit-details-marker { display:none; }
-        .collapse[open] summary { margin-bottom: 12px; }
-        .table-wrap { overflow:auto; -webkit-overflow-scrolling:touch; border: 1px solid #d5dde6; border-radius:10px; background: #f5f8fb; }
-        table { width: 100%; border-collapse: collapse; font-size: 14px; table-layout:fixed; }
-        th, td { border-bottom: 1px solid #d5dde6; padding: 10px 8px; text-align: left; vertical-align: middle; overflow-wrap:anywhere; word-break:break-word; }
-        th { color: #0d2b4a; }
-        .empty { color: #0d2b4a; }
-        @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
-        @media (max-width: 700px) {
-            .wrap { padding: 12px; }
-            h1 { font-size: 24px; }
-            .card { padding: 12px; }
-            table { font-size: 13px; }
-            button { width: 100%; }
-        }
+        .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+        .form { display: grid; gap: 16px; }
+        .sheds { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+        .shed-opt input { position: absolute; opacity: 0; pointer-events: none; }
+        .shed-opt span { display: flex; flex-direction: column; justify-content: center; min-height: 64px; padding: 6px 14px; border-radius: 12px; border: 1px solid #c5d0dc; background: var(--card-2); cursor: pointer; }
+        .shed-opt b { font-size: 20px; font-weight: 600; }
+        .shed-opt small { font-size: 14px; color: var(--muted); }
+        .shed-opt input:checked + span { background: var(--navy); border-color: var(--navy); color: #ffffff; }
+        .shed-opt input:checked + span small { color: #d5e2f0; }
+        .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        input[type="date"] { width: 100%; min-height: 60px; padding: 0 14px; border-radius: 12px; border: 1px solid #c5d0dc; background: var(--card-2); color: var(--text); font-family: inherit; font-size: 19px; }
+        .stats { grid-template-columns: 1fr 1fr; margin-bottom: 14px; }
+        .log { border-radius: 14px; background: var(--card); overflow: hidden; }
+        .log-row { display: grid; grid-template-columns: 1.3fr 1fr 0.6fr 1.2fr; gap: 10px; align-items: center; min-height: 50px; padding: 8px 16px; border-top: 1px solid var(--track); font-size: 16px; }
+        .log-row:first-child { border-top: 0; }
+        .log-row.head { min-height: 40px; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; background: var(--card-2); }
+        .log-row .loss { font-weight: 600; font-size: 18px; color: var(--navy); }
+        .log-row .note { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        @media (max-width: 860px) { .cols { grid-template-columns: 1fr; } }
     </style>
 </head>
 <body>
+    {{ office_topbar((shed_name) ~ ' mortality') }}
     <div class="wrap">
-        <div class="topbar">{{ render_page_nav() }}</div>
-        <h1>{{ shed_name }} Mortality</h1>
-        <div class="sub">Current crop {{ active_crop_code }}. Record losses against an active entry shed.</div>
-        {% if status_msg %}
-        <div class="status auto-dismiss {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
-        {% endif %}
-        <div class="grid">
-            <div class="card">
-                <h2>Add Mortality</h2>
-                {% if target_rows %}
-                <form method="post" action="{{ url_for('shed_mortality_add', shed_no=shed_no) }}">
-                    <label for="dest_shed">Entry Shed</label>
-                    <select id="dest_shed" name="dest_shed">
-                        {% for row in target_rows %}
-                        <option value="{{ row.dest_shed }}">{{ row.dest_shed_label }} ({{ row.bird_count }} birds)</option>
-                        {% endfor %}
-                    </select>
-                    <label for="bird_loss">Bird Loss</label>
-                    <input id="bird_loss" type="number" name="bird_loss" min="1" step="1" value="">
-                    <label for="mortality_date">Day</label>
-                    <input id="mortality_date" type="date" name="mortality_date" value="{{ mortality_today }}" max="{{ mortality_today }}">
-                    <label for="note">Note</label>
-                    <input id="note" type="text" name="note" value="">
-                    <button type="submit">Record Mortality</button>
-                </form>
-                {% else %}
-                <div class="empty">No active entries available for mortality.</div>
-                {% endif %}
-            </div>
-            <div class="card">
-                <h2>This Crop</h2>
-                <table>
-                    <tbody>
-                        <tr><th>Total mortality</th><td>{{ mortality_total }}</td></tr>
-                        <tr><th>Active birds</th><td>{{ active_birds }}</td></tr>
-                    </tbody>
-                </table>
-                <details class="collapse" open>
-                <summary>Open mortality log</summary>
-                <h2 style="margin-top:18px;">Mortality Log</h2>
-                {% if history_rows %}
-                <div class="table-wrap">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Time</th>
-                                <th>Entry Shed</th>
-                                <th>Loss</th>
-                                <th>Note</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for row in history_rows %}
-                            <tr>
-                                <td>{{ row.ts_label }}</td>
-                                <td>{{ row.dest_shed_label }}</td>
-                                <td>{{ row.bird_loss }}</td>
-                                <td>{{ row.note if row.note else "--" }}</td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
+        {% if status_msg %}<div class="msg auto-dismiss {% if not status_ok %}error{% endif %}">{{ status_msg }}</div>{% endif %}
+        <div class="cols">
+            <section>
+                <h2 class="section-title">Record losses</h2>
+                <div class="card">
+                    {% if target_rows %}
+                    <form class="form" method="post" action="{{ url_for('shed_mortality_add', shed_no=shed_no) }}">
+                        <div>
+                            <label class="field">Which birds</label>
+                            <div class="sheds">
+                                {% for row in target_rows %}
+                                <label class="shed-opt">
+                                    <input type="radio" name="dest_shed" value="{{ row.dest_shed }}" {% if loop.first %}checked{% endif %}>
+                                    <span><b class="cond">For {{ row.dest_shed_label }}</b><small>{{ "{:,}".format(row.bird_count|int) }} live</small></span>
+                                </label>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        <div class="two">
+                            <div>
+                                <label class="field" for="bird_loss">Birds lost</label>
+                                <input id="bird_loss" type="number" name="bird_loss" min="1" step="1" inputmode="numeric" value="" required>
+                            </div>
+                            <div>
+                                <label class="field" for="mortality_date">Day</label>
+                                <input id="mortality_date" type="date" name="mortality_date" value="{{ mortality_today }}" max="{{ mortality_today }}">
+                            </div>
+                        </div>
+                        <div>
+                            <label class="field" for="note">Note (optional)</label>
+                            <input id="note" type="text" name="note" value="" placeholder="e.g. culls, heat">
+                        </div>
+                        <button class="primary" type="submit">Record mortality</button>
+                    </form>
+                    {% else %}
+                    <div class="hint">No birds in this shed to record losses against. Start a pen on the shed page first.</div>
+                    {% endif %}
                 </div>
-                {% else %}
-                <div class="empty">No mortality logged for this crop yet.</div>
-                {% endif %}
-                </details>
-            </div>
+            </section>
+
+            <section style="margin-top: 0">
+                <h2 class="section-title">This crop · {{ active_crop_code }}</h2>
+                <div class="stats">
+                    <div class="stat"><div class="stat-label">Mortality</div><div class="stat-value cond">{{ mortality_total }}</div><div class="stat-sub">Birds lost this crop</div></div>
+                    <div class="stat"><div class="stat-label">Live birds</div><div class="stat-value cond">{{ active_birds }}</div><div class="stat-sub">In active pens</div></div>
+                </div>
+                <div class="log">
+                    <div class="log-row head"><span>When</span><span>Pen</span><span>Lost</span><span>Note</span></div>
+                    {% for row in history_rows %}
+                    <div class="log-row"><span>{{ row.ts_label }}</span><span>{{ row.dest_shed_label }}</span><span class="loss cond">{{ row.bird_loss }}</span><span class="note">{{ row.note if row.note else "--" }}</span></div>
+                    {% else %}
+                    <div class="log-row"><span class="hint" style="grid-column: 1 / -1">No mortality logged for this crop yet.</span></div>
+                    {% endfor %}
+                </div>
+            </section>
         </div>
     </div>
 <script>
-setTimeout(() => {
-    document.querySelectorAll('.auto-dismiss').forEach((el) => {
-        el.style.display = 'none';
-    });
-}, 10000);
+setTimeout(() => { document.querySelectorAll('.auto-dismiss').forEach((el) => { el.style.display = 'none'; }); }, 10000);
 </script>
 </body>
 </html>
@@ -10002,197 +9858,85 @@ setTimeout(() => {
 
 
 SHED_THRESHOLDS_HTML = """
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
 <head>
     <meta charset="utf-8">
-    <title>{{ shed_name }} Tile Thresholds</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ shed_name }} Thresholds</title>
+    {{ office_page_head }}
     <style>
-        * { box-sizing: border-box; }
-        body { margin: 0; font-family: Arial, sans-serif; background: #5b5b5b; color: #0d2b4a; overflow-x:hidden; }
-        .wrap { max-width: 980px; margin: 0 auto; padding: 16px; }
-        a { color: #0d2b4a; text-decoration: none; }
-        h1 { margin: 0 0 6px 0; font-size: 30px; }
-        .sub { color: #0d2b4a; margin-bottom: 16px; font-size: 14px; }
-        .topbar { margin-bottom: 14px; }
-        .status { margin-bottom: 14px; padding: 10px 12px; border-radius: 10px; background: #f5f8fb; border: 1px solid #d5dde6; }
-        .status.ok { border-color: #2f9e3a; color: #0d2b4a; }
-        .status.err { border-color: #d64545; color: #b42318; }
-        .card { background: #f5f8fb; border: 2px solid #d5dde6; border-radius: 12px; padding: 14px; min-width:0; }
-        .field-rows { display:grid; grid-template-columns:1fr; gap:12px; }
-        .field-row { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:12px; }
-        .field { display:flex; flex-direction:column; gap:6px; }
-        .field label { color: #0d2b4a; font-size:14px; }
-        .field input {
-            width:100%;
-            padding:10px 12px;
-            border-radius:8px;
-            border: 1px solid #d5dde6;
-            background: #f5f8fb;
-            color: #0d2b4a;
-        }
-        .note { color: #0d2b4a; font-size:13px; line-height:1.45; margin-top:12px; }
-        .preview {
-            margin-top: 14px;
-            padding: 12px;
-            border-radius: 10px;
-            background: #f5f8fb;
-            border: 1px solid #d5dde6;
-        }
-        .preview-title {
-            font-size: 13px;
-            font-weight: 700;
-            color: #0d2b4a;
-            margin-bottom: 10px;
-        }
-        .preview-grid {
-            display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 10px;
-        }
-        .preview-item {
-            min-width: 0;
-        }
-        .preview-pill {
-            display: inline-block;
-            padding: 4px 8px;
-            border-radius: 999px;
-            font-size: 12px;
-            font-weight: 700;
-            margin-bottom: 6px;
-            border: 1px solid #d5dde6;
-        }
-        .preview-pill.red {
-            color: #b42318;
-            border-color: #d64545;
-            box-shadow: 0 0 8px rgba(214,69,69,0.25);
-        }
-        .preview-pill.amber {
-            color: #9a4b00;
-            border-color: #f08a12;
-            box-shadow: 0 0 8px rgba(240,138,18,0.19);
-        }
-        .preview-pill.green {
-            color: #0d2b4a;
-            border-color: #2f9e3a;
-            box-shadow: 0 0 8px rgba(47,158,58,0.19);
-        }
-        .preview-text {
-            color: #0d2b4a;
-            font-size: 12px;
-            line-height: 1.35;
-        }
-        button {
-            margin-top:14px;
-            background: #f5f8fb;
-            color: #0d2b4a;
-            border: 1px solid #d5dde6;
-            border-radius:8px;
-            padding:10px 14px;
-            cursor:pointer;
-            min-width:180px;
-        }
-        @media (max-width: 700px) {
-            .wrap { padding: 12px; }
-            h1 { font-size: 24px; }
-            .card { padding: 12px; }
-            .field-row { grid-template-columns:repeat(3, minmax(0, 1fr)); gap:8px; }
-            .field label { font-size:12px; }
-            .field input { padding:8px 10px; font-size:14px; }
-            .preview-grid { grid-template-columns: 1fr; }
-            button { width:100%; }
-        }
+        .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+        .limits { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+        .limits.two { grid-template-columns: repeat(2, 1fr); }
+        .guide { display: grid; gap: 8px; }
+        .guide div { display: flex; gap: 10px; align-items: baseline; font-size: 15px; color: var(--soft); }
+        .guide b { flex: 0 0 74px; }
+        @media (max-width: 860px) { .cols { grid-template-columns: 1fr; } }
     </style>
 </head>
 <body>
+    {{ office_topbar((shed_name) ~ ' thresholds') }}
     <div class="wrap">
-        <div class="topbar">{{ render_page_nav() }}</div>
-        <h1>{{ shed_name }} Tile Thresholds</h1>
-        <div class="sub">Control the glow thresholds used on this shed’s dashboard tile.</div>
-        {% if status_msg %}
-        <div class="status auto-dismiss {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
-        {% endif %}
-        <div class="card">
-            <form method="post" action="{{ url_for('shed_thresholds_save_view', shed_no=shed_no) }}">
-                <div class="field-rows">
-                    <div class="field-row">
-                        <div class="field">
-                            <label for="temp_low_c">Temp Red Low C</label>
-                            <input id="temp_low_c" type="number" step="0.1" name="temp_low_c" value="{{ row.temp_low_c }}">
+        {% if status_msg %}<div class="msg auto-dismiss {% if not status_ok %}error{% endif %}">{{ status_msg }}</div>{% endif %}
+        <form method="post" action="{{ url_for('shed_thresholds_save_view', shed_no=shed_no) }}">
+            <div class="cols">
+                <div class="col">
+                    <section>
+                        <h2 class="section-title">Temperature (°C)</h2>
+                        <div class="card form">
+                            <div class="limits">
+                                <div><label class="field" for="temp_low_c">Red below</label><input id="temp_low_c" type="number" step="0.1" inputmode="decimal" name="temp_low_c" value="{{ row.temp_low_c }}"></div>
+                                <div><label class="field" for="temp_high_c">Red above</label><input id="temp_high_c" type="number" step="0.1" inputmode="decimal" name="temp_high_c" value="{{ row.temp_high_c }}"></div>
+                                <div><label class="field" for="temp_amber_margin_c">Amber margin</label><input id="temp_amber_margin_c" type="number" step="0.1" inputmode="decimal" name="temp_amber_margin_c" value="{{ row.temp_amber_margin_c }}"></div>
+                            </div>
                         </div>
-                        <div class="field">
-                            <label for="temp_high_c">Temp Red High C</label>
-                            <input id="temp_high_c" type="number" step="0.1" name="temp_high_c" value="{{ row.temp_high_c }}">
+                    </section>
+                    <section>
+                        <h2 class="section-title">Humidity (%RH)</h2>
+                        <div class="card form">
+                            <div class="limits">
+                                <div><label class="field" for="rh_low_pct">Red below</label><input id="rh_low_pct" type="number" step="1" inputmode="numeric" name="rh_low_pct" value="{{ row.rh_low_pct }}"></div>
+                                <div><label class="field" for="rh_high_pct">Red above</label><input id="rh_high_pct" type="number" step="1" inputmode="numeric" name="rh_high_pct" value="{{ row.rh_high_pct }}"></div>
+                                <div><label class="field" for="rh_amber_margin_pct">Amber margin</label><input id="rh_amber_margin_pct" type="number" step="1" inputmode="numeric" name="rh_amber_margin_pct" value="{{ row.rh_amber_margin_pct }}"></div>
+                            </div>
+                            <div class="hint">Temperature and humidity limits are also sent to the shed controller.</div>
                         </div>
-                        <div class="field">
-                            <label for="temp_amber_margin_c">Temp Amber Margin C</label>
-                            <input id="temp_amber_margin_c" type="number" step="0.1" name="temp_amber_margin_c" value="{{ row.temp_amber_margin_c }}">
-                        </div>
-                    </div>
-                    <div class="field-row">
-                        <div class="field">
-                            <label for="rh_low_pct">RH Red Low %</label>
-                            <input id="rh_low_pct" type="number" step="1" name="rh_low_pct" value="{{ row.rh_low_pct }}">
-                        </div>
-                        <div class="field">
-                            <label for="rh_high_pct">RH Red High %</label>
-                            <input id="rh_high_pct" type="number" step="1" name="rh_high_pct" value="{{ row.rh_high_pct }}">
-                        </div>
-                        <div class="field">
-                            <label for="rh_amber_margin_pct">RH Amber %</label>
-                            <input id="rh_amber_margin_pct" type="number" step="1" name="rh_amber_margin_pct" value="{{ row.rh_amber_margin_pct }}">
-                        </div>
-                    </div>
-                    <div class="field-row">
-                        <div class="field">
-                            <label for="water_low_lpm">Water Red Low L/min</label>
-                            <input id="water_low_lpm" type="number" step="0.01" name="water_low_lpm" value="{{ row.water_low_lpm }}">
-                        </div>
-                        <div class="field">
-                            <label for="water_amber_buffer_lpm">Water Amber Buffer L/min</label>
-                            <input id="water_amber_buffer_lpm" type="number" step="0.01" name="water_amber_buffer_lpm" value="{{ row.water_amber_buffer_lpm }}">
-                        </div>
-                    </div>
-                    <div class="field-row">
-                        <div class="field">
-                            <label for="feed_low_kg">Feed Red Low KG</label>
-                            <input id="feed_low_kg" type="number" step="1" name="feed_low_kg" value="{{ row.feed_low_kg }}">
-                        </div>
-                        <div class="field">
-                            <label for="feed_amber_buffer_kg">Feed Amber Buffer KG</label>
-                            <input id="feed_amber_buffer_kg" type="number" step="1" name="feed_amber_buffer_kg" value="{{ row.feed_amber_buffer_kg }}">
-                        </div>
-                    </div>
+                    </section>
                 </div>
-                <div class="note">Temp and RH go red outside the red-below and red-above limits. The amber margin creates an amber zone just inside those limits. Water and feed go red below the red-below value, then amber for the size of the amber buffer above it.</div>
-                <div class="preview">
-                    <div class="preview-title">How The Colours Work</div>
-                    <div class="preview-grid">
-                        <div class="preview-item">
-                            <div class="preview-pill red">RED</div>
-                            <div class="preview-text">Outside the safe range, or below the low red threshold for water and feed.</div>
+                <div class="col">
+                    <section>
+                        <h2 class="section-title">Water (L/min)</h2>
+                        <div class="card form">
+                            <div class="limits two">
+                                <div><label class="field" for="water_low_lpm">Red below</label><input id="water_low_lpm" type="number" step="0.01" inputmode="decimal" name="water_low_lpm" value="{{ row.water_low_lpm }}"></div>
+                                <div><label class="field" for="water_amber_buffer_lpm">Amber above red by</label><input id="water_amber_buffer_lpm" type="number" step="0.01" inputmode="decimal" name="water_amber_buffer_lpm" value="{{ row.water_amber_buffer_lpm }}"></div>
+                            </div>
                         </div>
-                        <div class="preview-item">
-                            <div class="preview-pill amber">AMBER</div>
-                            <div class="preview-text">Close to the red limit. Temp and RH use the amber margin. Water and feed use the amber buffer above red.</div>
+                    </section>
+                    <section>
+                        <h2 class="section-title">Feed bin (kg)</h2>
+                        <div class="card form">
+                            <div class="limits two">
+                                <div><label class="field" for="feed_low_kg">Red below</label><input id="feed_low_kg" type="number" step="1" inputmode="numeric" name="feed_low_kg" value="{{ row.feed_low_kg }}"></div>
+                                <div><label class="field" for="feed_amber_buffer_kg">Amber above red by</label><input id="feed_amber_buffer_kg" type="number" step="1" inputmode="numeric" name="feed_amber_buffer_kg" value="{{ row.feed_amber_buffer_kg }}"></div>
+                            </div>
                         </div>
-                        <div class="preview-item">
-                            <div class="preview-pill green">GREEN</div>
-                            <div class="preview-text">Comfortably in range, with enough distance from the red and amber trigger points.</div>
+                    </section>
+                    <section>
+                        <h2 class="section-title">How the colours work</h2>
+                        <div class="card guide">
+                            <div><b><span class="pill on">Green</span></b>Comfortably inside the limits.</div>
+                            <div><b><span class="pill wait">Amber</span></b>Close to a red limit: inside the amber margin, or within the amber amount above red.</div>
+                            <div><b><span class="pill bad">Red</span></b>Outside the limits. The shed tile shows red.</div>
                         </div>
-                    </div>
+                    </section>
+                    <button class="primary" type="submit">Save thresholds</button>
                 </div>
-                <button type="submit">Save Tile Thresholds</button>
-            </form>
-        </div>
+            </div>
+        </form>
     </div>
 <script>
-setTimeout(() => {
-    document.querySelectorAll('.auto-dismiss').forEach((el) => {
-        el.style.display = 'none';
-    });
-}, 10000);
+setTimeout(() => { document.querySelectorAll('.auto-dismiss').forEach((el) => { el.style.display = 'none'; }); }, 10000);
 </script>
 </body>
 </html>
@@ -10285,10 +10029,9 @@ BOREHOLE_DETAIL_HTML = """
     </style>
 </head>
 <body>
+    {{ office_topbar('Bore Hole') }}
     <div class="wrap">
-        <div class="topbar">{{ render_page_nav() }}</div>
 
-        <h1>Bore Hole</h1>
         <div class="sub">Hourly and daily water usage with zoomable charts.</div>
 
         <div class="grid">
@@ -10412,10 +10155,9 @@ HISTORY_HTML = """
     </style>
 </head>
 <body>
+    {{ office_topbar((shed_name) ~ ' Crop history') }}
     <div class="wrap">
-        <div class="topbar">{{ render_page_nav() }}</div>
 
-        <h1>{{ shed_name }} Crop history</h1>
         <div class="sub">Last 6 crops found in hourly log data.</div>
 
         <div class="card">
@@ -10620,10 +10362,9 @@ CROP_SUMMARY_HTML = """
     </style>
 </head>
 <body>
+    {{ office_topbar((shed_name) ~ ' ' ~ (summary.crop_code) ~ ' End of Crop Summary') }}
     <div class="wrap">
-        <div class="topbar">{{ render_page_nav() }}</div>
 
-        <h1>{{ shed_name }} {{ summary.crop_code }} End of Crop Summary</h1>
         <div class="sub">Historic crop roll-up using crop events, mortality, hourly water, and hourly feed history, displayed in 6-hour feed/water views.</div>
 
         <div class="actions">
@@ -10858,10 +10599,9 @@ CROP_REPORTS_HTML = """
     </style>
 </head>
 <body>
+    {{ office_topbar('Crop reports') }}
     <div class="wrap">
-        <div class="topbar">{{ render_page_nav() }}</div>
 
-        <h1>End of Crop Reports</h1>
         <div class="sub">Stored locally on the office Pi and available to download or resend by email.</div>
 
         {% if status_msg %}
@@ -11278,10 +11018,9 @@ PERIOD_HTML = """
     {{ day_bars_head|safe }}
 </head>
 <body>
+    {{ office_topbar((shed_name) ~ ' · crop ' ~ (crop_code)) }}
     <div class="wrap">
-        <div class="topbar">{{ render_page_nav() }}</div>
 
-        <h1>{{ shed_name }} · crop {{ crop_code }}</h1>
 
         <div id="feedBars"></div>
         <div id="waterBars" style="margin-top: 22px"></div>
@@ -11291,11 +11030,11 @@ PERIOD_HTML = """
 <script>
 const cropSubtitle = {{ ('Crop ' ~ crop_code ~ '.')|tojson }};
 ssDayBars(document.getElementById('feedBars'), {
-    title: 'Feed', label: 'Feed', unit: 'kg', color: '#2f9e3a', subtitle: cropSubtitle,
+    title: 'Feed', label: 'Feed', unit: 'kg', color: '#d9b86a', subtitle: cropSubtitle,
     epochs: {{ bar_epochs|tojson }}, values: {{ feed_values|tojson }}
 });
 ssDayBars(document.getElementById('waterBars'), {
-    title: 'Water', label: 'Water', unit: 'L', color: '#1676b8', subtitle: cropSubtitle,
+    title: 'Water', label: 'Water', unit: 'L', color: '#5fd0d8', subtitle: cropSubtitle,
     epochs: {{ bar_epochs|tojson }}, values: {{ water_values|tojson }}
 });
 </script>
@@ -11465,17 +11204,16 @@ METRIC_PERIOD_HTML = """
     {{ day_bars_head|safe }}
 </head>
 <body>
+    {{ office_topbar((shed_name) ~ ' ' ~ (metric_title)) }}
     <div class="wrap">
-        <div class="topbar">{{ render_page_nav() }}</div>
 
-        <h1>{{ shed_name }} {{ metric_title }}</h1>
         {% if status_msg %}
         <div class="status auto-dismiss {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
         {% endif %}
 
-        <div class="switches">
-            <a class="switch {% if metric == 'feed' %}active{% endif %}" href="{{ url_for('shed_metric_period_view', shed_no=shed_no, metric='feed', period=period) }}">Feed</a>
-            <a class="switch {% if metric == 'water' %}active{% endif %}" href="{{ url_for('shed_metric_period_view', shed_no=shed_no, metric='water', period=period) }}">Water</a>
+        <div class="log-tabs" role="tablist" aria-label="Log type">
+            <a class="log-tab {% if metric == 'feed' %}active{% endif %}" role="tab" aria-selected="{{ 'true' if metric == 'feed' else 'false' }}" href="{{ url_for('shed_metric_period_view', shed_no=shed_no, metric='feed', period='daily') }}">Feed</a>
+            <a class="log-tab {% if metric == 'water' %}active{% endif %}" role="tab" aria-selected="{{ 'true' if metric == 'water' else 'false' }}" href="{{ url_for('shed_metric_period_view', shed_no=shed_no, metric='water', period='daily') }}">Water</a>
         </div>
 
         <div id="metricBars"></div>
@@ -11861,10 +11599,9 @@ BOREHOLE_PERIOD_HTML = """
     {{ day_bars_head|safe }}
 </head>
 <body>
+    {{ office_topbar('Bore Hole Water') }}
     <div class="wrap">
-        <div class="topbar">{{ render_page_nav() }}</div>
 
-        <h1>Bore Hole Water</h1>
 
         <div id="waterBars"></div>
     </div>
@@ -11872,7 +11609,7 @@ BOREHOLE_PERIOD_HTML = """
 {{ day_bars_js|safe }}
 <script>
 ssDayBars(document.getElementById('waterBars'), {
-    title: 'Water', label: 'Water', unit: 'L', color: '#1676b8', subtitle: 'Last 45 days.',
+    title: 'Water', label: 'Water', unit: 'L', color: '#5fd0d8', subtitle: 'Last 45 days.',
     epochs: {{ bar_epochs|tojson }}, values: {{ water_values|tojson }},
     openLatestDay: {{ 'true' if period == 'hourly' else 'false' }}
 });
@@ -12885,12 +12622,24 @@ def shed_detail(shed_no):
     state = load_shed_entries_state()
     entries = ensure_shed_entry_bucket(state, shed_name)
     entry_rows = build_detail_entry_rows(shed_no, entries)
+    for r in entry_rows:
+        r["placed_display"] = fmt_value(r.get("placed_bird_count"), "i")
+        r["live_display"] = fmt_value(r.get("bird_count"), "i")
+    active_rows = [r for r in entry_rows if r.get("crop_active") == 1]
+    idle_rows = [r for r in entry_rows if r.get("crop_active") != 1]
+    placed_total = sum(int(r.get("placed_bird_count") or 0) for r in active_rows)
+    live_total = sum(int(r.get("bird_count") or 0) for r in active_rows)
+    starts = [r.get("placement_epoch") for r in active_rows if r.get("placement_epoch")]
 
     status_msg = request.args.get("msg", "")
     status_ok = request.args.get("ok", "1") == "1"
 
     return render_template_string(
         DETAIL_HTML,
+        active_rows=active_rows,
+        idle_rows=idle_rows,
+        total_birds="%s (%s)" % (fmt_value(placed_total, "i"), fmt_value(live_total, "i")) if active_rows else "--",
+        crop_started=datetime.fromtimestamp(int(min(starts))).strftime("%d %b %Y %H:%M") if starts else "",
         shed_name=shed_display_name,
         shed_storage_name=shed_name,
         shed_display_name=shed_display_name,
@@ -12934,7 +12683,7 @@ def shed_metric_period_view(shed_no, metric, period):
         running_table_label = "Running Feed KG"
         metric_axis_title = "Feed KG"
         metric_chart_label = "Feed KG"
-        metric_chart_color = "#2f9e3a"
+        metric_chart_color = "#d9b86a"
         value_format = lambda v: "%.2f" % float(v)
     else:
         metric_title = "Water"
@@ -12944,7 +12693,7 @@ def shed_metric_period_view(shed_no, metric, period):
         running_table_label = "Running Water L"
         metric_axis_title = "Water L"
         metric_chart_label = "Water L"
-        metric_chart_color = "#1676b8"
+        metric_chart_color = "#5fd0d8"
         value_format = lambda v: "%.1f" % float(v)
 
     if showing_out_of_crop:
