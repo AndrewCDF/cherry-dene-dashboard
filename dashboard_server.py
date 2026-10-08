@@ -169,6 +169,46 @@ app.jinja_env.globals["office_page_head"] = Markup(OFFICE_PAGE_HEAD)
 app.jinja_env.globals["office_topbar"] = office_topbar
 
 
+# Shared rules that give the office's simpler table / status pages the controller look
+# without rewriting their contents (panels, status cards, detail rows, links, pills).
+OFFICE_COMPAT_CSS = """
+<style>
+  .panel, .card, .table-card, .health-card { background: var(--card); border-radius: 14px; padding: 18px; margin-bottom: 16px; border: 0; }
+  .wrap > .sub, .panel > .sub, .card > .sub { color: var(--muted); font-size: 15px; margin: 0 0 12px; }
+  .wrap > .sub { margin: 0 4px 16px; }
+  h2 { margin: 0 0 10px; font-family: "Barlow Semi Condensed", "Barlow", sans-serif; font-size: 22px; font-weight: 600; color: var(--navy); }
+  .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .summary-grid .card, .health-card { margin-bottom: 0; padding: 14px 18px; }
+  .health-label, .metric-label { font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  .health-value, .metric-value { margin-top: 2px; font-family: "Barlow Semi Condensed", "Barlow", sans-serif; font-size: 30px; font-weight: 600; color: var(--navy); line-height: 1.1; }
+  .health-note, .metric-sub { font-size: 14px; color: var(--muted); }
+  .grid, .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+  .grid > .panel, .two-col > .card { margin-bottom: 0; }
+  .detail { display: flex; justify-content: space-between; gap: 12px; padding: 9px 0; border-top: 1px solid var(--track); font-size: 16px; }
+  .detail .label { color: var(--muted); }
+  details.collapse { margin-top: 6px; }
+  details.collapse > summary { cursor: pointer; color: var(--navy); font-weight: 600; font-size: 15px; min-height: 40px; display: flex; align-items: center; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .actions form { margin: 0; }
+  .action-link, .actions a, .actions button { display: inline-flex; align-items: center; justify-content: center; width: auto; min-height: 44px; padding: 0 16px; border-radius: 12px;
+    border: 1px solid #c5d0dc; background: var(--card-2); color: var(--text); font: inherit; font-size: 15px; font-weight: 600; text-decoration: none; cursor: pointer; }
+  .action-link:hover, .actions a:hover { background: var(--track); }
+  .state-ok { color: #1e6b16; font-weight: 600; } .state-bad { color: #8f1f1f; font-weight: 600; }
+  .pill, .status-pill { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; background: var(--card-2); color: var(--muted); }
+  .pill.emailed, .pill.generated, .status-pill.ok { background: #e3f4e1; color: #1e6b16; }
+  .pill.failed { background: #fdecec; color: #8f1f1f; }
+  .pill.processing, .pill.queued { background: #fff4e5; color: #9a4b00; }
+  .msg.bad, .status.err { background: #fdecec; border-color: #e3a0a0; color: #8f1f1f; }
+  .status { margin-bottom: 14px; padding: 12px 16px; border-radius: 12px; background: #e3f4e1; border: 1px solid #9fd39a; color: #1e6b16; font-weight: 600; }
+  .empty { color: var(--muted); padding: 8px 0; }
+  .mono, .path { font-family: ui-monospace, Menlo, monospace; font-size: 13px; overflow-wrap: anywhere; }
+  td button, td .action-link { width: auto; min-height: 40px; padding: 0 12px; font-size: 14px; }
+  @media (max-width: 860px) { .grid, .two-col { grid-template-columns: 1fr; } }
+</style>
+"""
+app.jinja_env.globals["office_compat_css"] = Markup(OFFICE_COMPAT_CSS)
+
+
 @app.route("/favicon.ico")
 @app.route("/favicon.png")
 @app.route("/favicon.svg")
@@ -7694,6 +7734,7 @@ OFFICE_CARDS_HTML = """
         </span>
         {% endif %}
       </span>
+      {% if s.split %}<span class="ss-row"><span class="ss-split">{{ s.split }}</span></span>{% endif %}
     {% if tv and pc %}</a>{% elif tv %}</div>{% else %}</button>{% endif %}
 
     {% if s.live or tv %}
@@ -7717,7 +7758,6 @@ OFFICE_CARDS_HTML = """
     {% if s.has_alarm %}<div class="ss-card-alarm">{{ s.alarm }}</div>{% endif %}
 
     <div class="ss-more">
-      {% if s.alloc and not off %}<div class="ss-alloc">{{ s.alloc }}</div>{% endif %}
       <div class="ss-augers">
         {% for a in s.augers %}
         <div class="ss-auger"><span class="ss-auger-name"><span class="ss-dot dot-{{ 'none' if off else a.kind }}"></span>{{ a.name }}</span><span class="ss-auger-state">{{ '--' if off else a.state }}</span></div>
@@ -7849,6 +7889,7 @@ OFFICE_HOME_HTML = """
   .ss-card-alarm { border-radius: 10px; padding: 8px 12px; background: #fdecec; color: #8f1f1f; font-size: 14px; font-weight: 600; }
   .ss-more { display: flex; flex-direction: column; gap: 12px; border-top: 1px solid var(--rule); padding-top: 10px; }
   .ss-alloc { font-size: 14px; color: var(--muted); }
+  .ss-split { font-size: 14px; font-weight: 600; color: var(--muted); }
   .ss-augers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
   .ss-auger { border-radius: 10px; padding: 6px 10px; background: var(--soft-bg); display: flex; flex-direction: column; min-width: 0; }
   .ss-auger-name { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; }
@@ -8016,7 +8057,10 @@ OFFICE_HOME_HTML = """
   body.tv .ss-card-note { font-size: 15px; color: var(--text); }
   body.tv .ss-grid .ss-foot { display: none; }
   body.tv .ss-card > *, body.tv .ss-more > * { flex-shrink: 0; }
-  body.tv .ss-grid .ss-alloc { display: none; }
+  body.tv .ss-grid .ss-split { font-size: 15px; line-height: 1.15; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  body.tv .ss-grid .ss-card { gap: 4px; padding: 10px 12px 6px; }
+  body.tv .ss-grid .ss-card-head { gap: 2px; }
+  body.tv .ss-grid .ss-tile { padding-top: 2px; padding-bottom: 2px; }
   body.tv .ss-card-alarm + .ss-card-note { display: none; }
   /* PC wall: same as the TV, plus the menu buttons and clickable sheds. */
   body.tv.tv-pc .ss-nav { display: flex; margin-left: auto; gap: 10px; }
@@ -8388,65 +8432,8 @@ EVENTS_HTML = """
     <meta charset="utf-8">
     <title>Office Event Log</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        * { box-sizing:border-box; }
-        body { margin:0; font-family:Arial, sans-serif; background: #5b5b5b; color: #0d2b4a; overflow-x:hidden; }
-        .wrap { max-width:1400px; margin:0 auto; padding:16px; }
-        a { color: #0d2b4a; text-decoration:none; }
-        .topbar { margin-bottom:16px; }
-        .panel { background: #f5f8fb; border: 1px solid #d5dde6; border-radius:14px; padding:16px; min-width:0; }
-        h1 { margin:0 0 8px 0; }
-        .sub { color: #0d2b4a; margin-bottom:14px; }
-        .collapse { margin-top:14px; }
-        .collapse summary { cursor:pointer; list-style:none; padding:12px 14px; border: 1px solid #d5dde6; border-radius:10px; background: #f5f8fb; font-weight:700; }
-        .collapse summary::-webkit-details-marker { display:none; }
-        .collapse[open] summary { margin-bottom:12px; }
-        .table-wrap { overflow:auto; -webkit-overflow-scrolling:touch; border: 1px solid #d5dde6; border-radius:10px; background: #f5f8fb; }
-        table { width:100%; border-collapse:collapse; font-size:14px; table-layout:fixed; }
-        th, td { padding:10px 8px; border-bottom: 1px solid #d5dde6; text-align:left; vertical-align:top; overflow-wrap:anywhere; word-break:break-word; }
-        th { color: #0d2b4a; }
-        .compact-input {
-            width:100%;
-            min-width:64px;
-            padding:8px 10px;
-            border-radius:8px;
-            border: 1px solid #d5dde6;
-            background: #f5f8fb;
-            color: #0d2b4a;
-        }
-        .shed-threshold-grid {
-            display:grid;
-            grid-template-columns:repeat(3, minmax(0, 1fr));
-            gap:12px;
-        }
-        .shed-threshold-card {
-            background: #f5f8fb;
-            border: 1px solid #d5dde6;
-            border-radius:12px;
-            padding:12px;
-            min-width:0;
-        }
-        .shed-threshold-card h3 {
-            margin:0 0 10px 0;
-            font-size:18px;
-        }
-        .shed-threshold-fields {
-            display:grid;
-            grid-template-columns:1fr 1fr;
-            gap:10px;
-        }
-        .shed-threshold-fields .field {
-            gap:4px;
-        }
-        .mono { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; }
-        @media (max-width: 700px) {
-            .wrap { padding:12px; }
-            h1 { font-size:24px; }
-            .panel { padding:12px; }
-            table { font-size:13px; }
-            th, td { padding:9px 7px; }
-        }
-    </style>
+    {{ office_page_head }}
+    {{ office_compat_css }}
 </head>
 <body>
     {{ office_topbar('Event log') }}
@@ -8489,43 +8476,8 @@ RESTORE_HTML = """
     <meta charset="utf-8">
     <title>Office Backup Restore</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        * { box-sizing:border-box; }
-        body { margin:0; font-family:Arial, sans-serif; background: #5b5b5b; color: #0d2b4a; overflow-x:hidden; }
-        .wrap { max-width:1400px; margin:0 auto; padding:16px; }
-        a { color: #0d2b4a; text-decoration:none; }
-        .topbar { margin-bottom:16px; }
-        .status { margin-bottom:14px; padding:10px 12px; border-radius:10px; background: #f5f8fb; border: 1px solid #d5dde6; }
-        .status.ok { border-color: #2f9e3a; color: #0d2b4a; }
-        .status.err { border-color: #d64545; color: #b42318; }
-        .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-        .panel { background: #f5f8fb; border: 1px solid #d5dde6; border-radius:14px; padding:16px; min-width:0; }
-        h1 { margin:0 0 8px 0; }
-        h2 { margin:0 0 10px 0; }
-        .sub { color: #0d2b4a; margin-bottom:14px; }
-        .detail { display:flex; justify-content:space-between; gap:12px; padding:10px 0; border-bottom: 1px solid #d5dde6; }
-        .detail:last-child { border-bottom: 0; }
-        .label { color: #0d2b4a; }
-        select { width:100%; box-sizing:border-box; padding:10px 12px; border-radius:8px; border: 1px solid #d5dde6; background: #f5f8fb; color: #0d2b4a; margin-bottom:12px; }
-        button { background: #f5f8fb; color: #0d2b4a; border: 1px solid #d5dde6; border-radius:8px; padding:10px 14px; cursor:pointer; width:100%; }
-        button.danger { border-color: #d64545; }
-        .collapse { margin-top:14px; }
-        .collapse summary { cursor:pointer; list-style:none; padding:12px 14px; border: 1px solid #d5dde6; border-radius:10px; background: #f5f8fb; font-weight:700; }
-        .collapse summary::-webkit-details-marker { display:none; }
-        .collapse[open] summary { margin-bottom:12px; }
-        .table-wrap { overflow:auto; -webkit-overflow-scrolling:touch; border: 1px solid #d5dde6; border-radius:10px; background: #f5f8fb; }
-        table { width:100%; border-collapse:collapse; font-size:14px; table-layout:fixed; }
-        th, td { padding:10px 8px; border-bottom: 1px solid #d5dde6; text-align:left; overflow-wrap:anywhere; word-break:break-word; }
-        th { color: #0d2b4a; }
-        @media (max-width: 900px) { .grid { grid-template-columns:1fr; } }
-        @media (max-width: 700px) {
-            .wrap { padding:12px; }
-            h1 { font-size:24px; }
-            .panel { padding:12px; }
-            .detail { flex-direction:column; align-items:flex-start; }
-            table { font-size:13px; }
-        }
-    </style>
+    {{ office_page_head }}
+    {{ office_compat_css }}
 </head>
 <body>
     {{ office_topbar('Restore backup') }}
@@ -8643,231 +8595,167 @@ setTimeout(() => {
 
 
 MANUAL_FEED_ENTRY_HTML = """
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
 <head>
     <meta charset="utf-8">
     <title>Manual Feed Entry</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    {{ office_page_head }}
     <style>
-        * { box-sizing: border-box; }
-        body { margin: 0; font-family: Arial, sans-serif; background: #5b5b5b; color: #0d2b4a; overflow-x:hidden; }
-        .wrap { max-width: 1100px; margin: 0 auto; padding: 16px; }
-        a { color: #0d2b4a; text-decoration: none; }
-        h1 { margin: 0 0 6px 0; font-size: 30px; }
-        h2 { margin: 0 0 8px 0; font-size: 22px; }
-        .sub { color: #0d2b4a; margin-bottom: 16px; font-size: 14px; line-height: 1.45; }
-        .topbar { margin-bottom: 14px; }
-        .status { margin:0 0 14px 0; padding:10px 12px; border-radius:8px; background: #f5f8fb; border: 1px solid #d5dde6; }
-        .status.ok { border-color: #2f9e3a; color: #0d2b4a; }
-        .status.err { border-color: #d64545; color: #b42318; }
-        .panel { background: #f5f8fb; border: 1px solid #d5dde6; border-radius:8px; padding:14px; margin-bottom:16px; min-width:0; }
-        .form-grid { display:grid; grid-template-columns:1fr 0.55fr 1fr auto; gap:10px; align-items:end; }
-        .bin-fill-grid { grid-template-columns:1fr 0.55fr 1fr auto; }
-        .field { display:flex; flex-direction:column; gap:6px; min-width:0; }
-        .field label { color: #0d2b4a; font-size:14px; }
-        input, select {
-            width:100%;
-            min-height:42px;
-            padding:10px 12px;
-            border-radius:6px;
-            border: 1px solid #d5dde6;
-            background: #f5f8fb;
-            color: #0d2b4a;
-            font-family: inherit;
-        }
-        button {
-            min-height:42px;
-            padding:10px 14px;
-            border-radius:6px;
-            border: 1px solid #2f9e3a;
-            background: #e3f4e1;
-            color: #0d2b4a;
-            cursor:pointer;
-        }
-        button.secondary { border-color: #d5dde6; background: #f5f8fb; }
-        .action-stack { display:flex; gap:8px; flex-wrap:wrap; }
-        .table-wrap { overflow:auto; -webkit-overflow-scrolling:touch; border: 1px solid #d5dde6; border-radius:6px; background: #f5f8fb; }
-        table { width:100%; border-collapse:collapse; font-size:14px; table-layout:fixed; }
-        th, td { padding:10px 8px; border-bottom: 1px solid #d5dde6; text-align:left; vertical-align:top; overflow-wrap:anywhere; word-break:break-word; }
-        th { color: #0d2b4a; }
-        .history-table { min-width:980px; }
-        .movement-table { min-width:980px; }
-        .history-table input, .history-table select { min-height:38px; padding:8px 10px; }
-        .history-actions { display:flex; gap:8px; flex-wrap:wrap; }
-        .delete-button { border-color: #d64545; background: #fdecec; }
-        .state-pill { display:inline-flex; align-items:center; justify-content:center; min-height:28px; padding:5px 9px; border-radius:999px; border: 1px solid #d5dde6; background: #f5f8fb; font-weight:700; font-size:12px; }
-        .state-pill.in-crop { border-color: #2f9e3a; color: #0d2b4a; }
-        .state-pill.out-crop { border-color: #f08a12; color: #9a4b00; }
-        .empty { color: #0d2b4a; font-size:14px; }
-        @media (max-width: 760px) { .wrap { padding:12px; } h1 { font-size:24px; } .form-grid, .bin-fill-grid { grid-template-columns:1fr; } button { width:100%; } table { font-size:13px; } }
+        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .form-row .full { grid-column: 1 / -1; }
+        .state-pill { display: inline-flex; padding: 3px 10px; border-radius: 999px; font-size: 14px; font-weight: 600; background: var(--card-2); color: var(--muted); }
+        .state-pill.in-crop { background: #e3f4e1; color: #1e6b16; }
+        .state-pill.out-crop { background: #fff4e5; color: #9a4b00; }
+        .table-wrap { max-height: 460px; }
+        td select, td input { min-height: 44px; font-size: 15px; padding: 0 8px; }
+        .row-actions { display: flex; gap: 6px; }
+        .row-actions button { width: auto; min-height: 44px; padding: 0 14px; font-size: 15px; }
+        .apply { display: grid; gap: 8px; margin-top: 12px; }
     </style>
 </head>
 <body>
     {{ office_topbar('Manual feed entry') }}
     <div class="wrap">
-        <div class="sub">Normal in-crop silo feeding is recorded automatically from the weigh cells. Feed movement is tracked below whether the shed is in crop or out of crop, with out-of-crop setup feed kept separate until you add it to the crop.</div>
-        {% if status_msg %}
-        <div class="status auto-dismiss {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
-        {% endif %}
-
-        <div class="panel">
-            <h2>Feed Movement Tracker</h2>
-            <div class="sub">Automatic movement seen by the bin weigh cells. Each detected feed movement is listed separately with shed, time, amount, and crop state.</div>
-            {% if feed_movement_event_rows %}
-            <div class="table-wrap">
-                <table class="movement-table">
-                    <thead><tr><th>Time</th><th>Shed</th><th>Movement</th><th>KG</th><th>Crop State</th><th>Crop</th><th>Feed KG After</th></tr></thead>
-                    <tbody>
-                        {% for row in feed_movement_event_rows %}
-                        <tr>
-                            <td>{{ row.ts_label }}</td>
-                            <td>{{ row.shed_name }}</td>
-                            <td>{{ row.movement_label }}</td>
-                            <td>{{ row.kg_label }}</td>
-                            <td><span class="state-pill {{ row.crop_state_class }}">{{ row.crop_state_label }}</span></td>
-                            <td>{{ row.crop_label }}</td>
-                            <td>{{ row.feed_kg_after_label }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-            {% else %}
-            <div class="empty">No feed movement activity recorded yet.</div>
-            {% endif %}
-            {% if feed_movement_rows %}
-            <div class="action-stack" style="margin-top:12px;">
-                {% for row in feed_movement_rows %}
-                {% if row.can_apply %}
-                <form method="post" action="{{ url_for('office_pre_crop_feed_apply_view') }}">
-                    <input type="hidden" name="shed_no" value="{{ row.shed_no }}">
-                    <button type="submit">Add {{ row.out_of_crop_feed_out_label }} KG Out-Of-Crop Feed To {{ row.shed_name }}</button>
+        {% if status_msg %}<div class="msg auto-dismiss {% if not status_ok %}error{% endif %}">{{ status_msg }}</div>{% endif %}
+        <div class="hint" style="margin: 0 4px 16px">Normal in-crop silo feeding is recorded automatically from the weigh cells. Use this page for feed the weigh cells can't see.</div>
+        <div class="cols">
+            <section>
+                <h2 class="section-title">Record shed feed</h2>
+                <form class="card form" method="post" action="{{ url_for('office_feed_stock_allocate_view') }}">
+                    <div class="form-row">
+                        <div class="full">
+                            <label class="field" for="manual_feed_shed_no">Shed</label>
+                            <select id="manual_feed_shed_no" name="shed_no">
+                                <option value="">Select active shed</option>
+                                {% for target in active_targets %}
+                                <option value="{{ target.shed_no }}" {% if preselected_shed_no == target.shed_no %}selected{% endif %}>{{ target.shed_name }} · {{ target.crop_code }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div><label class="field" for="manual_feed_kg">Feed (kg)</label><input id="manual_feed_kg" type="number" step="0.1" min="0" name="kg" inputmode="decimal" value=""></div>
+                        <div><label class="field" for="manual_feed_note">Note</label><input id="manual_feed_note" type="text" name="note" value="" placeholder="Floor fed / moved from Shed 2"></div>
+                    </div>
+                    <button class="primary" type="submit">Record feed</button>
                 </form>
+            </section>
+            <section style="margin-top:0">
+                <h2 class="section-title">Record bin fill-up</h2>
+                <form class="card form" method="post" action="{{ url_for('office_feed_stock_bin_fill_view') }}">
+                    <div class="form-row">
+                        <div class="full">
+                            <label class="field" for="bin_fill_shed_no">Shed / bin</label>
+                            <select id="bin_fill_shed_no" name="shed_no">
+                                <option value="">Farm / unspecified</option>
+                                {% for shed in shed_options %}
+                                <option value="{{ shed.shed_no }}">{{ shed.shed_name }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div><label class="field" for="bin_fill_kg">Feed (kg)</label><input id="bin_fill_kg" type="number" step="0.1" min="0" name="kg" inputmode="decimal" value=""></div>
+                        <div><label class="field" for="bin_fill_note">Note</label><input id="bin_fill_note" type="text" name="note" value="" placeholder="Delivery / bin fill-up"></div>
+                    </div>
+                    <button class="primary" type="submit">Record fill-up</button>
+                </form>
+            </section>
+        </div>
+
+        <section>
+            <h2 class="section-title">Feed movements (from the bin weigh cells)</h2>
+            <div class="card">
+                {% if feed_movement_event_rows %}
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>Time</th><th>Shed</th><th>Movement</th><th>kg</th><th>Crop state</th><th>Crop</th><th>kg after</th></tr></thead>
+                        <tbody>
+                            {% for row in feed_movement_event_rows %}
+                            <tr>
+                                <td>{{ row.ts_label }}</td>
+                                <td>{{ row.shed_name }}</td>
+                                <td>{{ row.movement_label }}</td>
+                                <td>{{ row.kg_label }}</td>
+                                <td><span class="state-pill {{ row.crop_state_class }}">{{ row.crop_state_label }}</span></td>
+                                <td>{{ row.crop_label }}</td>
+                                <td>{{ row.feed_kg_after_label }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="hint">No feed movement recorded yet.</div>
                 {% endif %}
-                {% endfor %}
+                {% if feed_movement_rows %}
+                <div class="apply">
+                    {% for row in feed_movement_rows %}
+                    {% if row.can_apply %}
+                    <form method="post" action="{{ url_for('office_pre_crop_feed_apply_view') }}">
+                        <input type="hidden" name="shed_no" value="{{ row.shed_no }}">
+                        <button type="submit">Add {{ row.out_of_crop_feed_out_label }} kg out-of-crop feed to {{ row.shed_name }}</button>
+                    </form>
+                    {% endif %}
+                    {% endfor %}
+                </div>
+                {% endif %}
             </div>
-            {% endif %}
-        </div>
+        </section>
 
-        <div class="panel">
-            <h2>Record Shed Feed</h2>
-            <form class="form-grid" method="post" action="{{ url_for('office_feed_stock_allocate_view') }}">
-                <div class="field">
-                    <label for="manual_feed_shed_no">Shed</label>
-                    <select id="manual_feed_shed_no" name="shed_no">
-                        <option value="">Select active shed</option>
-                        {% for target in active_targets %}
-                        <option value="{{ target.shed_no }}" {% if preselected_shed_no == target.shed_no %}selected{% endif %}>{{ target.shed_name }} - {{ target.crop_code }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-                <div class="field">
-                    <label for="manual_feed_kg">Feed KG</label>
-                    <input id="manual_feed_kg" type="number" step="0.1" min="0" name="kg" value="">
-                </div>
-                <div class="field">
-                    <label for="manual_feed_note">Note</label>
-                    <input id="manual_feed_note" type="text" name="note" value="" placeholder="Floor fed / moved from Shed 2">
-                </div>
-                <button type="submit">Record Feed</button>
-            </form>
-        </div>
-
-        <div class="panel">
-            <h2>Record Bin Fill-Up</h2>
-            <form class="form-grid bin-fill-grid" method="post" action="{{ url_for('office_feed_stock_bin_fill_view') }}">
-                <div class="field">
-                    <label for="bin_fill_shed_no">Shed / Bin</label>
-                    <select id="bin_fill_shed_no" name="shed_no">
-                        <option value="">Farm / unspecified</option>
-                        {% for shed in shed_options %}
-                        <option value="{{ shed.shed_no }}">{{ shed.shed_name }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-                <div class="field">
-                    <label for="bin_fill_kg">Feed KG</label>
-                    <input id="bin_fill_kg" type="number" step="0.1" min="0" name="kg" value="">
-                </div>
-                <div class="field">
-                    <label for="bin_fill_note">Note</label>
-                    <input id="bin_fill_note" type="text" name="note" value="" placeholder="Delivery / bin fill-up">
-                </div>
-                <button type="submit">Record Fill-Up</button>
-            </form>
-        </div>
-
-        <div class="panel">
-            <h2>Feed Activity History</h2>
-            {% if transaction_rows %}
-            <div class="table-wrap">
-                <table class="history-table">
-                    <thead><tr><th>Time</th><th>Type</th><th>Shed</th><th>Crop</th><th>Feed KG</th><th>Note</th><th>Actions</th></tr></thead>
-                    <tbody>
-                        {% for row in transaction_rows %}
-                        <tr>
-                            <td>{{ row.ts_label }}</td>
-                            <td>
-                                {% if row.can_edit %}
-                                <select name="kind" form="{{ row.form_id }}">
-                                    <option value="bin_fill" {% if row.display_kind == "bin_fill" %}selected{% endif %}>Bin Fill-Up</option>
-                                    <option value="shed_allocation" {% if row.display_kind == "shed_allocation" %}selected{% endif %}>Shed Feed</option>
-                                </select>
-                                {% else %}
-                                {{ row.kind_label }}
-                                {% endif %}
-                            </td>
-                            <td>
-                                {% if row.can_edit %}
-                                <select name="shed_no" form="{{ row.form_id }}">
-                                    <option value="">--</option>
-                                    {% for shed in shed_options %}
-                                    <option value="{{ shed.shed_no }}" {% if row.shed_no == shed.shed_no %}selected{% endif %}>{{ shed.shed_name }}</option>
-                                    {% endfor %}
-                                </select>
-                                {% else %}
-                                {{ row.shed_label }}
-                                {% endif %}
-                            </td>
-                            <td>{{ row.crop_label }}</td>
-                            <td>
-                                {% if row.can_edit %}
-                                <input type="number" step="0.1" min="0" name="kg" value="{{ row.feed_kg_value }}" form="{{ row.form_id }}">
-                                {% else %}
-                                {{ row.feed_kg_label }}
-                                {% endif %}
-                            </td>
-                            <td>
-                                {% if row.can_edit %}
-                                <input type="text" name="note" value="{{ row.note }}" form="{{ row.form_id }}">
-                                {% else %}
-                                {{ row.note if row.note else "--" }}
-                                {% endif %}
-                            </td>
-                            <td>
-                                <div class="history-actions">
+        <section>
+            <h2 class="section-title">Feed activity history</h2>
+            <div class="card">
+                {% if transaction_rows %}
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>Time</th><th>Type</th><th>Shed</th><th>Crop</th><th>Feed kg</th><th>Note</th><th></th></tr></thead>
+                        <tbody>
+                            {% for row in transaction_rows %}
+                            <tr>
+                                <td>{{ row.ts_label }}</td>
+                                <td>
                                     {% if row.can_edit %}
-                                    <form id="{{ row.form_id }}" method="post" action="{{ url_for('office_feed_stock_edit_view') }}">
-                                        <input type="hidden" name="tx_id" value="{{ row.tx_id }}">
-                                        <button type="submit">Update</button>
-                                    </form>
-                                    {% endif %}
-                                    <form method="post" action="{{ url_for('office_feed_stock_delete_view') }}">
-                                        <input type="hidden" name="tx_id" value="{{ row.tx_id }}">
-                                        <button class="delete-button" type="submit">Delete</button>
-                                    </form>
-                                </div>
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
+                                    <select name="kind" form="{{ row.form_id }}">
+                                        <option value="bin_fill" {% if row.display_kind == "bin_fill" %}selected{% endif %}>Bin fill-up</option>
+                                        <option value="shed_allocation" {% if row.display_kind == "shed_allocation" %}selected{% endif %}>Shed feed</option>
+                                    </select>
+                                    {% else %}{{ row.kind_label }}{% endif %}
+                                </td>
+                                <td>
+                                    {% if row.can_edit %}
+                                    <select name="shed_no" form="{{ row.form_id }}">
+                                        <option value="">--</option>
+                                        {% for shed in shed_options %}
+                                        <option value="{{ shed.shed_no }}" {% if row.shed_no == shed.shed_no %}selected{% endif %}>{{ shed.shed_name }}</option>
+                                        {% endfor %}
+                                    </select>
+                                    {% else %}{{ row.shed_label }}{% endif %}
+                                </td>
+                                <td>{{ row.crop_label }}</td>
+                                <td>{% if row.can_edit %}<input type="number" step="0.1" min="0" name="kg" value="{{ row.feed_kg_value }}" form="{{ row.form_id }}">{% else %}{{ row.feed_kg_label }}{% endif %}</td>
+                                <td>{% if row.can_edit %}<input type="text" name="note" value="{{ row.note }}" form="{{ row.form_id }}">{% else %}{{ row.note if row.note else "--" }}{% endif %}</td>
+                                <td>
+                                    <div class="row-actions">
+                                        {% if row.can_edit %}
+                                        <form id="{{ row.form_id }}" method="post" action="{{ url_for('office_feed_stock_edit_view') }}">
+                                            <input type="hidden" name="tx_id" value="{{ row.tx_id }}">
+                                            <button type="submit">Update</button>
+                                        </form>
+                                        {% endif %}
+                                        <form method="post" action="{{ url_for('office_feed_stock_delete_view') }}" onsubmit="return confirm('Delete this feed entry?');">
+                                            <input type="hidden" name="tx_id" value="{{ row.tx_id }}">
+                                            <button class="danger" type="submit">Delete</button>
+                                        </form>
+                                    </div>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="hint">No feed activity recorded yet.</div>
+                {% endif %}
             </div>
-            {% else %}
-            <div class="empty">No feed activity entries recorded yet.</div>
-            {% endif %}
-        </div>
+        </section>
     </div>
 <script>
 setTimeout(() => {
@@ -8882,293 +8770,169 @@ setTimeout(() => {
 
 
 OFFICE_SETTINGS_HTML = """
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
 <head>
     <meta charset="utf-8">
     <title>Office Settings</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    {{ office_page_head }}
     <style>
-        * { box-sizing:border-box; }
-        body { margin:0; font-family:Arial, sans-serif; background: #5b5b5b; color: #0d2b4a; overflow-x:hidden; }
-        .wrap { max-width:1400px; margin:0 auto; padding:16px; }
-        a { color: #0d2b4a; text-decoration:none; }
-        .topbar { margin-bottom:16px; }
-        h1 { margin:0 0 8px 0; }
-        .sub { color: #0d2b4a; margin-bottom:14px; }
-        .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-        .panel { background: #f5f8fb; border: 1px solid #d5dde6; border-radius:14px; padding:16px; min-width:0; }
-        .health-grid { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:12px; margin-top:12px; }
-        .health-card { background: #f5f8fb; border: 1px solid #d5dde6; border-radius:12px; padding:12px; min-width:0; overflow-wrap:anywhere; word-break:break-word; }
-        .health-label { color: #0d2b4a; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; }
-        .health-value { margin-top:6px; font-size:24px; font-weight:700; }
-        .health-note { margin-top:6px; color: #0d2b4a; font-size:12px; line-height:1.35; }
-        .action-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
-        .form-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-        .field { display:flex; flex-direction:column; gap:6px; min-width:0; }
-        .field label { color: #0d2b4a; font-size:13px; }
-        .field input {
-            width:100%;
-            padding:10px 12px;
-            border-radius:8px;
-            border: 1px solid #d5dde6;
-            background: #f5f8fb;
-            color: #0d2b4a;
-        }
-        .field textarea {
-            width:100%;
-            min-height:84px;
-            padding:10px 12px;
-            border-radius:8px;
-            border: 1px solid #d5dde6;
-            background: #f5f8fb;
-            color: #0d2b4a;
-            resize:vertical;
-            font-family:inherit;
-        }
-        .field-full { grid-column:1 / -1; }
-        .checkbox-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:8px 0 14px 0; }
-        .check { display:flex; align-items:center; gap:8px; padding:10px 12px; border: 1px solid #d5dde6; border-radius:10px; background: #f5f8fb; }
-        .check input { width:auto; margin:0; }
-        .recipient-list { display:grid; gap:10px; margin-top:14px; }
-        .recipient-row {
-            display:flex;
-            align-items:center;
-            justify-content:space-between;
-            gap:10px;
-            padding:10px 12px;
-            border: 1px solid #d5dde6;
-            border-radius:10px;
-            background: #f5f8fb;
-        }
-        .recipient-email { overflow-wrap:anywhere; word-break:break-word; }
-        .inline-form { display:flex; gap:10px; align-items:flex-end; }
-        .inline-form .field { flex:1 1 auto; }
-        .inline-form button { width:auto; min-width:130px; }
-        .notify-btn.notify-on {
-            border-color: #2f9e3a;
-            color: #1e6b16;
-            box-shadow: 0 0 8px rgba(47,158,58,0.36),
-                0 0 16px rgba(47,158,58,0.17);
-        }
-        .notify-btn.notify-blocked {
-            border-color: #d64545;
-            color: #b42318;
-            box-shadow: 0 0 8px rgba(214,69,69,0.36),
-                0 0 16px rgba(214,69,69,0.17);
-        }
-        .notify-btn.notify-off {
-            border-color: #f08a12;
-            color: #9a4b00;
-        }
-        .notify-status {
-            margin-top:12px;
-            font-size:13px;
-            color: #0d2b4a;
-            min-height:18px;
-        }
-        .notify-status.state-on {
-            color: #1e6b16;
-            text-shadow: 0 0 8px rgba(47,158,58,0.25);
-        }
-        .notify-status.state-blocked {
-            color: #b42318;
-            text-shadow: 0 0 8px rgba(214,69,69,0.25);
-        }
-        .notify-status.state-off {
-            color: #9a4b00;
-        }
-        .note { color: #0d2b4a; font-size:12px; line-height:1.4; margin-top:10px; }
-        .action-link, button {
-            display:inline-flex;
-            align-items:center;
-            justify-content:center;
-            width:100%;
-            box-sizing:border-box;
-            min-height:46px;
-            padding:10px 14px;
-            border-radius:10px;
-            border: 1px solid #d5dde6;
-            background: #f5f8fb;
-            color: #0d2b4a;
-            text-decoration:none;
-            font-size:14px;
-            cursor:pointer;
-        }
-        .action-link.wide, button.wide { grid-column:1 / -1; }
-        .detail { display:flex; justify-content:space-between; gap:12px; padding:10px 0; border-bottom: 1px solid #d5dde6; }
-        .detail:last-child { border-bottom: 0; }
-        .label { color: #0d2b4a; }
-        .status { margin:0 0 14px 0; padding:10px 12px; border-radius:10px; background: #f5f8fb; border: 1px solid #d5dde6; }
-        .status.ok { border-color: #2f9e3a; color: #0d2b4a; }
-        .status.err { border-color: #d64545; color: #b42318; }
-        .mono { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; }
-        .update-actions { display:grid; grid-template-columns:1fr; gap:10px; margin-top:14px; }
-        .collapse { margin-top:14px; }
-        .collapse summary { cursor:pointer; list-style:none; padding:12px 14px; border: 1px solid #d5dde6; border-radius:10px; background: #f5f8fb; font-weight:700; }
-        .collapse summary::-webkit-details-marker { display:none; }
-        .collapse[open] summary { margin-bottom:12px; }
-        .table-wrap { overflow:auto; -webkit-overflow-scrolling:touch; border: 1px solid #d5dde6; border-radius:10px; background: #f5f8fb; }
-        table { width:100%; border-collapse:collapse; font-size:14px; table-layout:fixed; }
-        th, td { padding:10px 8px; border-bottom: 1px solid #d5dde6; text-align:left; vertical-align:top; overflow-wrap:anywhere; word-break:break-word; }
-        th { color: #0d2b4a; }
-        @media (max-width: 900px) { .grid, .action-grid, .health-grid, .form-grid, .checkbox-grid, .shed-threshold-grid, .shed-threshold-fields { grid-template-columns:1fr; } }
-        @media (max-width: 700px) {
-            .wrap { padding:12px; }
-            h1 { font-size:24px; }
-            .panel { padding:12px; }
-            .detail { flex-direction:column; align-items:flex-start; }
-            .action-link, button { min-height:42px; padding:10px 12px; }
-            .inline-form { flex-direction:column; align-items:stretch; }
-            .inline-form button { width:100%; min-width:0; }
-            .recipient-row { flex-direction:column; align-items:stretch; }
-            table { font-size:13px; }
-        }
+        .list { border-radius: 14px; background: var(--card); overflow: hidden; }
+        .item { display: flex; align-items: center; gap: 12px; min-height: 50px; padding: 0 18px; color: var(--text); text-decoration: none; font-size: 18px; font-weight: 500; border-top: 1px solid var(--track); }
+        .item:first-child { border-top: 0; }
+        .item:hover { background: var(--card-2); }
+        .item > span:first-child { flex: 1 1 auto; }
+        .item-sub { font-size: 15px; color: var(--muted); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 55%; }
+        .chev { color: var(--muted); font-size: 22px; line-height: 1; }
+        .row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 16px; }
+        .row-label { color: var(--muted); }
+        .status { font-size: 18px; font-weight: 600; }
+        .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        details summary { cursor: pointer; color: var(--muted); font-size: 15px; min-height: 32px; display: flex; align-items: center; }
+        details .row { margin-top: 6px; font-size: 15px; }
+        .mono { font-family: ui-monospace, Menlo, monospace; font-size: 14px; overflow-wrap: anywhere; }
+        .checks { display: grid; gap: 8px; }
+        .checks label { display: flex; align-items: center; gap: 10px; font-size: 16px; }
+        .checks input { width: 22px; height: 22px; }
+        .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .fields .full { grid-column: 1 / -1; }
+        .recipient { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--track); }
+        .recipient span { flex: 1; overflow-wrap: anywhere; }
+        .recipient button { width: auto; min-height: 44px; padding: 0 16px; }
+        #settingsNotifyToggle.notify-on { background: #e3f4e1; border-color: #9fd39a; color: #1e6b16; }
+        #settingsNotifyToggle.notify-blocked { background: #fdecec; border-color: #e3a0a0; color: #8f1f1f; }
+        .notify-status { font-size: 14px; color: var(--muted); }
+        .table-wrap { margin-top: 8px; max-height: 420px; }
     </style>
 </head>
 <body>
     {{ office_topbar('Settings') }}
     <div class="wrap">
-        <div class="sub">Core office tools, notifications, email, backups, and update control.</div>
-        {% if status_msg %}
-        <div class="status auto-dismiss {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
-        {% endif %}
-        <div class="grid">
-            <div class="panel">
-                <h2>Office Tools</h2>
-                <div class="sub">Daily operational tools and backup actions.</div>
-                <div class="detail"><span class="label">Auto Backup</span><span>{{ backup_retention_text }}</span></div>
-                <div class="detail"><span class="label">Latest Backup</span><span>{{ latest_backup_name }}</span></div>
-                <div class="detail"><span class="label">Manual Feed</span><span>Record feed allocated to a shed</span></div>
-                <div class="action-grid">
-                    <a class="action-link" href="{{ url_for('office_versions_view') }}">Versions</a>
-                    <a class="action-link" href="{{ url_for('office_feed_stock_view') }}">Manual Feed Entry</a>
-                    <a class="action-link" href="{{ url_for('restore_office_backup_view') }}">Restore Backup</a>
-                    <a class="action-link" href="{{ url_for('create_office_backup_view') }}">Create Backup</a>
-                    <a class="action-link" href="{{ url_for('download_latest_office_backup_view') }}">Download Backup</a>
-                    <a class="action-link" href="{{ url_for('collect_controller_backups_now_view') }}">Collect Controller Backups</a>
-                </div>
-                <details class="collapse">
-                    <summary>Show Backup Location</summary>
-                    <div class="detail"><span class="label">Backup Path</span><span class="mono">{{ backup_dir }}</span></div>
-                </details>
+        {% if status_msg %}<div class="msg auto-dismiss {% if not status_ok %}error{% endif %}">{{ status_msg }}</div>{% endif %}
+        <div class="cols">
+            <div class="col">
+                <section>
+                    <h2 class="section-title">Office</h2>
+                    <nav class="list" aria-label="Office pages">
+                        <a class="item" href="{{ url_for('office_feed_stock_view') }}"><span>Manual feed entry</span><span class="item-sub">Deliveries and allocations</span><span class="chev">›</span></a>
+                        <a class="item" href="{{ url_for('office_farm_health_view') }}"><span>Farm health</span><span class="item-sub">Controllers and sync</span><span class="chev">›</span></a>
+                        <a class="item" href="{{ url_for('office_crop_reports_view') }}"><span>Crop reports</span><span class="chev">›</span></a>
+                        <a class="item" href="{{ url_for('office_events_view') }}"><span>Event log</span><span class="chev">›</span></a>
+                        <a class="item" href="{{ url_for('office_versions_view') }}"><span>Versions</span><span class="chev">›</span></a>
+                    </nav>
+                </section>
+
+                <section>
+                    <h2 class="section-title">Backups</h2>
+                    <nav class="list" aria-label="Backups">
+                        <a class="item" href="{{ url_for('create_office_backup_view') }}"><span>Create backup now</span><span class="chev">›</span></a>
+                        <a class="item" href="{{ url_for('download_latest_office_backup_view') }}"><span>Download latest backup</span><span class="item-sub">{{ latest_backup_name }}</span><span class="chev">›</span></a>
+                        <a class="item" href="{{ url_for('restore_office_backup_view') }}"><span>Restore a backup</span><span class="chev">›</span></a>
+                        <a class="item" href="{{ url_for('collect_controller_backups_now_view') }}"><span>Collect controller backups</span><span class="chev">›</span></a>
+                    </nav>
+                </section>
+
+                <section>
+                    <h2 class="section-title">Backup details</h2>
+                    <div class="card" style="display:grid; gap:8px">
+                        <div class="row"><span class="row-label">Automatic backups</span><span style="text-align:right">{{ backup_retention_text }}</span></div>
+                        <div class="row"><span class="row-label">Latest</span><span class="mono">{{ latest_backup_name }}</span></div>
+                        <details>
+                            <summary>Backup folder</summary>
+                            <div class="mono">{{ backup_dir }}</div>
+                        </details>
+                        <details>
+                            <summary>Shed controller backups</summary>
+                            <div class="table-wrap">
+                                <table>
+                                    <thead><tr><th>Controller</th><th>Controller backup</th><th>Status</th><th>Office copy</th><th>Copy status</th></tr></thead>
+                                    <tbody>
+                                        {% for row in controller_backup_rows %}
+                                        <tr>
+                                            <td>{{ row.label }}</td>
+                                            <td>{{ row.last_backup }}</td>
+                                            <td>{{ row.last_backup_status }}</td>
+                                            <td>{{ row.office_copy_at }}</td>
+                                            <td>{{ row.office_copy_status }}{% if row.office_copy_name != '--' %} · <a href="{{ url_for('download_collected_controller_backup_view', controller_key=row.controller_key) }}">Download</a>{% endif %}</td>
+                                        </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </details>
+                    </div>
+                </section>
             </div>
-            <div class="panel">
-                <h2>Software Update</h2>
-                <div class="sub">Check for a newer office version and apply it when you are ready.</div>
-                <div class="detail"><span class="label">Last Checked</span><span>{{ update_checked_at }}</span></div>
-                <div class="detail"><span class="label">Status</span><span>{{ update_status.status }}</span></div>
-                <div class="update-actions">
-                    <form method="post" action="{{ url_for('office_check_update_view') }}">
-                        <button class="wide" type="submit">Check for Update</button>
-                    </form>
-                    {% if update_status.update_available %}
-                    <form method="post" action="{{ url_for('office_apply_update_view') }}">
-                        <button class="wide" type="submit">Update Now</button>
-                    </form>
-                    {% endif %}
-                </div>
-                <details class="collapse">
-                    <summary>Show Version Details</summary>
-                    <div class="detail"><span class="label">Branch</span><span class="mono">{{ update_status.branch }}</span></div>
-                    <div class="detail"><span class="label">Current Commit</span><span class="mono">{{ update_status.local_commit }}</span></div>
-                    <div class="detail"><span class="label">Latest Commit</span><span class="mono">{{ update_status.remote_commit }}</span></div>
-                </details>
-            </div>
-        </div>
-        <div class="panel" style="margin-top:16px;">
-            <h2>Notifications</h2>
-            <div class="sub">Turn alarm notifications on or off for this device.</div>
-            <button id="settingsNotifyToggle" class="notify-btn" type="button">🔔 Enable Notifications</button>
-            <div id="settingsNotifyStatus" class="notify-status"></div>
-        </div>
-        <div class="panel" style="margin-top:16px;">
-            <h2>Email Settings</h2>
-            <div class="sub">Shared SMTP settings and the saved recipient list for report emails.</div>
-            <form method="post" action="{{ url_for('office_save_email_settings_view') }}">
-                <div class="checkbox-grid">
-                    <label class="check"><input type="checkbox" name="report_email_enabled" value="1" {% if email_settings.report_email_enabled %}checked{% endif %}> Enable shared app email sending</label>
-                    <label class="check"><input type="checkbox" name="report_smtp_use_tls" value="1" {% if email_settings.report_smtp_use_tls %}checked{% endif %}> Use TLS</label>
-                    <label class="check"><input type="checkbox" name="report_smtp_use_ssl" value="1" {% if email_settings.report_smtp_use_ssl %}checked{% endif %}> Use SSL</label>
-                </div>
 
-                <div class="form-grid">
-                    <div class="field">
-                        <label for="report_email_from">From Address</label>
-                        <input id="report_email_from" type="text" name="report_email_from" value="{{ email_settings.report_email_from }}">
+            <div class="col">
+                <section>
+                    <h2 class="section-title">Software</h2>
+                    <div class="card" style="display:grid; gap:12px">
+                        <div class="row"><span class="status">{{ update_status.status }}</span></div>
+                        <div class="row"><span class="row-label">Last checked</span><span>{{ update_checked_at }}</span></div>
+                        <div class="btns">
+                            <form method="post" action="{{ url_for('office_check_update_view') }}"><button type="submit">Check for update</button></form>
+                            {% if update_status.update_available %}
+                            <form method="post" action="{{ url_for('office_apply_update_view') }}"><button class="primary" type="submit">Install update</button></form>
+                            {% endif %}
+                        </div>
+                        <details>
+                            <summary>Version details</summary>
+                            <div class="row"><span class="row-label">Branch</span><span class="mono">{{ update_status.branch }}</span></div>
+                            <div class="row"><span class="row-label">Installed</span><span class="mono">{{ update_status.local_commit }}</span></div>
+                            <div class="row"><span class="row-label">Latest</span><span class="mono">{{ update_status.remote_commit }}</span></div>
+                        </details>
                     </div>
-                    <div class="field">
-                        <label for="report_smtp_host">SMTP Host</label>
-                        <input id="report_smtp_host" type="text" name="report_smtp_host" value="{{ email_settings.report_smtp_host }}">
-                    </div>
-                    <div class="field">
-                        <label for="report_smtp_port">SMTP Port</label>
-                        <input id="report_smtp_port" type="text" name="report_smtp_port" value="{{ email_settings.report_smtp_port }}">
-                    </div>
-                    <div class="field">
-                        <label for="report_smtp_username">SMTP Username</label>
-                        <input id="report_smtp_username" type="text" name="report_smtp_username" value="{{ email_settings.report_smtp_username }}">
-                    </div>
-                    <div class="field field-full">
-                        <label for="report_smtp_password">SMTP Password</label>
-                        <input id="report_smtp_password" type="password" name="report_smtp_password" value="{{ email_settings.report_smtp_password }}">
-                    </div>
-                </div>
-                <div class="note">These shared settings are also used for crop report emails.</div>
-                <div class="update-actions">
-                    <button class="wide" type="submit">Save Email Settings</button>
-                </div>
-            </form>
+                </section>
 
-            <details class="collapse" style="margin-top:14px;" open>
-                <summary>Recipients</summary>
-                <form class="inline-form" method="post" action="{{ url_for('office_add_email_recipient_view') }}">
-                    <div class="field">
-                        <label for="new_recipient_email">Add Recipient Email</label>
-                        <input id="new_recipient_email" type="email" name="recipient_email" value="">
+                <section>
+                    <h2 class="section-title">Notifications</h2>
+                    <div class="card" style="display:grid; gap:10px">
+                        <div class="hint">Alarm alerts in this browser while the dashboard is open.</div>
+                        <button id="settingsNotifyToggle" class="notify-btn" type="button">Enable notifications</button>
+                        <div id="settingsNotifyStatus" class="notify-status"></div>
                     </div>
-                    <button type="submit">Add Recipient</button>
-                </form>
+                </section>
 
-                {% if email_settings.report_recipients %}
-                <div class="recipient-list">
-                    {% for recipient in email_settings.report_recipients %}
-                    <div class="recipient-row">
-                        <div class="recipient-email">{{ recipient }}</div>
-                        <form method="post" action="{{ url_for('office_remove_email_recipient_view') }}">
-                            <input type="hidden" name="recipient_email" value="{{ recipient }}">
-                            <button type="submit">Remove</button>
+                <section>
+                    <h2 class="section-title">Email</h2>
+                    <div class="card" style="display:grid; gap:12px">
+                        <form method="post" action="{{ url_for('office_save_email_settings_view') }}" style="display:grid; gap:12px">
+                            <div class="checks">
+                                <label><input type="checkbox" name="report_email_enabled" value="1" {% if email_settings.report_email_enabled %}checked{% endif %}> Send emails (crop reports)</label>
+                                <label><input type="checkbox" name="report_smtp_use_tls" value="1" {% if email_settings.report_smtp_use_tls %}checked{% endif %}> Use TLS</label>
+                                <label><input type="checkbox" name="report_smtp_use_ssl" value="1" {% if email_settings.report_smtp_use_ssl %}checked{% endif %}> Use SSL</label>
+                            </div>
+                            <div class="fields">
+                                <div class="full"><label class="field" for="report_email_from">From address</label><input id="report_email_from" type="text" name="report_email_from" value="{{ email_settings.report_email_from }}"></div>
+                                <div><label class="field" for="report_smtp_host">SMTP host</label><input id="report_smtp_host" type="text" name="report_smtp_host" value="{{ email_settings.report_smtp_host }}"></div>
+                                <div><label class="field" for="report_smtp_port">SMTP port</label><input id="report_smtp_port" type="text" name="report_smtp_port" value="{{ email_settings.report_smtp_port }}"></div>
+                                <div><label class="field" for="report_smtp_username">SMTP username</label><input id="report_smtp_username" type="text" name="report_smtp_username" value="{{ email_settings.report_smtp_username }}"></div>
+                                <div><label class="field" for="report_smtp_password">SMTP password</label><input id="report_smtp_password" type="password" name="report_smtp_password" value="{{ email_settings.report_smtp_password }}"></div>
+                            </div>
+                            <button class="primary" type="submit">Save email settings</button>
                         </form>
-                    </div>
-                    {% endfor %}
-                </div>
-                {% else %}
-                <div class="note">No recipients saved yet.</div>
-                {% endif %}
-            </details>
-        </div>
-        <div class="panel" style="margin-top:16px;">
-            <h2>Shed Controller Backups</h2>
-            <div class="sub">Controller backup health and the latest office-collected ZIP copy.</div>
-            <details class="collapse">
-                <summary>Open Shed Controller Backup Table</summary>
-                <div class="table-wrap">
-                    <table>
-                        <thead><tr><th>Controller</th><th>Controller Backup</th><th>Controller Status</th><th>Office Copy</th><th>Office Copy Status</th></tr></thead>
-                        <tbody>
-                            {% for row in controller_backup_rows %}
-                            <tr>
-                                <td>{{ row.label }}</td>
-                                <td>{{ row.last_backup }}</td>
-                                <td>{{ row.last_backup_status }}</td>
-                                <td>{{ row.office_copy_at }}</td>
-                                <td>{{ row.office_copy_status }}{% if row.office_copy_name != '--' %} · <a href="{{ url_for('download_collected_controller_backup_view', controller_key=row.controller_key) }}">Download</a>{% endif %}</td>
-                            </tr>
+                        <details open>
+                            <summary>Recipients</summary>
+                            <form class="inline" method="post" action="{{ url_for('office_add_email_recipient_view') }}" style="margin-top:6px">
+                                <div><label class="field" for="new_recipient_email">Add recipient</label><input id="new_recipient_email" type="email" name="recipient_email" value="" placeholder="name@example.com"></div>
+                                <button type="submit">Add</button>
+                            </form>
+                            {% for recipient in email_settings.report_recipients %}
+                            <div class="recipient">
+                                <span>{{ recipient }}</span>
+                                <form method="post" action="{{ url_for('office_remove_email_recipient_view') }}">
+                                    <input type="hidden" name="recipient_email" value="{{ recipient }}">
+                                    <button class="danger" type="submit">Remove</button>
+                                </form>
+                            </div>
+                            {% else %}
+                            <div class="hint" style="margin-top:6px">No recipients saved yet.</div>
                             {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-            </details>
+                        </details>
+                    </div>
+                </section>
+            </div>
         </div>
     </div>
 <script>
@@ -9413,32 +9177,8 @@ VERSIONS_HTML = """
     <meta charset="utf-8">
     <title>Versions</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        * { box-sizing:border-box; }
-        body { margin:0; font-family:Arial,sans-serif; background: #5b5b5b; color: #0d2b4a; overflow-x:hidden; }
-        .wrap { max-width:1180px; margin:0 auto; padding:24px; }
-        .topbar a { color: #0d2b4a; text-decoration:none; }
-        .panel { background: #f5f8fb; border: 1px solid #d5dde6; border-radius:14px; padding:16px; margin-top:16px; min-width:0; }
-        .detail { display:flex; justify-content:space-between; gap:12px; padding:10px 0; border-bottom: 1px solid #d5dde6; }
-        .detail:last-child { border-bottom: 0; }
-        .label { color: #0d2b4a; }
-        .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
-        .sub { color: #0d2b4a; margin-bottom:14px; }
-        .collapse { margin-top:14px; }
-        .collapse summary { cursor:pointer; list-style:none; padding:12px 14px; border: 1px solid #d5dde6; border-radius:10px; background: #f5f8fb; font-weight:700; }
-        .collapse summary::-webkit-details-marker { display:none; }
-        .collapse[open] summary { margin-bottom:12px; }
-        .table-wrap { overflow:auto; -webkit-overflow-scrolling:touch; border: 1px solid #d5dde6; border-radius:10px; background: #f5f8fb; }
-        table { width:100%; border-collapse:collapse; font-size:14px; table-layout:fixed; }
-        th, td { padding:10px 8px; border-bottom: 1px solid #d5dde6; text-align:left; overflow-wrap:anywhere; word-break:break-word; }
-        @media (max-width: 700px) {
-            .wrap { padding:12px; }
-            h1 { font-size:24px; }
-            .panel { padding:12px; }
-            .detail { flex-direction:column; align-items:flex-start; }
-            table { font-size:13px; }
-        }
-    </style>
+    {{ office_page_head }}
+    {{ office_compat_css }}
 </head>
 <body>
     {{ office_topbar('Versions') }}
@@ -9489,52 +9229,8 @@ FARM_HEALTH_HTML = """
     <meta charset="utf-8">
     <title>Farm Health</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        * { box-sizing:border-box; }
-        body { margin:0; font-family:Arial,sans-serif; background: #5b5b5b; color: #0d2b4a; overflow-x:hidden; }
-        .wrap { max-width:1400px; margin:0 auto; padding:16px; }
-        .topbar { margin-bottom:16px; }
-        .topbar a { color: #0d2b4a; text-decoration:none; }
-        h1 { margin:0 0 8px 0; }
-        .sub { color: #0d2b4a; margin-bottom:14px; }
-        .summary-grid { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:12px; margin-bottom:16px; }
-        .panel { background: #f5f8fb; border: 1px solid #d5dde6; border-radius:14px; padding:16px; min-width:0; }
-        .action-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:16px; }
-        .action-link {
-            display:inline-flex;
-            align-items:center;
-            justify-content:center;
-            min-height:46px;
-            padding:10px 14px;
-            border-radius:10px;
-            border: 1px solid #d5dde6;
-            background: #f5f8fb;
-            color: #0d2b4a;
-            text-decoration:none;
-        }
-        .health-card { background: #f5f8fb; border: 1px solid #d5dde6; border-radius:12px; padding:12px; min-width:0; overflow-wrap:anywhere; word-break:break-word; }
-        .health-label { color: #0d2b4a; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; }
-        .health-value { margin-top:6px; font-size:24px; font-weight:700; }
-        .health-note { margin-top:6px; color: #0d2b4a; font-size:12px; line-height:1.35; }
-        .collapse summary { cursor:pointer; list-style:none; padding:12px 14px; border: 1px solid #d5dde6; border-radius:10px; background: #f5f8fb; font-weight:700; }
-        .collapse summary::-webkit-details-marker { display:none; }
-        .collapse[open] summary { margin-bottom:12px; }
-        .table-wrap { overflow:auto; -webkit-overflow-scrolling:touch; border: 1px solid #d5dde6; border-radius:10px; background: #f5f8fb; }
-        table { width:100%; border-collapse:collapse; font-size:14px; table-layout:fixed; }
-        th, td { padding:10px 8px; border-bottom: 1px solid #d5dde6; text-align:left; vertical-align:top; overflow-wrap:anywhere; word-break:break-word; }
-        th { color: #0d2b4a; }
-        .state-ok { color: #1e6b16; }
-        .state-bad { color: #b42318; }
-        @media (max-width: 1000px) { .summary-grid { grid-template-columns:1fr 1fr; } }
-        @media (max-width: 700px) {
-            .wrap { padding:12px; }
-            h1 { font-size:24px; }
-            .summary-grid { grid-template-columns:1fr; }
-            .action-grid { grid-template-columns:1fr; }
-            .panel { padding:12px; }
-            table { font-size:13px; }
-        }
-    </style>
+    {{ office_page_head }}
+    {{ office_compat_css }}
 </head>
 <body>
     {{ office_topbar('Farm health') }}
@@ -9944,108 +9640,39 @@ setTimeout(() => { document.querySelectorAll('.auto-dismiss').forEach((el) => { 
 
 
 BOREHOLE_DETAIL_HTML = """
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
 <head>
     <meta charset="utf-8">
-    <title>Bore Hole Detail</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta http-equiv="refresh" content="30">
+    <title>Bore Hole</title>
+    {{ office_page_head }}
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    {{ day_bars_head|safe }}
     <style>
-        * {
-            box-sizing: border-box;
-        }
-        body {
-            margin: 0;
-            font-family: Arial, sans-serif;
-            background: #5b5b5b;
-            color: #0d2b4a;
-            overflow-x: hidden;
-        }
-        .wrap {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 16px;
-        }
-        a {
-            color: #0d2b4a;
-            text-decoration: none;
-        }
-        a:hover {
-            text-decoration: underline;
-        }
-        h1 {
-            margin: 0 0 6px 0;
-            font-size: 30px;
-        }
-        .sub {
-            color: #0d2b4a;
-            margin-bottom: 16px;
-            font-size: 14px;
-        }
-        .topbar {
-            margin-bottom: 14px;
-        }
-        .grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 14px;
-        }
-        .navcard {
-            display: block;
-            background: #f5f8fb;
-            border: 2px solid #d5dde6;
-            border-radius: 12px;
-            padding: 18px;
-            color: inherit;
-            text-decoration: none;
-            transition: transform 0.12s ease, border-color 0.12s ease;
-            min-width: 0;
-            overflow-wrap: anywhere;
-            word-break: break-word;
-        }
-        .navcard:hover {
-            transform: translateY(-2px);
-            border-color: #d5dde6;
-        }
-        .navtitle {
-            font-size: 24px;
-            font-weight: bold;
-            margin-bottom: 8px;
-        }
-        .navsub {
-            font-size: 14px;
-            color: #0d2b4a;
-        }
-        @media (max-width: 800px) {
-            .grid { grid-template-columns: 1fr; }
-        }
-        @media (max-width: 700px) {
-            .wrap { padding: 12px; }
-            h1 { font-size: 24px; }
-            .navcard { padding: 14px; }
-            .navtitle { font-size: 20px; }
-        }
+        .stats { grid-template-columns: repeat(4, 1fr); }
+        .stat-value.flow { color: #1676b8; }
+        @media (max-width: 860px) { .stats { grid-template-columns: 1fr 1fr; } }
     </style>
 </head>
 <body>
-    {{ office_topbar('Bore Hole') }}
+    {{ office_topbar('Bore hole') }}
     <div class="wrap">
-
-        <div class="sub">Hourly and daily water usage with zoomable charts.</div>
-
-        <div class="grid">
-            <a class="navcard" href="{{ url_for('borehole_period_view', period='hourly') }}">
-                <div class="navtitle">Hourly</div>
-                <div class="navsub">Hourly list and zoomable water chart.</div>
-            </a>
-
-            <a class="navcard" href="{{ url_for('borehole_period_view', period='daily') }}">
-                <div class="navtitle">Daily</div>
-                <div class="navsub">Completed 6am-6am daily list and zoomable water chart.</div>
-            </a>
+        {% if bh.alarm %}<div class="msg error">{{ bh.alarm }}</div>{% endif %}
+        <div class="stats">
+            <div class="stat"><div class="stat-label">Status</div><div class="stat-value cond" style="font-size:26px; padding-top:4px"><span class="pill {{ 'bad' if bh.kind == 'alarm' else ('on' if bh.kind == 'ok' else '') }}" style="font-size:18px">{{ bh.status }}</span></div><div class="stat-sub">Updated {{ bh.updated }}</div></div>
+            <div class="stat"><div class="stat-label">Flow now</div><div class="stat-value cond flow">{{ bh.water }}{% if bh.water != '--' %} <span style="font-size:18px">L/min</span>{% endif %}</div><div class="stat-sub">Live</div></div>
+            <div class="stat"><div class="stat-label">Today</div><div class="stat-value cond">{{ bh.daily }}{% if bh.daily != '--' %} <span style="font-size:18px">L</span>{% endif %}</div><div class="stat-sub">Since 6am</div></div>
+            <div class="stat"><div class="stat-label">Last 7 days</div><div class="stat-value cond">{{ bh.weekly }}{% if bh.weekly != '--' %} <span style="font-size:18px">L</span>{% endif %}</div><div class="stat-sub">6am to 6am days</div></div>
         </div>
+        <div id="waterBars"></div>
     </div>
+{{ day_bars_js|safe }}
+<script>
+ssDayBars(document.getElementById('waterBars'), {
+    title: 'Water', label: 'Water', unit: 'L', color: '#5fd0d8', subtitle: 'Last 45 days.',
+    epochs: {{ bar_epochs|tojson }}, values: {{ water_values|tojson }}
+});
+</script>
 </body>
 </html>
 """
@@ -10058,101 +9685,8 @@ HISTORY_HTML = """
     <meta charset="utf-8">
     <title>{{ shed_name }} Crop History</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        * {
-            box-sizing: border-box;
-        }
-        body {
-            margin: 0;
-            font-family: Arial, sans-serif;
-            background: #5b5b5b;
-            color: #0d2b4a;
-            overflow-x: hidden;
-        }
-        .wrap {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 16px;
-        }
-        a {
-            color: #0d2b4a;
-            text-decoration: none;
-        }
-        a:hover {
-            text-decoration: underline;
-        }
-        h1 {
-            margin: 0 0 10px 0;
-            font-size: 30px;
-        }
-        .topbar {
-            margin-bottom: 14px;
-        }
-        .sub {
-            color: #0d2b4a;
-            margin-bottom: 16px;
-            font-size: 14px;
-        }
-        .card {
-            background: #f5f8fb;
-            border: 2px solid #d5dde6;
-            border-radius: 12px;
-            padding: 14px;
-            min-width: 0;
-        }
-        .collapse summary {
-            cursor: pointer;
-            list-style: none;
-            padding: 12px 14px;
-            border: 1px solid #d5dde6;
-            border-radius: 10px;
-            background: #f5f8fb;
-            font-weight: 700;
-        }
-        .collapse summary::-webkit-details-marker {
-            display: none;
-        }
-        .collapse[open] summary {
-            margin-bottom: 12px;
-        }
-        .table-wrap {
-            overflow: auto;
-            -webkit-overflow-scrolling: touch;
-            border: 1px solid #d5dde6;
-            border-radius: 10px;
-            background: #f5f8fb;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 14px;
-            table-layout: fixed;
-        }
-        th, td {
-            border-bottom: 1px solid #d5dde6;
-            padding: 10px 8px;
-            text-align: left;
-            overflow-wrap: anywhere;
-            word-break: break-word;
-        }
-        th {
-            color: #0d2b4a;
-        }
-        .empty {
-            color: #0d2b4a;
-            font-size: 14px;
-        }
-        .actions a {
-            margin-right: 12px;
-        }
-        @media (max-width: 700px) {
-            .wrap { padding: 12px; }
-            h1 { font-size: 24px; }
-            .card { padding: 12px; }
-            .actions a { display:block; margin:0 0 8px 0; }
-            table { font-size: 13px; }
-        }
-    </style>
+    {{ office_page_head }}
+    {{ office_compat_css }}
 </head>
 <body>
     {{ office_topbar((shed_name) ~ ' Crop history') }}
@@ -10208,158 +9742,8 @@ CROP_SUMMARY_HTML = """
     <meta charset="utf-8">
     <title>{{ shed_name }} {{ summary.crop_code }} Summary</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        * {
-            box-sizing: border-box;
-        }
-        body {
-            margin: 0;
-            font-family: Arial, sans-serif;
-            background: #5b5b5b;
-            color: #0d2b4a;
-            overflow-x: hidden;
-        }
-        .wrap {
-            max-width: 1650px;
-            margin: 0 auto;
-            padding: 16px;
-        }
-        a {
-            color: #0d2b4a;
-            text-decoration: none;
-        }
-        a:hover {
-            text-decoration: underline;
-        }
-        h1 {
-            margin: 0 0 6px 0;
-            font-size: 30px;
-        }
-        .sub {
-            color: #0d2b4a;
-            margin-bottom: 16px;
-            font-size: 14px;
-        }
-        .topbar {
-            margin-bottom: 14px;
-        }
-        .summary-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 12px;
-            margin-bottom: 14px;
-        }
-        .card {
-            background: #f5f8fb;
-            border: 2px solid #d5dde6;
-            border-radius: 12px;
-            padding: 14px;
-            min-width: 0;
-        }
-        .metric-label {
-            color: #0d2b4a;
-            font-size: 13px;
-            margin-bottom: 6px;
-        }
-        .metric-value {
-            font-size: 28px;
-            font-weight: 700;
-            color: #0d2b4a;
-        }
-        .metric-sub {
-            color: #0d2b4a;
-            font-size: 12px;
-            margin-top: 6px;
-        }
-        .status-pill {
-            display: inline-block;
-            padding: 6px 10px;
-            border-radius: 999px;
-            background: #4a4a4a;
-            border: 1px solid #d5dde6;
-            color: #0d2b4a;
-            font-size: 13px;
-            font-weight: 700;
-        }
-        .actions {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-            margin-bottom: 14px;
-        }
-        .actions a {
-            display: inline-block;
-            padding: 10px 12px;
-            border-radius: 10px;
-            background: #f5f8fb;
-            border: 1px solid #d5dde6;
-        }
-        .two-col {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 14px;
-        }
-        .collapse summary {
-            cursor: pointer;
-            list-style: none;
-            padding: 12px 14px;
-            border: 1px solid #d5dde6;
-            border-radius: 10px;
-            background: #f5f8fb;
-            font-weight: 700;
-        }
-        .collapse summary::-webkit-details-marker {
-            display: none;
-        }
-        .collapse[open] summary {
-            margin-bottom: 12px;
-        }
-        .table-wrap {
-            max-height: 780px;
-            overflow: auto;
-            border: 1px solid #d5dde6;
-            border-radius: 10px;
-            background: #f5f8fb;
-            -webkit-overflow-scrolling: touch;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 13px;
-            table-layout: fixed;
-        }
-        th, td {
-            border-bottom: 1px solid #d5dde6;
-            padding: 8px 6px;
-            text-align: left;
-            overflow-wrap: anywhere;
-            word-break: break-word;
-        }
-        th {
-            color: #0d2b4a;
-            position: sticky;
-            top: 0;
-            background: #f5f8fb;
-        }
-        .empty {
-            color: #0d2b4a;
-            font-size: 14px;
-        }
-        @media (max-width: 1200px) {
-            .two-col {
-                grid-template-columns: 1fr;
-            }
-        }
-        @media (max-width: 700px) {
-            .wrap { padding: 12px; }
-            h1 { font-size: 24px; }
-            .summary-grid { grid-template-columns: 1fr; }
-            .card { padding: 12px; }
-            .metric-value { font-size: 24px; }
-            .actions a, .status-pill { width: 100%; text-align: center; }
-            table { font-size: 12px; }
-        }
-    </style>
+    {{ office_page_head }}
+    {{ office_compat_css }}
 </head>
 <body>
     {{ office_topbar((shed_name) ~ ' ' ~ (summary.crop_code) ~ ' End of Crop Summary') }}
@@ -10465,138 +9849,8 @@ CROP_REPORTS_HTML = """
     <meta charset="utf-8">
     <title>End of Crop Reports</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        * {
-            box-sizing: border-box;
-        }
-        body {
-            margin: 0;
-            font-family: Arial, sans-serif;
-            background: #5b5b5b;
-            color: #0d2b4a;
-            overflow-x: hidden;
-        }
-        .wrap {
-            max-width: 1500px;
-            margin: 0 auto;
-            padding: 16px;
-        }
-        a { color: #0d2b4a; text-decoration: none; }
-        a:hover { text-decoration: underline; }
-        h1 {
-            margin: 0 0 8px 0;
-            font-size: 30px;
-        }
-        .sub {
-            color: #0d2b4a;
-            margin-bottom: 16px;
-            font-size: 14px;
-        }
-        .topbar { margin-bottom: 14px; }
-        .card {
-            background: #f5f8fb;
-            border: 2px solid #d5dde6;
-            border-radius: 12px;
-            padding: 14px;
-            min-width: 0;
-        }
-        .msg {
-            margin-bottom: 14px;
-            padding: 10px 12px;
-            border-radius: 10px;
-            border: 1px solid #d5dde6;
-            background: #f5f8fb;
-        }
-        .msg.ok {
-            border-color: #2f9e3a;
-            color: #1e6b16;
-        }
-        .msg.bad {
-            border-color: #d64545;
-            color: #b42318;
-        }
-        .collapse summary {
-            cursor: pointer;
-            list-style: none;
-            padding: 12px 14px;
-            border: 1px solid #d5dde6;
-            border-radius: 10px;
-            background: #f5f8fb;
-            font-weight: 700;
-        }
-        .collapse summary::-webkit-details-marker {
-            display: none;
-        }
-        .collapse[open] summary {
-            margin-bottom: 12px;
-        }
-        .table-wrap {
-            overflow: auto;
-            -webkit-overflow-scrolling: touch;
-            border: 1px solid #d5dde6;
-            border-radius: 10px;
-            background: #f5f8fb;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 14px;
-            table-layout: fixed;
-        }
-        th, td {
-            border-bottom: 1px solid #d5dde6;
-            padding: 10px 8px;
-            text-align: left;
-            vertical-align: top;
-            overflow-wrap: anywhere;
-            word-break: break-word;
-        }
-        th { color: #0d2b4a; }
-        .actions {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-        }
-        .actions a, .actions button {
-            padding: 8px 10px;
-            border-radius: 9px;
-            border: 1px solid #d5dde6;
-            background: #666;
-            color: #0d2b4a;
-            text-decoration: none;
-            cursor: pointer;
-            font-size: 13px;
-        }
-        .actions form {
-            margin: 0;
-        }
-        .pill {
-            display: inline-block;
-            padding: 4px 8px;
-            border-radius: 999px;
-            border: 1px solid #d5dde6;
-            background: #666;
-            font-size: 12px;
-            font-weight: 700;
-        }
-        .pill.emailed { border-color: #2f9e3a; color: #1e6b16; }
-        .pill.generated { border-color: #f08a12; color: #9a4b00; }
-        .pill.failed { border-color: #d64545; color: #b42318; }
-        .pill.processing, .pill.queued { border-color: #1676b8; color: #0b5ea8; }
-        .empty { color: #0d2b4a; }
-        .path {
-            font-size: 12px;
-            color: #0d2b4a;
-            word-break: break-all;
-        }
-        @media (max-width: 700px) {
-            .wrap { padding: 12px; }
-            h1 { font-size: 24px; }
-            .card { padding: 12px; }
-            .actions a, .actions button { width: 100%; text-align: center; }
-            table { font-size: 13px; }
-        }
-    </style>
+    {{ office_page_head }}
+    {{ office_compat_css }}
 </head>
 <body>
     {{ office_topbar('Crop reports') }}
@@ -11741,7 +10995,23 @@ def _with_unit(value, unit):
     return "--" if value in [None, "", "--"] else "%s %s" % (value, unit)
 
 
-def office_home_shed(row, meta):
+def shed_split_text(state, shed_no):
+    """'Shed 1 - 8,450 (8,412) · Shed 4 - 5,000 (4,960)' for a shed holding birds for more
+    than one destination (or for another shed). Empty when it would just repeat the total."""
+    entries = ensure_shed_entry_bucket(state, shed_name_from_number(shed_no))
+    pens = []
+    for key in sorted(entries.keys(), key=lambda k: int(k) if str(k).isdigit() else 999):
+        rec = clean_entry_record(entries.get(key, {}))
+        if rec["bird_count"] <= 0 or rec["crop_active"] != 1:
+            continue
+        placed = rec.get("placed_bird_count") or rec["bird_count"]
+        pens.append((str(key), "%s - %s (%s)" % (entry_shed_label(int(key)), fmt_value(placed, "i"), fmt_value(rec["bird_count"], "i"))))
+    if not pens or (len(pens) == 1 and pens[0][0] == str(int(shed_no))):
+        return ""
+    return " · ".join(text for _, text in pens)
+
+
+def office_home_shed(row, meta, split=""):
     meta = meta if isinstance(meta, dict) else {}
     online = row.get("card_state") == "online"
     active = bool(row.get("has_active_entry"))
@@ -11819,6 +11089,7 @@ def office_home_shed(row, meta):
         "lights_label": ("On" if row.get("lighting_on") else "Off") if row.get("lighting_visible") and kind != "offline" else "--",
         "birds_line": birds_line,
         "alloc": row.get("allocation_text", ""),
+        "split": split,
         "live": kind not in ["offline", "empty"],
         "idle_text": idle_text,
         "temp": row.get("temp_c", "--"), "temp_hi": row.get("temp_hi", "--"), "temp_lo": row.get("temp_lo", "--"), "temp_edge": temp_edge,
@@ -11846,7 +11117,11 @@ def office_home_shed(row, meta):
 def office_home_context(tv=False):
     ctx = build_dashboard_context()
     meta_map = load_controller_meta()
-    sheds = [office_home_shed(r, meta_map.get(str(int(r.get("shed_no") or 0)), {})) for r in ctx.get("sheds", [])]
+    entries_state = load_shed_entries_state()
+    sheds = [
+        office_home_shed(r, meta_map.get(str(int(r.get("shed_no") or 0)), {}), shed_split_text(entries_state, int(r.get("shed_no") or 0)))
+        for r in ctx.get("sheds", [])
+    ]
 
     ages = []
     for r in ctx.get("sheds", []):
@@ -13446,7 +12721,10 @@ def shed_current_crop_daily_api(shed_no):
 
 @app.route("/borehole")
 def borehole_detail():
-    return render_template_string(BOREHOLE_DETAIL_HTML)
+    bh = office_home_context(tv=False).get("borehole", {})
+    rows = get_borehole_hourly_history(max_points=24 * 45)
+    bar_epochs, water_values = hourly_bar_series(rows, "water")
+    return render_template_string(BOREHOLE_DETAIL_HTML, bh=bh, bar_epochs=bar_epochs, water_values=water_values)
 
 
 @app.route("/borehole/<period>")
