@@ -7625,7 +7625,7 @@ OFFICE_CARDS_HTML = """
       </div>
       <div class="ss-tile edge-{{ 'none' if off else s.bin_edge }} ss-tile-bin">
         <div class="ss-tile-main"><span class="ss-tile-label">Feed bin{% if s.bin_pct is not none and not off %} · {{ s.bin_pct }}%{% endif %}</span><span class="ss-mid">{% if off %}--{% else %}{{ s.bin }} <small>kg</small>{% endif %}</span></div>
-        {% if s.bin_pct is not none and not off %}<div class="ss-bar"><div class="ss-bar-fill edge-{{ s.bin_edge }}" style="width: {{ s.bin_pct }}%"></div></div>{% endif %}
+        <div class="ss-bar">{% if s.bin_pct is not none and not off %}<div class="ss-bar-fill edge-{{ s.bin_edge }}" style="width: {{ s.bin_pct }}%"></div>{% endif %}</div>
       </div>
     </div>
     {% if s.has_alarm %}<div class="ss-card-alarm">{{ s.alarm }}</div>{% endif %}
@@ -7758,7 +7758,7 @@ OFFICE_HOME_HTML = """
   .ss-mid small { font-size: 15px; font-weight: 600; color: var(--muted); font-family: "Barlow", sans-serif; }
   .ss-hilo { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; font-size: 13px; color: var(--muted); line-height: 1.25; }
   .ss-hilo b { color: var(--text); }
-  .ss-bar { height: 6px; border-radius: 3px; background: #dbe3ec; }
+  .ss-bar { height: 6px; width: 100%; align-self: stretch; border-radius: 3px; background: #dbe3ec; }
   .ss-bar-fill { height: 6px; border-radius: 3px; background: var(--blue); }
   .ss-bar-fill.edge-warn { background: var(--amber); }
   .ss-card-alarm { border-radius: 10px; padding: 8px 12px; background: #fdecec; color: #8f1f1f; font-size: 14px; font-weight: 600; }
@@ -7770,8 +7770,8 @@ OFFICE_HOME_HTML = """
   .ss-auger-state { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .ss-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
   .ss-dot.dot-warn { background: var(--amber); } .ss-dot.dot-alarm { background: var(--red); }
-  .ss-stats { border-top: 1px solid var(--rule); padding-top: 10px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px 12px; }
-  .ss-stat { display: flex; flex-direction: column; min-width: 0; }
+  .ss-stats { border-top: 1px solid var(--rule); padding-top: 10px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+  .ss-stat { display: flex; flex-direction: column; min-width: 0; border: 2px solid #c9d4df; border-radius: 7px; background: var(--soft-bg); padding: 3px 7px; }
   .ss-stat span { font-size: 12px; color: var(--muted); white-space: nowrap; }
   .ss-stat b { font-size: 16px; white-space: nowrap; }
   .ss-foot { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; color: var(--muted); margin-top: auto; }
@@ -7817,7 +7817,6 @@ OFFICE_HOME_HTML = """
     body:not(.tv) .ss-big, body:not(.tv) .ss-mid { font-size: 20px; }
     body:not(.tv) .ss-mid small { display: block; font-size: 12px; line-height: 1.1; }
     body:not(.tv) .ss-hilo { display: none; }
-    body:not(.tv) .ss-bar { display: none; }
     body:not(.tv) .ss-card:not(.open) .ss-more { display: none; }
     body:not(.tv) .ss-card.open .ss-hilo { display: flex; margin-left: 0; flex-direction: row; gap: 6px; font-size: 12px; }
     body:not(.tv) .ss-augers { grid-template-columns: repeat(2, minmax(0, 1fr)); }
