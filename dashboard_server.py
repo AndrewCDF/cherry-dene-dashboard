@@ -861,7 +861,7 @@ def office_environment_settings_row_for_shed(shed_no, controller_meta=None):
     controller_meta = controller_meta if isinstance(controller_meta, dict) else load_controller_meta()
     meta = controller_meta.get(str(int(shed_no)), {}) if isinstance(controller_meta, dict) else {}
     limits = environment_limits_for_shed(shed_no, office_environment_limits_map(), meta)
-    return {
+    row = {
         "shed_no": shed_no,
         "temp_low_c": fmt_value(limits.get("temp_low_c"), "f1"),
         "temp_high_c": fmt_value(limits.get("temp_high_c"), "f1"),
@@ -874,6 +874,11 @@ def office_environment_settings_row_for_shed(shed_no, controller_meta=None):
         "feed_low_kg": fmt_value(limits.get("feed_low_kg"), "f0"),
         "feed_amber_buffer_kg": fmt_value(limits.get("feed_amber_buffer_kg"), "f0"),
     }
+    # These fill number boxes, which show nothing for "2,000" or "--", so give them plain numbers.
+    for key in list(row.keys()):
+        if key != "shed_no":
+            row[key] = "" if row[key] == "--" else str(row[key]).replace(",", "")
+    return row
 
 
 def save_office_environment_settings_for_shed(shed_no, form):
