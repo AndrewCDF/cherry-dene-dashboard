@@ -7906,7 +7906,11 @@ OFFICE_HOME_HTML = """
   body.tv .ss-auger-state { font-size: 15px; color: var(--text); }
   body.tv .ss-stat span { font-size: 14px; font-weight: 600; color: var(--muted); }
   body.tv .ss-stat b { font-size: 17px; white-space: nowrap; }
-  body.tv .ss-grid .ss-stats { grid-template-columns: repeat(4, auto); justify-content: space-between; gap: 2px 8px; padding-top: 4px; }
+  body.tv .ss-grid .ss-stats { grid-template-columns: repeat(4, auto); justify-content: stretch; gap: 3px; padding-top: 3px; }
+  body.tv .ss-grid .ss-stat { border: 2px solid #a3b3c4; border-radius: 7px; background: var(--soft-bg); padding: 1px 4px 1px; }
+  body.tv .ss-grid .ss-stat span { font-size: 13px; line-height: 1.15; }
+  body.tv .ss-grid .ss-stat b { font-size: 16px; line-height: 1.15; }
+  body.tv .ss-grid .ss-card { gap: 5px; }
   body.tv .ss-card-alarm, body.tv .ss-card-note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   body.tv .ss-card-alarm { font-size: 16px; }
   body.tv .ss-card-note { font-size: 15px; color: var(--text); }
