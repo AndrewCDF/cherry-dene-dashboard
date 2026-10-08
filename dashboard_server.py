@@ -7925,6 +7925,10 @@ OFFICE_HOME_HTML = """
   body.tv .ss-grid .ss-birds { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .ss-card-link { color: inherit; text-decoration: none; cursor: pointer; }
   .ss-card-link:hover .ss-name { text-decoration: underline; }
+  /* PC wall: the shed name's link covers the whole card, so a click anywhere opens it. */
+  body.tv.tv-pc .ss-grid .ss-card { position: relative; }
+  body.tv.tv-pc .ss-grid .ss-card-link::after { content: ""; position: absolute; inset: 0; z-index: 2; border-radius: inherit; }
+  body.tv.tv-pc .ss-grid .ss-card:hover { border-color: #0b3a6b; box-shadow: inset 0 6px 0 var(--accent, var(--green)), 0 0 0 2px #0b3a6b; }
   body.tv .ss-header { padding-top: 6px; padding-bottom: 6px; }
   body.tv main { padding-top: 10px; padding-bottom: 10px; gap: 10px; }
   body.tv #ssCards { gap: 10px; }
@@ -10924,14 +10928,194 @@ CROP_REPORTS_HTML = """
 """
 
 
+# ---------------------------------------------------------------------------
+# Feed / water charts in the shed controller's style: daily bars (6am to 6am) with the
+# total written on each bar; click a day to see its 24 hours. Shared by the shed
+# feed/water pages, old crop history and the bore hole. Each page loads Chart.js, puts
+# {{ day_bars_head|safe }} in its <head> and {{ day_bars_js|safe }} before its script,
+# then calls ssDayBars(element, {...}).
+# ---------------------------------------------------------------------------
+DAY_BARS_HEAD = """
+<style>
+  .db { display: flex; flex-direction: column; gap: 16px; }
+  .db-card { background: #ffffff; border: 1px solid #d5dde6; border-radius: 14px; padding: 16px 18px; }
+  .db-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .db-title { margin: 0; font-size: 24px; color: #0b3a6b; }
+  .db-sub { margin-top: 4px; font-size: 15px; color: #4a6078; }
+  .db-back { min-height: 44px; padding: 0 16px; border-radius: 12px; border: 1px solid #c5d0dc; background: #ffffff; color: #0b3a6b; font: inherit; font-weight: 600; cursor: pointer; }
+  .db-back[hidden] { display: none !important; }
+  .db-chart-wrap { background: #f5f8fb; border: 1px solid #d5dde6; border-radius: 12px; padding: 10px; }
+  .db-scroll { overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; }
+  .db-inner { position: relative; height: 380px; }
+  .db-table-title { margin: 0 0 8px; font-size: 18px; color: #0b3a6b; }
+  .db-table-wrap { max-height: 520px; overflow: auto; border: 1px solid #d5dde6; border-radius: 10px; }
+  .db table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  .db th, .db td { border-bottom: 1px solid #e3e9ef; padding: 9px 10px; text-align: left; color: #0d2b4a; }
+  .db th { position: sticky; top: 0; background: #f5f8fb; color: #4a6078; font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .db-day { all: unset; cursor: pointer; color: #1676b8; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+  .db-day:focus-visible { outline: 3px solid #f08a12; outline-offset: 2px; }
+  .db-empty { color: #4a6078; padding: 12px 0; }
+  @media (max-width: 700px) { .db-inner { height: 300px; } .db-title { font-size: 20px; } }
+</style>
+"""
+
+DAY_BARS_JS = """
+<script>
+function ssDayBars(root, opts) {
+  const DAY_START_HOUR = 6;   // the farm day runs 6am to 6am
+  const unit = opts.unit, color = opts.color, label = opts.label;
+  const MIN_BAR_PX = 38;      // bars never squeeze below this; the chart scrolls sideways instead
+  const pad = (n) => String(n).padStart(2, '0');
+  const fmt = (v) => v === null || v === undefined ? '--' : Number(v).toLocaleString('en-GB', { maximumFractionDigits: 1 });
+  root.className = 'db';
+  root.innerHTML =
+    '<div class="db-card"><div class="db-head"><div><h2 class="db-title"></h2><div class="db-sub"></div></div>' +
+    '<button type="button" class="db-back" hidden>&larr; All days</button></div>' +
+    '<div class="db-chart-wrap"><div class="db-scroll"><div class="db-inner"><canvas></canvas></div></div></div></div>' +
+    '<div class="db-card"><h3 class="db-table-title"></h3><div class="db-table-wrap"><table><thead><tr>' +
+    '<th class="db-when"></th><th></th><th class="db-more"></th></tr></thead><tbody></tbody></table></div></div>';
+  const q = (sel) => root.querySelector(sel);
+  q('thead th:nth-child(2)').textContent = label + ' ' + unit;
+
+  // Group the hourly points into farm days.
+  const days = [], dayMap = {};
+  (opts.epochs || []).forEach((epoch, i) => {
+    if (epoch === null || epoch === undefined) return;
+    const d6 = new Date((epoch - DAY_START_HOUR * 3600) * 1000);
+    const key = d6.getFullYear() + '-' + pad(d6.getMonth() + 1) + '-' + pad(d6.getDate());
+    if (!dayMap[key]) {
+      const start = new Date(d6.getFullYear(), d6.getMonth(), d6.getDate(), DAY_START_HOUR, 0, 0);
+      dayMap[key] = { key: key, start: start, total: 0, seen: 0, hours: {},
+        label: start.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' }) };
+      days.push(dayMap[key]);
+    }
+    const v = opts.values[i];
+    if (v !== null && v !== undefined) { dayMap[key].total += Number(v); dayMap[key].seen += 1; }
+    dayMap[key].hours[epoch] = v;
+  });
+  days.sort((a, b) => a.start - b.start);
+  if (days.length) days[days.length - 1].partial = (Date.now() - days[days.length - 1].start.getTime()) < 24 * 3600 * 1000;
+  const grandTotal = days.reduce((sum, d) => sum + d.total, 0);
+
+  q('.db-title').textContent = opts.title;
+  if (!days.length) {
+    q('.db-sub').textContent = opts.subtitle || '';
+    q('.db-chart-wrap').outerHTML = '<div class="db-empty">No data yet.</div>';
+    root.lastElementChild.remove();
+    return;
+  }
+
+  // Each bar's figure written up the bar: inside when it fits, otherwise just above.
+  const barLabels = { id: 'dbBarLabels', afterDatasetsDraw(c) {
+    const meta = c.getDatasetMeta(0), data = c.data.datasets[0].data, g = c.ctx;
+    g.save(); g.font = '600 13px "Barlow Semi Condensed", Barlow, sans-serif'; g.fillStyle = '#0d2b4a';
+    meta.data.forEach((bar, i) => {
+      const v = data[i]; if (v === null || v === undefined) return;
+      const text = fmt(v), p = bar.getProps(['x', 'y', 'base'], true), h = p.base - p.y;
+      const inside = h >= g.measureText(text).width + 10;
+      g.save(); g.translate(p.x, inside ? p.y + 5 : p.y - 4); g.rotate(-Math.PI / 2);
+      g.textAlign = inside ? 'right' : 'left'; g.textBaseline = 'middle'; g.fillText(text, 0, 0); g.restore();
+    });
+    g.restore();
+  } };
+
+  let chart = null;
+  function draw(chartLabels, values, onPick) {
+    if (chart) chart.destroy();
+    const scroller = q('.db-scroll'), inner = q('.db-inner');
+    const needed = chartLabels.length * MIN_BAR_PX + 70;
+    inner.style.width = needed > scroller.clientWidth ? needed + 'px' : '100%';
+    chart = new Chart(q('canvas'), {
+      type: 'bar', plugins: [barLabels],
+      data: { labels: chartLabels, datasets: [{ label: label + ' (' + unit + ')', data: values, borderRadius: 4, backgroundColor: color, borderColor: color }] },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        onClick: (e, els) => { if (onPick && els.length) onPick(els[0].index); },
+        onHover: (e, els) => { e.native.target.style.cursor = (onPick && els.length) ? 'pointer' : 'default'; },
+        layout: { padding: { top: 46 } },
+        plugins: { legend: { labels: { color: '#0d2b4a' } } },
+        scales: {
+          x: { ticks: { color: '#4a6078', autoSkip: false, maxRotation: 50, minRotation: 0 }, grid: { color: '#e3e9ef' } },
+          y: { beginAtZero: true, grace: '8%', ticks: { color: '#4a6078' }, grid: { color: '#e3e9ef' } }
+        }
+      }
+    });
+    scroller.scrollLeft = scroller.scrollWidth;   // open on the latest days
+  }
+
+  function showDays() {
+    q('.db-back').hidden = true;
+    q('.db-sub').textContent = (opts.subtitle ? opts.subtitle + ' ' : '') + 'Daily totals, 6am to 6am · ' + fmt(grandTotal) + ' ' + unit + ' in total. Click a day to see its hours.';
+    q('.db-table-title').textContent = 'Daily totals';
+    q('.db-when').textContent = 'Day';
+    q('.db-more').textContent = 'Hours';
+    draw(days.map((d) => d.label + (d.partial ? ' (so far)' : '')), days.map((d) => d.seen ? Math.round(d.total * 10) / 10 : null), (i) => showDay(days[i].key));
+    const body = q('tbody'); body.innerHTML = '';
+    days.slice().reverse().forEach((d) => {
+      const tr = document.createElement('tr');
+      const when = document.createElement('td'), btn = document.createElement('button');
+      btn.type = 'button'; btn.className = 'db-day'; btn.textContent = d.label + (d.partial ? ' (so far)' : '');
+      btn.addEventListener('click', () => showDay(d.key));
+      when.appendChild(btn);
+      const val = document.createElement('td'); val.textContent = d.seen ? fmt(d.total) + ' ' + unit : '--';
+      const more = document.createElement('td'); more.textContent = d.seen; more.style.color = '#4a6078';
+      tr.append(when, val, more); body.appendChild(tr);
+    });
+  }
+
+  function showDay(key) {
+    const d = dayMap[key]; if (!d) return;
+    const slots = [];
+    for (let h = 0; h < 24; h++) {
+      const t = new Date(d.start.getTime() + h * 3600 * 1000), epoch = Math.round(t.getTime() / 1000);
+      slots.push({ label: pad(t.getHours()) + ':00', value: Object.prototype.hasOwnProperty.call(d.hours, epoch) ? d.hours[epoch] : null });
+    }
+    q('.db-back').hidden = false;
+    q('.db-sub').textContent = d.label + ', 6am to 6am' + (d.partial ? ' (so far)' : '') + ' · ' + fmt(d.total) + ' ' + unit + ' in total';
+    q('.db-table-title').textContent = 'Hourly, ' + d.label;
+    q('.db-when').textContent = 'Hour';
+    q('.db-more').textContent = '';
+    draw(slots.map((s) => s.label), slots.map((s) => s.value), null);
+    const body = q('tbody'); body.innerHTML = '';
+    slots.forEach((s) => {
+      const tr = document.createElement('tr');
+      const when = document.createElement('td'); when.textContent = s.label;
+      const val = document.createElement('td'); val.textContent = s.value === null ? '--' : fmt(s.value) + ' ' + unit;
+      tr.append(when, val, document.createElement('td')); body.appendChild(tr);
+    });
+    root.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  q('.db-back').addEventListener('click', showDays);
+  if (opts.openLatestDay) showDay(days[days.length - 1].key); else showDays();
+}
+</script>
+"""
+
+app.jinja_env.globals["day_bars_head"] = Markup(DAY_BARS_HEAD)
+app.jinja_env.globals["day_bars_js"] = Markup(DAY_BARS_JS)
+
+
+def hourly_bar_series(rows, key):
+    """Epochs and one metric's values from hourly rows, for ssDayBars."""
+    epochs, values = [], []
+    for row in rows:
+        try:
+            epochs.append(int(row.get("epoch")))
+        except Exception:
+            continue
+        value = row.get(key)
+        values.append(round(float(value), 2) if value is not None else None)
+    return epochs, values
+
+
 PERIOD_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
-    <title>{{ shed_name }} {{ period_title }}</title>
+    <title>{{ shed_name }} crop {{ crop_code }}</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta http-equiv="refresh" content="30">
     <style>
         * {
             box-sizing: border-box;
@@ -11091,227 +11275,29 @@ PERIOD_HTML = """
     </style>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+    {{ day_bars_head|safe }}
 </head>
 <body>
     <div class="wrap">
         <div class="topbar">{{ render_page_nav() }}</div>
 
-        <h1>{{ shed_name }} {{ period_title }}</h1>
-        <div class="sub">{{ period_sub }}</div>
+        <h1>{{ shed_name }} · crop {{ crop_code }}</h1>
 
-        <div class="grid">
-            <div class="card">
-                <h2>{{ period_title }} list</h2>
-                {% if rows %}
-                <details class="collapse" open>
-                    <summary>Open {{ period_title|lower }} list</summary>
-                    <div class="table-wrap">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>{{ first_col }}</th>
-                                    <th>Water L</th>
-                                    <th>Feed KG</th>
-                                    <th>Running Water L</th>
-                                    <th>Running Feed KG</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {% for r in table_rows %}
-                                <tr class="paged-row">
-                                    <td>{{ r.label }}</td>
-                                    <td>{{ "%.1f"|format(r.water) if r.water is not none else "--" }}</td>
-                                    <td>{{ "%.2f"|format(r.feed) if r.feed is not none else "--" }}</td>
-                                    <td>{{ "%.1f"|format(r.running_water) if r.running_water is not none else "--" }}</td>
-                                    <td>{{ "%.2f"|format(r.running_feed) if r.running_feed is not none else "--" }}</td>
-                                </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                    <div class="table-controls">
-                        <button type="button" id="periodTableLoadMore">Load next 20</button>
-                        <div class="hint" id="periodTableInfo"></div>
-                    </div>
-                </details>
-                {% else %}
-                <div class="empty">No data yet.</div>
-                {% endif %}
-            </div>
-
-            <div class="stack">
-                <div class="card">
-                    <h2>Feed {{ period_title }} chart</h2>
-                    {% if rows %}
-                    <div class="toolbar">
-                        <button type="button" onclick="resetZoomSafe(feedChart)">Reset zoom</button>
-                    </div>
-                    <div class="chart-wrap">
-                        <div class="chart-box">
-                            <canvas id="feedChart"></canvas>
-                        </div>
-                    </div>
-                    <div class="hint">Mouse wheel to zoom, drag to pan, shift + drag to zoom box.</div>
-                    {% else %}
-                    <div class="empty">No data yet.</div>
-                    {% endif %}
-                </div>
-
-                <div class="card">
-                    <h2>Water {{ period_title }} chart</h2>
-                    {% if rows %}
-                    <div class="toolbar">
-                        <button type="button" onclick="resetZoomSafe(waterChart)">Reset zoom</button>
-                    </div>
-                    <div class="chart-wrap">
-                        <div class="chart-box">
-                            <canvas id="waterChart"></canvas>
-                        </div>
-                    </div>
-                    <div class="hint">Mouse wheel to zoom, drag to pan, shift + drag to zoom box.</div>
-                    {% else %}
-                    <div class="empty">No data yet.</div>
-                    {% endif %}
-                </div>
-            </div>
-        </div>
+        <div id="feedBars"></div>
+        <div id="waterBars" style="margin-top: 22px"></div>
     </div>
 
+{{ day_bars_js|safe }}
 <script>
-const labels = {{ labels|tojson }};
-const feedValues = {{ feed_values|tojson }};
-const waterValues = {{ water_values|tojson }};
-const xAxisTitle = {{ first_col|tojson }};
-
-let feedChart = null;
-let waterChart = null;
-
-function setupPagedTable(buttonId, infoId, initialCount = 20, step = 20) {
-    const rows = Array.from(document.querySelectorAll('.paged-row'));
-    const button = document.getElementById(buttonId);
-    const info = document.getElementById(infoId);
-    if (!rows.length) {
-        if (button) button.style.display = 'none';
-        if (info) info.textContent = '';
-        return;
-    }
-
-    let visibleCount = Math.min(initialCount, rows.length);
-
-    function render() {
-        rows.forEach((row, index) => {
-            row.style.display = index < visibleCount ? '' : 'none';
-        });
-        if (info) {
-            info.textContent = `Showing ${Math.min(visibleCount, rows.length)} of ${rows.length}`;
-        }
-        if (button) {
-            button.style.display = visibleCount < rows.length ? '' : 'none';
-        }
-    }
-
-    if (button) {
-        button.addEventListener('click', () => {
-            visibleCount = Math.min(rows.length, visibleCount + step);
-            render();
-        });
-    }
-
-    render();
-}
-
-function resetZoomSafe(chart) {
-    if (chart && chart.resetZoom) {
-        chart.resetZoom();
-    }
-}
-
-function buildChart(canvasId, chartLabel, values, yTitle, lineColor) {
-    const el = document.getElementById(canvasId);
-    if (!el) return null;
-
-    return new Chart(el, {
-        type: 'line',
-        data: {
-            labels: labels,
-            datasets: [{
-                label: chartLabel,
-                data: values,
-                borderWidth: 2,
-                pointRadius: 2,
-                pointHoverRadius: 4,
-                tension: 0.2,
-                borderColor: lineColor,
-                backgroundColor: lineColor
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            animation: false,
-            interaction: {
-                mode: 'nearest',
-                intersect: false
-            },
-            plugins: {
-                legend: {
-                    labels: { color: '#0d2b4a'}
-                },
-                tooltip: { enabled: true },
-                zoom: {
-                    limits: {
-                        x: {minRange: 1},
-                        y: {minRange: 1}
-                    },
-                    pan: {
-                        enabled: true,
-                        mode: 'xy'
-                    },
-                    zoom: {
-                        wheel: { enabled: true },
-                        pinch: { enabled: true },
-                        drag: {
-                            enabled: true,
-                            modifierKey: 'shift'
-                        },
-                        mode: 'xy'
-                    }
-                }
-            },
-            scales: {
-                x: {
-                    ticks: {
-                        color: '#4a6078',
-                        maxRotation: 60,
-                        minRotation: 30,
-                        autoSkip: true,
-                        maxTicksLimit: 18
-                    },
-                    grid: { color: '#0d2b4a'},
-                    title: {
-                        display: true,
-                        text: xAxisTitle,
-                        color: '#0d2b4a'
-                    }
-                },
-                y: {
-                    ticks: { color: '#4a6078'},
-                    grid: { color: '#0d2b4a'},
-                    title: {
-                        display: true,
-                        text: yTitle,
-                        color: '#0d2b4a'
-                    }
-                }
-            }
-        }
-    });
-}
-
-feedChart = buildChart('feedChart', 'Feed KG', feedValues, 'Feed KG', '#2f9e3a');
-waterChart = buildChart('waterChart', 'Water L', waterValues, 'Water L', '#1676b8');
-setupPagedTable('periodTableLoadMore', 'periodTableInfo');
+const cropSubtitle = {{ ('Crop ' ~ crop_code ~ '.')|tojson }};
+ssDayBars(document.getElementById('feedBars'), {
+    title: 'Feed', label: 'Feed', unit: 'kg', color: '#2f9e3a', subtitle: cropSubtitle,
+    epochs: {{ bar_epochs|tojson }}, values: {{ feed_values|tojson }}
+});
+ssDayBars(document.getElementById('waterBars'), {
+    title: 'Water', label: 'Water', unit: 'L', color: '#1676b8', subtitle: cropSubtitle,
+    epochs: {{ bar_epochs|tojson }}, values: {{ water_values|tojson }}
+});
 </script>
 </body>
 </html>
@@ -11323,9 +11309,8 @@ METRIC_PERIOD_HTML = """
 <html>
 <head>
     <meta charset="utf-8">
-    <title>{{ shed_name }} {{ metric_title }} {{ period_title }}</title>
+    <title>{{ shed_name }} {{ metric_title }}</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta http-equiv="refresh" content="30">
     <style>
         * { box-sizing: border-box; }
         body { margin: 0; font-family: Arial, sans-serif; background: #5b5b5b; color: #0d2b4a; overflow-x: hidden; }
@@ -11477,14 +11462,13 @@ METRIC_PERIOD_HTML = """
         }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+    {{ day_bars_head|safe }}
 </head>
 <body>
     <div class="wrap">
         <div class="topbar">{{ render_page_nav() }}</div>
 
-        <h1>{{ shed_name }} {{ metric_title }} {{ period_title }}</h1>
-        <div class="sub">{{ period_sub }}</div>
+        <h1>{{ shed_name }} {{ metric_title }}</h1>
         {% if status_msg %}
         <div class="status auto-dismiss {% if status_ok %}ok{% else %}err{% endif %}">{{ status_msg }}</div>
         {% endif %}
@@ -11492,63 +11476,9 @@ METRIC_PERIOD_HTML = """
         <div class="switches">
             <a class="switch {% if metric == 'feed' %}active{% endif %}" href="{{ url_for('shed_metric_period_view', shed_no=shed_no, metric='feed', period=period) }}">Feed</a>
             <a class="switch {% if metric == 'water' %}active{% endif %}" href="{{ url_for('shed_metric_period_view', shed_no=shed_no, metric='water', period=period) }}">Water</a>
-            <a class="switch {% if period == 'hourly' %}active{% endif %}" href="{{ url_for('shed_metric_period_view', shed_no=shed_no, metric=metric, period='hourly') }}">6 Hour</a>
-            <a class="switch {% if period == 'daily' %}active{% endif %}" href="{{ url_for('shed_metric_period_view', shed_no=shed_no, metric=metric, period='daily') }}">Daily</a>
         </div>
 
-        <div class="grid">
-            <div class="card">
-                <h2>{{ metric_title }} {{ period_title }} table</h2>
-                {% if rows %}
-                <details class="collapse" open>
-                    <summary>Open {{ metric_title|lower }} {{ period_title|lower }} table</summary>
-                    <div class="table-wrap">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>{{ first_col }}</th>
-                                    <th>{{ metric_table_label }}</th>
-                                    <th>{{ running_table_label }}</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {% for r in table_rows %}
-                                <tr class="paged-row">
-                                    <td>{{ r.label }}</td>
-                                    <td>{{ value_format(r[metric_key]) if r[metric_key] is not none else "--" }}</td>
-                                    <td>{{ value_format(r[running_key]) if r[running_key] is not none else "--" }}</td>
-                                </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                    <div class="table-controls">
-                        <button type="button" id="metricTableLoadMore">Load next 20</button>
-                        <div class="hint" id="metricTableInfo"></div>
-                    </div>
-                </details>
-                {% else %}
-                <div class="empty">No data yet.</div>
-                {% endif %}
-            </div>
-
-            <div class="card">
-                <h2>{{ metric_title }} {{ period_title }} chart</h2>
-                {% if rows %}
-                <div class="toolbar">
-                    <button type="button" onclick="resetZoomSafe(metricChart)">Reset zoom</button>
-                </div>
-                <div class="chart-wrap">
-                    <div class="chart-box">
-                        <canvas id="metricChart"></canvas>
-                    </div>
-                </div>
-                <div class="hint">Mouse wheel to zoom, drag to pan, shift + drag to zoom box.</div>
-                {% else %}
-                <div class="empty">No data yet.</div>
-                {% endif %}
-            </div>
-        </div>
+        <div id="metricBars"></div>
 
         {% if metric == 'feed' %}
         <div class="summary-grid">
@@ -11685,107 +11615,21 @@ METRIC_PERIOD_HTML = """
         {% endif %}
     </div>
 
+{{ day_bars_js|safe }}
 <script>
-const labels = {{ labels|tojson }};
-const values = {{ values|tojson }};
-const xAxisTitle = {{ first_col|tojson }};
-const yAxisTitle = {{ metric_axis_title|tojson }};
-const chartLabel = {{ metric_chart_label|tojson }};
-const lineColor = {{ metric_chart_color|tojson }};
 const augerRunsApiUrl = {{ auger_runs_api_url|tojson }};
 let augerRunsSignature = {{ auger_run_rows|tojson }};
-let metricChart = null;
 
-function setupPagedTable(buttonId, infoId, initialCount = 20, step = 20) {
-    const rows = Array.from(document.querySelectorAll('.paged-row'));
-    const button = document.getElementById(buttonId);
-    const info = document.getElementById(infoId);
-    if (!rows.length) {
-        if (button) button.style.display = 'none';
-        if (info) info.textContent = '';
-        return;
-    }
-
-    let visibleCount = Math.min(initialCount, rows.length);
-
-    function render() {
-        rows.forEach((row, index) => {
-            row.style.display = index < visibleCount ? '' : 'none';
-        });
-        if (info) {
-            info.textContent = `Showing ${Math.min(visibleCount, rows.length)} of ${rows.length}`;
-        }
-        if (button) {
-            button.style.display = visibleCount < rows.length ? '' : 'none';
-        }
-    }
-
-    if (button) {
-        button.addEventListener('click', () => {
-            visibleCount = Math.min(rows.length, visibleCount + step);
-            render();
-        });
-    }
-
-    render();
-}
-
-function resetZoomSafe(chart) {
-    if (chart && chart.resetZoom) chart.resetZoom();
-}
-
-function buildChart() {
-    const el = document.getElementById('metricChart');
-    if (!el) return null;
-    return new Chart(el, {
-        type: 'line',
-        data: {
-            labels: labels,
-            datasets: [{
-                label: chartLabel,
-                data: values,
-                borderWidth: 2,
-                pointRadius: 2,
-                pointHoverRadius: 4,
-                tension: 0.2,
-                borderColor: lineColor,
-                backgroundColor: lineColor
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            animation: false,
-            interaction: { mode: 'nearest', intersect: false },
-            plugins: {
-                legend: { labels: { color: '#0d2b4a'} },
-                tooltip: { enabled: true },
-                zoom: {
-                    limits: { x: { minRange: 1 }, y: { minRange: 1 } },
-                    pan: { enabled: true, mode: 'xy' },
-                    zoom: {
-                        wheel: { enabled: true },
-                        pinch: { enabled: true },
-                        drag: { enabled: true, modifierKey: 'shift' },
-                        mode: 'xy'
-                    }
-                }
-            },
-            scales: {
-                x: {
-                    ticks: { color: '#4a6078', maxRotation: 60, minRotation: 30, autoSkip: true, maxTicksLimit: 18},
-                    grid: { color: '#0d2b4a'},
-                    title: { display: true, text: xAxisTitle, color: '#0d2b4a'}
-                },
-                y: {
-                    ticks: { color: '#4a6078'},
-                    grid: { color: '#0d2b4a'},
-                    title: { display: true, text: yAxisTitle, color: '#0d2b4a'}
-                }
-            }
-        }
-    });
-}
+ssDayBars(document.getElementById('metricBars'), {
+    title: {{ metric_title|tojson }},
+    label: {{ metric_title|tojson }},
+    unit: {{ bar_unit|tojson }},
+    color: {{ metric_chart_color|tojson }},
+    subtitle: {{ bars_subtitle|tojson }},
+    epochs: {{ bar_epochs|tojson }},
+    values: {{ bar_values|tojson }},
+    openLatestDay: {{ 'true' if period == 'hourly' else 'false' }}
+});
 
 function escapeHtml(value) {
     return String(value == null ? '' : value)
@@ -11843,8 +11687,6 @@ async function refreshAugerRuns() {
     }
 }
 
-metricChart = buildChart();
-setupPagedTable('metricTableLoadMore', 'metricTableInfo');
 if (augerRunsApiUrl) {
     refreshAugerRuns();
     setInterval(refreshAugerRuns, 60000);
@@ -11860,9 +11702,8 @@ BOREHOLE_PERIOD_HTML = """
 <html>
 <head>
     <meta charset="utf-8">
-    <title>Bore Hole {{ period_title }}</title>
+    <title>Bore Hole Water</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta http-equiv="refresh" content="30">
     <style>
         * {
             box-sizing: border-box;
@@ -12017,201 +11858,24 @@ BOREHOLE_PERIOD_HTML = """
     </style>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+    {{ day_bars_head|safe }}
 </head>
 <body>
     <div class="wrap">
         <div class="topbar">{{ render_page_nav() }}</div>
 
-        <h1>Bore Hole {{ period_title }}</h1>
-        <div class="sub">{{ period_sub }}</div>
+        <h1>Bore Hole Water</h1>
 
-        <div class="grid">
-            <div class="card">
-                <h2>{{ period_title }} list</h2>
-                {% if rows %}
-                <details class="collapse" open>
-                    <summary>Open {{ period_title|lower }} list</summary>
-                    <div class="table-wrap">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>{{ first_col }}</th>
-                                    <th>Water L</th>
-                                    <th>Running Water L</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {% for r in table_rows %}
-                                <tr class="paged-row">
-                                    <td>{{ r.label }}</td>
-                                    <td>{{ "%.1f"|format(r.water) if r.water is not none else "--" }}</td>
-                                    <td>{{ "%.1f"|format(r.running_water) if r.running_water is not none else "--" }}</td>
-                                </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                    <div class="table-controls">
-                        <button type="button" id="boreholeTableLoadMore">Load next 20</button>
-                        <div class="hint" id="boreholeTableInfo"></div>
-                    </div>
-                </details>
-                {% else %}
-                <div class="empty">No data yet.</div>
-                {% endif %}
-            </div>
-
-            <div class="card">
-                <h2>Water {{ period_title }} chart</h2>
-                {% if rows %}
-                <div class="toolbar">
-                    <button type="button" onclick="resetZoomSafe(waterChart)">Reset zoom</button>
-                </div>
-                <div class="chart-wrap">
-                    <div class="chart-box">
-                        <canvas id="waterChart"></canvas>
-                    </div>
-                </div>
-                <div class="hint">Mouse wheel to zoom, drag to pan, shift + drag to zoom box.</div>
-                {% else %}
-                <div class="empty">No data yet.</div>
-                {% endif %}
-            </div>
-        </div>
+        <div id="waterBars"></div>
     </div>
 
+{{ day_bars_js|safe }}
 <script>
-const labels = {{ labels|tojson }};
-const waterValues = {{ water_values|tojson }};
-const xAxisTitle = {{ first_col|tojson }};
-
-let waterChart = null;
-
-function setupPagedTable(buttonId, infoId, initialCount = 20, step = 20) {
-    const rows = Array.from(document.querySelectorAll('.paged-row'));
-    const button = document.getElementById(buttonId);
-    const info = document.getElementById(infoId);
-    if (!rows.length) {
-        if (button) button.style.display = 'none';
-        if (info) info.textContent = '';
-        return;
-    }
-
-    let visibleCount = Math.min(initialCount, rows.length);
-
-    function render() {
-        rows.forEach((row, index) => {
-            row.style.display = index < visibleCount ? '' : 'none';
-        });
-        if (info) {
-            info.textContent = `Showing ${Math.min(visibleCount, rows.length)} of ${rows.length}`;
-        }
-        if (button) {
-            button.style.display = visibleCount < rows.length ? '' : 'none';
-        }
-    }
-
-    if (button) {
-        button.addEventListener('click', () => {
-            visibleCount = Math.min(rows.length, visibleCount + step);
-            render();
-        });
-    }
-
-    render();
-}
-
-function resetZoomSafe(chart) {
-    if (chart && chart.resetZoom) {
-        chart.resetZoom();
-    }
-}
-
-function buildChart(canvasId, chartLabel, values, yTitle, lineColor) {
-    const el = document.getElementById(canvasId);
-    if (!el) return null;
-
-    return new Chart(el, {
-        type: 'line',
-        data: {
-            labels: labels,
-            datasets: [{
-                label: chartLabel,
-                data: values,
-                borderWidth: 2,
-                pointRadius: 2,
-                pointHoverRadius: 4,
-                tension: 0.2,
-                borderColor: lineColor,
-                backgroundColor: lineColor
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            animation: false,
-            interaction: {
-                mode: 'nearest',
-                intersect: false
-            },
-            plugins: {
-                legend: {
-                    labels: { color: '#0d2b4a'}
-                },
-                tooltip: { enabled: true },
-                zoom: {
-                    limits: {
-                        x: {minRange: 1},
-                        y: {minRange: 1}
-                    },
-                    pan: {
-                        enabled: true,
-                        mode: 'xy'
-                    },
-                    zoom: {
-                        wheel: { enabled: true },
-                        pinch: { enabled: true },
-                        drag: {
-                            enabled: true,
-                            modifierKey: 'shift'
-                        },
-                        mode: 'xy'
-                    }
-                }
-            },
-            scales: {
-                x: {
-                    ticks: {
-                        color: '#4a6078',
-                        maxRotation: 60,
-                        minRotation: 30,
-                        autoSkip: true,
-                        maxTicksLimit: 18
-                    },
-                    grid: { color: '#0d2b4a'},
-                    title: {
-                        display: true,
-                        text: xAxisTitle,
-                        color: '#0d2b4a'
-                    }
-                },
-                y: {
-                    ticks: { color: '#4a6078'},
-                    grid: { color: '#0d2b4a'},
-                    title: {
-                        display: true,
-                        text: yTitle,
-                        color: '#0d2b4a'
-                    }
-                }
-            }
-        }
-    });
-}
-
-waterChart = buildChart('waterChart', 'Water L', waterValues, 'Water L', '#1676b8');
-setupPagedTable('boreholeTableLoadMore', 'boreholeTableInfo');
+ssDayBars(document.getElementById('waterBars'), {
+    title: 'Water', label: 'Water', unit: 'L', color: '#1676b8', subtitle: 'Last 45 days.',
+    epochs: {{ bar_epochs|tojson }}, values: {{ water_values|tojson }},
+    openLatestDay: {{ 'true' if period == 'hourly' else 'false' }}
+});
 </script>
 </body>
 </html>
@@ -13243,7 +12907,7 @@ def shed_detail(shed_no):
 def shed_tables_graphs_view(shed_no):
     if shed_no not in SHED_NUMBERS:
         abort(404)
-    return redirect(url_for("shed_metric_period_view", shed_no=shed_no, metric="feed", period="hourly"))
+    return redirect(url_for("shed_metric_period_view", shed_no=shed_no, metric="feed", period="daily"))
 
 
 @app.route("/shed/<int:shed_no>/<metric>/<period>")
@@ -13270,7 +12934,7 @@ def shed_metric_period_view(shed_no, metric, period):
         running_table_label = "Running Feed KG"
         metric_axis_title = "Feed KG"
         metric_chart_label = "Feed KG"
-        metric_chart_color = "#35d07f"
+        metric_chart_color = "#2f9e3a"
         value_format = lambda v: "%.2f" % float(v)
     else:
         metric_title = "Water"
@@ -13280,7 +12944,7 @@ def shed_metric_period_view(shed_no, metric, period):
         running_table_label = "Running Water L"
         metric_axis_title = "Water L"
         metric_chart_label = "Water L"
-        metric_chart_color = "#4db6ff"
+        metric_chart_color = "#1676b8"
         value_format = lambda v: "%.1f" % float(v)
 
     if showing_out_of_crop:
@@ -13295,6 +12959,10 @@ def shed_metric_period_view(shed_no, metric, period):
         labels.append(rows[i]["label"])
         values.append(rows[i].get(metric_key))
         i += 1
+
+    hourly_rows = get_hourly_history_for_shed(shed_name, max_points=24 * 45 if showing_out_of_crop else 0, crop_id=active_crop_id, include_manual_feed=True)
+    bar_epochs, bar_values = hourly_bar_series(hourly_rows, metric_key)
+    bars_subtitle = "Out of crop, last 45 days." if showing_out_of_crop else "Current crop %s." % active_crop_code
 
     feed_page_url = url_for("shed_metric_period_view", shed_no=shed_no, metric="feed", period=period)
     status_msg = request.args.get("msg", "")
@@ -13385,6 +13053,10 @@ def shed_metric_period_view(shed_no, metric, period):
         auger_runs_backup_at=auger_runs_backup_at,
         auger_runs_api_url=auger_runs_api_url,
         shed_stock_rows=shed_stock_rows,
+        bar_epochs=bar_epochs,
+        bar_values=bar_values,
+        bar_unit="kg" if metric == "feed" else "L",
+        bars_subtitle=bars_subtitle,
     )
 
 
@@ -14033,37 +13705,13 @@ def borehole_period_view(period):
     if period not in ["hourly", "daily"]:
         abort(404)
 
-    if period == "hourly":
-        rows = get_borehole_hourly_history(max_points=168)
-        rows = add_running_water_totals(rows)
-        period_title = "Hourly"
-        period_sub = "Bore Hole hourly list with running totals and zoomable water chart."
-        first_col = "Hour"
-    else:
-        rows = get_borehole_daily_history(max_days=40)
-        rows = add_running_water_totals(rows)
-        period_title = "Daily"
-        period_sub = "Bore Hole completed 6am-6am daily list with running totals and zoomable water chart."
-        first_col = "Day"
-
-    labels = []
-    water_values = []
-
-    i = 0
-    while i < len(rows):
-        labels.append(rows[i]["label"])
-        water_values.append(rows[i]["water"])
-        i += 1
+    rows = get_borehole_hourly_history(max_points=24 * 45)
+    bar_epochs, water_values = hourly_bar_series(rows, "water")
 
     return render_template_string(
         BOREHOLE_PERIOD_HTML,
         period=period,
-        period_title=period_title,
-        period_sub=period_sub,
-        first_col=first_col,
-        rows=rows,
-        table_rows=list(reversed(rows)),
-        labels=labels,
+        bar_epochs=bar_epochs,
         water_values=water_values,
     )
 
@@ -14140,55 +13788,23 @@ def shed_crop_period_view(shed_no, crop_id, period):
         abort(404)
 
     shed_name = shed_name_from_number(shed_no)
+    rows = get_hourly_history_for_shed(shed_name, max_points=0, crop_id=crop_id, include_manual_feed=True)
     crop_start_epoch = None
-
-    if period == "hourly":
-        rows = get_hourly_history_for_shed(shed_name, max_points=0, crop_id=crop_id, include_manual_feed=True)
-        if rows:
-            try:
-                crop_start_epoch = int(rows[0].get("epoch"))
-            except Exception:
-                crop_start_epoch = None
-        rows = aggregate_history_rows_by_hours(rows, bucket_hours=6)
-        rows = add_running_totals(rows)
-        period_title = "%s 6 Hour" % fmt_crop_code(crop_id, crop_start_epoch)
-        period_sub = "Historic crop %s 6-hour list with running totals and separate zoomable feed and water charts." % fmt_crop_code(crop_id, crop_start_epoch)
-        first_col = "6 Hour Block"
-    else:
-        rows = get_daily_history_for_shed(shed_name, max_days=0, crop_id=crop_id, include_manual_feed=True)
-        if rows:
-            try:
-                crop_start_epoch = int(rows[0].get("bucket_start_epoch"))
-            except Exception:
-                crop_start_epoch = None
-        rows = add_running_totals(rows)
-        period_title = "%s Daily" % fmt_crop_code(crop_id, crop_start_epoch)
-        period_sub = "Historic crop %s completed 6am-6am daily list with running totals and separate zoomable feed and water charts." % fmt_crop_code(crop_id, crop_start_epoch)
-        first_col = "Day"
-
-    labels = []
-    feed_values = []
-    water_values = []
-
-    i = 0
-    while i < len(rows):
-        labels.append(rows[i]["label"])
-        feed_values.append(rows[i]["feed"])
-        water_values.append(rows[i]["water"])
-        i += 1
+    if rows:
+        try:
+            crop_start_epoch = int(rows[0].get("epoch"))
+        except Exception:
+            crop_start_epoch = None
+    bar_epochs, feed_values = hourly_bar_series(rows, "feed")
+    _, water_values = hourly_bar_series(rows, "water")
 
     return render_template_string(
         PERIOD_HTML,
         shed_name=shed_name,
         shed_no=shed_no,
-        history_mode=True,
         period=period,
-        period_title=period_title,
-        period_sub=period_sub,
-        first_col=first_col,
-        rows=rows,
-        table_rows=list(reversed(rows)),
-        labels=labels,
+        crop_code=fmt_crop_code(crop_id, crop_start_epoch),
+        bar_epochs=bar_epochs,
         feed_values=feed_values,
         water_values=water_values,
     )
