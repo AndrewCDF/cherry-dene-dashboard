@@ -7740,7 +7740,7 @@ OFFICE_HOME_HTML = """
   .ss-bar-fill { height: 6px; border-radius: 3px; background: var(--blue); }
   .ss-bar-fill.edge-warn { background: var(--amber); }
   .ss-card-alarm { border-radius: 10px; padding: 8px 12px; background: #fdecec; color: #8f1f1f; font-size: 14px; font-weight: 600; }
-  .ss-more { display: flex; flex-direction: column; gap: 12px; }
+  .ss-more { display: flex; flex-direction: column; gap: 12px; border-top: 1px solid var(--rule); padding-top: 10px; }
   .ss-alloc { font-size: 14px; color: var(--muted); }
   .ss-augers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
   .ss-auger { border-radius: 10px; padding: 6px 10px; background: var(--soft-bg); display: flex; flex-direction: column; min-width: 0; }
@@ -7852,6 +7852,7 @@ OFFICE_HOME_HTML = """
   body.tv .ss-card { box-shadow: inset 0 6px 0 var(--accent, var(--green)); }
   body.tv .ss-tile.edge-none, body.tv .ss-auger, body.tv .ss-idle, body.tv .ss-card-note { border: 2px solid #a3b3c4; }
   body.tv .ss-stats { border-top: 2px solid #b9c6d4; }
+  body.tv .ss-more { border-top: 2px solid #b9c6d4; padding-top: 4px; gap: 4px; }
   body.tv .ss-alarms { border-width: 2px; }
   body.tv .ss-chevron { display: none !important; }
   body.tv .ss-card .ss-more { display: flex !important; }
@@ -7897,9 +7898,12 @@ OFFICE_HOME_HTML = """
   body.tv .ss-grid .ss-stat span { font-size: 13px; line-height: 1.15; }
   body.tv .ss-grid .ss-stat b { font-size: 16px; line-height: 1.15; }
   body.tv .ss-grid .ss-card { gap: 5px; }
-  /* Keep the reading tiles compact and spread any spare height evenly between the
-     card's sections, so every card looks filled. */
-  body.tv .ss-grid .ss-card { justify-content: space-between; }
+  /* Sections sit together with no empty gaps (an alarm line only takes space when
+     there is one). Any spare height goes into the eight boxed figures at the bottom,
+     so the reading tiles stay compact and there are no blank strips. */
+  body.tv .ss-grid .ss-more { flex: 1 1 auto; min-height: 0; }
+  body.tv .ss-grid .ss-stats { flex: 1 1 auto; grid-auto-rows: 1fr; align-content: stretch; }
+  body.tv .ss-grid .ss-stat { justify-content: center; }
   body.tv .ss-card-alarm, body.tv .ss-card-note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   body.tv .ss-card-alarm { font-size: 16px; }
   body.tv .ss-card-note { font-size: 15px; color: var(--text); }
