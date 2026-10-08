@@ -7796,11 +7796,12 @@ OFFICE_HOME_HTML = """
   @media (max-width: 700px) {
     /* Phone header: logo and farm name side by side, then the date and time, then the
        office address, all centred, then the menu buttons. */
-    body:not(.tv) .ss-header { padding: 10px 14px; display: grid; grid-template-columns: auto auto; justify-content: center; align-items: center; column-gap: 12px; row-gap: 4px; text-align: center; }
+    body:not(.tv) .ss-header { padding: 10px 14px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; column-gap: 12px; row-gap: 4px; text-align: center; }
     body:not(.tv) .ss-farmblock { display: contents; }
     body:not(.tv) .ss-logo { grid-column: 1; grid-row: 1; }
-    body:not(.tv) .ss-farm { grid-column: 2; grid-row: 1; }
-    body:not(.tv) .ss-when { grid-column: 1 / -1; grid-row: 2; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+    body:not(.tv) .ss-farm { grid-column: 2; grid-row: 1; white-space: nowrap; overflow: hidden; line-height: 1.1; text-align: left; }
+    body:not(.tv) .ss-when { grid-column: 1 / -1; grid-row: 2; display: flex; flex-direction: column; align-items: stretch; gap: 2px; min-width: 0; }
+    body:not(.tv) #ssDate { display: block; white-space: nowrap; overflow: hidden; font-weight: 600; color: var(--navy); line-height: 1.15; }
     body:not(.tv) .ss-ip-sep { display: none; }
     body:not(.tv) .ss-nav { grid-column: 1 / -1; grid-row: 3; margin-top: 6px; }
     body:not(.tv) .ss-logo { height: 40px; }
@@ -8043,7 +8044,30 @@ function ssClock() {
   if (d) d.textContent = SS_TV ? now.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }) : date + ' · ' + time;
   const c = document.getElementById('ssClock');
   if (c) c.textContent = time;
+  ssFitPhoneHeader();
 }
+
+// Phone: size the farm name to fill the space beside the logo, and the date and time
+// to fill their row.
+function ssFitText(el, maxSize) {
+  if (!el || !el.clientWidth) return;
+  let lo = 12, hi = maxSize;
+  while (hi - lo > 0.5) {
+    const mid = (lo + hi) / 2;
+    el.style.fontSize = mid + 'px';
+    if (el.scrollWidth <= el.clientWidth) lo = mid; else hi = mid;
+  }
+  el.style.fontSize = lo + 'px';
+}
+function ssFitPhoneHeader() {
+  if (SS_TV || !window.matchMedia('(max-width: 700px)').matches) {
+    ['.ss-farm', '#ssDate'].forEach((sel) => { const el = document.querySelector(sel); if (el) el.style.fontSize = ''; });
+    return;
+  }
+  ssFitText(document.querySelector('.ss-farm'), 44);
+  ssFitText(document.getElementById('ssDate'), 40);
+}
+window.addEventListener('resize', ssFitPhoneHeader);
 ssClock();
 setInterval(ssClock, 1000);
 
