@@ -7855,6 +7855,13 @@ OFFICE_HOME_HTML = """
   body.tv .ss-card-alarm { padding: 5px 8px; font-size: 13px; }
   body.tv .ss-foot { font-size: 11px; }
   body.tv .ss-idle { font-size: 17px; margin: auto 0; }
+  body.tv { --bg: #b4c2d1; --soft-bg: #e6ecf3; --line: #7f93a9; --rule: #b9c6d4; --muted: #3c5167; }
+  body.tv .ss-header { border-bottom: 3px solid #7f93a9; }
+  body.tv .ss-sum, body.tv .ss-card { border: 2px solid #7f93a9; }
+  body.tv .ss-card { box-shadow: inset 0 6px 0 var(--accent, var(--green)); }
+  body.tv .ss-tile.edge-none, body.tv .ss-auger, body.tv .ss-idle, body.tv .ss-card-note { border: 2px solid #a3b3c4; }
+  body.tv .ss-stats { border-top: 2px solid #b9c6d4; }
+  body.tv .ss-alarms { border-width: 2px; }
   body.tv .ss-chevron { display: none !important; }
   body.tv .ss-card .ss-more { display: flex !important; }
   body.tv .ss-card-head { cursor: default; }
@@ -7862,7 +7869,7 @@ OFFICE_HOME_HTML = """
   body.tv .ss-augers { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   body.tv .ss-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   body.tv .ss-hilo { display: flex; }
-  body.tv .ss-tile.edge-none { border-color: var(--rule); }
+  body.tv .ss-tile.edge-none { border-color: #a3b3c4; }
   body.tv .ss-dot.dot-none { background: var(--grey); }
   body.tv .ss-card.kind-offline .ss-big, body.tv .ss-card.kind-offline .ss-mid,
   body.tv .ss-card.kind-empty .ss-big, body.tv .ss-card.kind-empty .ss-mid { color: var(--grey); }
@@ -7944,7 +7951,7 @@ document.addEventListener('click', (event) => {
 
 async function ssRefresh() {
   try {
-    const resp = await fetch('/api/home-cards' + (SS_TV ? '?tv=1' : ''), { cache: 'no-store' });
+    const resp = await fetch('/api/home-cards?tv=' + (SS_TV ? '1' : '0'), { cache: 'no-store' });
     if (!resp.ok) return;
     document.getElementById('ssCards').innerHTML = await resp.text();
     ssApplyOpen();
@@ -12373,9 +12380,24 @@ def render_office_home(tv=False):
     return render_template_string(OFFICE_HOME_HTML, **ctx)
 
 
+# Smart TV browsers (Samsung Tizen, LG webOS, Sony/Android TV, Hisense VIDAA, Fire TV...)
+# get the TV wall at the plain office address. ?tv=1 / ?tv=0 override it.
+SMART_TV_AGENT_RE = re.compile(
+    r"smart-?tv|tizen|web0s|webos|netcast|bravia|android tv|googletv|google tv|aft[a-z]|crkey|hbbtv|vidaa|hisense|roku|philipstv|nettv|viera|tv safari",
+    re.I,
+)
+
+
+def request_wants_tv():
+    choice = str(request.args.get("tv", "") or "").strip()
+    if choice in ["1", "0"]:
+        return choice == "1"
+    return bool(SMART_TV_AGENT_RE.search(request.headers.get("User-Agent", "") or ""))
+
+
 @app.route("/")
 def dashboard():
-    return render_office_home(tv=False)
+    return render_office_home(tv=request_wants_tv())
 
 
 @app.route("/tv")
@@ -12390,8 +12412,7 @@ def classic_dashboard():
 
 @app.route("/api/home-cards")
 def office_home_cards_api():
-    tv = request.args.get("tv") == "1"
-    return render_template_string(OFFICE_CARDS_HTML, **office_home_context(tv=tv))
+    return render_template_string(OFFICE_CARDS_HTML, **office_home_context(tv=request_wants_tv()))
 
 
 @app.route("/events")
