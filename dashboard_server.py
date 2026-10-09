@@ -8326,6 +8326,15 @@ OFFICE_HOME_HTML = """
 // Fully Kiosk Browser (the farm TV) adds a "fully" object to every page. Show it the
 // TV wall; open the page with ?tv=0 to keep the normal layout on a Fully Kiosk device.
 if (window.fully && !/[?&]tv=0/.test(window.location.search)) { window.location.replace('/?tv=1'); }
+{% if not tv %}
+// Some TV browsers say they are phones. A screen too wide for a phone gets the wall,
+// unless the phone layout was asked for with ?tv=0.
+(function () {
+  var wide = Math.max(window.innerWidth || 0, document.documentElement.clientWidth || 0) >= 1000;
+  var chosen = /[?&]tv=0/.test(window.location.search) || /(^|;\s*)ss_tv=0/.test(document.cookie);
+  if (wide && !chosen) { window.location.replace('/?tv=1'); }
+})();
+{% endif %}
 </script>
 {% endif %}
 {% if tv %}
@@ -8629,6 +8638,47 @@ setInterval(pollNotifications, 8000);
 </body>
 </html>
 """
+
+
+def add_css_var_fallbacks(html, values):
+    """Older TV browsers don't understand CSS variables (var(--x)), so every colour that
+    uses one loses it: no grey background, no green/amber/red tile edges. Put a plain
+    copy of each such declaration in front of it; modern browsers still use the var()."""
+    def resolve(value):
+        pattern = re.compile(r"var\(--([\w-]+)\s*(?:,\s*([^()]*))?\)")
+        for _ in range(5):
+            new = pattern.sub(lambda m: values.get(m.group(1)) or (m.group(2) or "").strip(), value)
+            if new == value:
+                break
+            value = new
+        return value
+
+    def fix_style(block):
+        def decl(m):
+            prop, value = m.group(1), m.group(2)
+            plain = resolve(value)
+            if "var(" in plain or not plain.strip():
+                return m.group(0)
+            return "%s: %s; %s: %s" % (prop, plain.strip(), prop, value.strip())
+        return re.sub(r"(?<=[{;\s])([a-z][a-z-]*)\s*:\s*([^;{}]*var\(--[^;{}]*?)(?=\s*;|\s*})", decl, block)
+
+    return re.sub(r"(<style[^>]*>)(.*?)(</style>)", lambda m: m.group(1) + fix_style(m.group(2)) + m.group(3), html, flags=re.S)
+
+
+# The colours the TV wall uses (the :root values with the TV's stronger overrides).
+OFFICE_TV_CSS_VALUES = {
+    "bg": "#b4c2d1", "card": "#ffffff", "soft-bg": "#e6ecf3", "line": "#7f93a9", "rule": "#b9c6d4",
+    "navy": "#0b3a6b", "text": "#0d2b4a", "muted": "#2c3f54",
+    "green": "#2f9e3a", "amber": "#f08a12", "red": "#d64545", "grey": "#9aa8b6", "blue": "#1676b8",
+    "ss-div-h": "54px",
+}
+OFFICE_HOME_HTML = add_css_var_fallbacks(OFFICE_HOME_HTML.replace("</style>\n</head>", """
+  /* Card top colour for browsers without CSS variables (same as the --accent rules). */
+  body.tv .ss-card.kind-ok { box-shadow: inset 0 6px 0 #2f9e3a; } body.tv .ss-card.kind-warn { box-shadow: inset 0 6px 0 #f08a12; }
+  body.tv .ss-card.kind-alarm { box-shadow: inset 0 6px 0 #d64545; } body.tv .ss-card.kind-water { box-shadow: inset 0 6px 0 #1676b8; }
+  body.tv .ss-card.kind-offline, body.tv .ss-card.kind-empty { box-shadow: inset 0 6px 0 #9aa8b6; }
+</style>
+</head>""", 1), OFFICE_TV_CSS_VALUES)
 
 
 EVENTS_HTML = """
