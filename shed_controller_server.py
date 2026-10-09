@@ -2641,6 +2641,8 @@ def sync_payload(state):
     payload = {
         "shed_no": shed_no,
         "entries": entries,
+        # Front-to-rear pen order, so the office can show and set which end each pen is at.
+        "pen_order": {"order": [str(k) for k in (state.get("pen_order") or [])], "updated_ts": state.get("pen_order_ts"), "now": int(time.time())},
     }
 
     sensors = state.get("sensors", {})
@@ -2859,6 +2861,24 @@ def sync_climate_limits_to_office():
     threading.Thread(target=lambda: auto_sync_if_changed(load_state()), daemon=True).start()
 
 
+def adopt_office_pen_order(state, incoming):
+    # A pen started on the office at a chosen end; take it when it is newer than ours.
+    if not isinstance(incoming, dict) or not isinstance(incoming.get("order"), list):
+        return
+    try:
+        office_ts = int(incoming.get("updated_ts") or 0)
+        # Put the office's time on this Pi's clock, in case either clock is out.
+        if incoming.get("now"):
+            office_ts += int(time.time()) - int(incoming.get("now"))
+        local_ts = int(state.get("pen_order_ts") or 0)
+    except Exception:
+        return
+    order = [str(k) for k in incoming["order"]]
+    if order != state.get("pen_order") and office_ts > local_ts + 2:
+        state["pen_order"] = order
+        state["pen_order_ts"] = office_ts
+
+
 def pull_from_dashboard(state):
     cfg = load_config()
 
@@ -2880,6 +2900,7 @@ def pull_from_dashboard(state):
                 for key in incoming:
                     state["entries"][str(key)] = clean_entry_record(incoming.get(key, {}))
                 state["entries_updated_ts"] = int(time.time())
+            adopt_office_pen_order(state, payload.get("pen_order"))
             summary = payload.get("summary", {})
             if isinstance(summary, dict):
                 state["dashboard_summary"] = {
@@ -3277,19 +3298,24 @@ def shed_plan_layout(cfg):
     }
 
 
-def ordered_entry_keys(entries, pen_order):
+def ordered_entry_keys(entries, pen_order, home_shed_no=None):
     # Pens keep the front-to-rear order they were added in; anything the office
-    # added without a position goes to the rear in shed-number order.
+    # added without a position goes to the rear in shed-number order. The shed's own
+    # birds always sit at the rear: the pens nearest the door are the ones that move out.
     keys = [str(k) for k in (pen_order or []) if str(k) in entries]
     rest = sorted([k for k in entries.keys() if str(k) not in keys], key=lambda k: int(k) if str(k).isdigit() else 0)
-    return keys + rest
+    ordered = keys + rest
+    if home_shed_no is not None:
+        own = [k for k in ordered if entry_home_shed_no(k) == int(home_shed_no)]
+        ordered = [k for k in ordered if k not in own] + own
+    return ordered
 
 
 def overview_pens(cfg, entries, pen_order=None, layout=None):
     layout = layout or shed_plan_layout(cfg)
     pen_area = layout["inner_w"]
     rows = []
-    for key in ordered_entry_keys(entries, pen_order):
+    for key in ordered_entry_keys(entries, pen_order, cfg.get("shed_no")):
         try:
             dest_shed = int(key)
         except Exception:
@@ -6760,7 +6786,7 @@ OVERVIEW_HTML = """
                         </div>
                         {% endfor %}
                         {% if pens %}
-                        {% if pen_add_options %}
+                        {% if pen_add_options and pens|length < 4 %}
                         <button type="button" class="add-btn add-corner" style="{{ 'left' if layout.front_left else 'right' }}: 12px" data-side="front" aria-label="Add a pen at the front end">+</button>
                         <button type="button" class="add-btn add-corner" style="{{ 'right' if layout.front_left else 'left' }}: 12px" data-side="rear" aria-label="Add a pen at the rear end">+</button>
                         {% endif %}
@@ -10860,8 +10886,14 @@ def add_pen():
             raise ValueError()
     except Exception:
         return redirect_back_with_status("index", False, "Enter how many birds were placed")
-    if get_entry_for_dest(load_state(), dest_shed)["bird_count"] > 0:
+    current = load_state()
+    if get_entry_for_dest(current, dest_shed)["bird_count"] > 0:
         return redirect_back_with_status("index", False, "%s already has a pen in this shed" % entry_shed_label(dest_shed))
+    # Same count as the office: pens that are started and have birds in them.
+    active_pens = [k for k in current.get("entries", {})
+                   if get_entry_for_dest(current, k)["crop_active"] == 1 and get_entry_for_dest(current, k)["bird_count"] > 0]
+    if len(active_pens) >= 4:
+        return redirect_back_with_status("index", False, "A shed holds 4 pens at most")
 
     ok, sync_msg = start_entry_for_dest_impl(dest_shed, placed_bird_count_override=placed_bird_count)
 
@@ -10869,12 +10901,13 @@ def add_pen():
         if get_entry_for_dest(state, dest_shed)["bird_count"] <= 0:
             return
         entries = state.get("entries", {})
-        order = [k for k in ordered_entry_keys(entries, state.get("pen_order", [])) if k != str(dest_shed)]
+        order = [k for k in ordered_entry_keys(entries, state.get("pen_order", []), load_config().get("shed_no")) if k != str(dest_shed)]
         if side == "front":
             order.insert(0, str(dest_shed))
         else:
             order.append(str(dest_shed))
         state["pen_order"] = order
+        state["pen_order_ts"] = int(time.time())
 
     mutate_state(mutator)
     return redirect_back_with_status("index", ok, sync_msg if sync_msg else "Pen added")

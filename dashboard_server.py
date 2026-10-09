@@ -1,4 +1,5 @@
 from flask import Flask, render_template_string, abort, url_for, request, redirect, jsonify, Response, send_file
+import functools
 import json
 import os
 import re
@@ -350,6 +351,21 @@ FEED_MOVEMENT_SESSION_GAP_SECONDS = 150
 _office_backup_lock = threading.Lock()
 _event_log_lock = threading.Lock()
 _json_line_cache_lock = threading.Lock()
+
+
+# Every load -> change -> save of shed_entries.json holds this lock, so an office edit
+# and a controller sync arriving together can't overwrite each other.
+_shed_entries_lock = threading.RLock()
+
+
+def shed_entries_locked(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _shed_entries_lock:
+            return fn(*args, **kwargs)
+    return wrapper
+
+
 _json_line_cache = {}
 EVENT_LOG_MAX_BYTES = 5 * 1024 * 1024
 EVENT_LOG_KEEP_LINES = 10000
@@ -1621,6 +1637,7 @@ def restore_full_office_from_backup(path):
                 dst.write(src.read())
 
 
+@shed_entries_locked
 def restore_shed_from_backup(path, shed_no):
     shed_name = shed_name_from_number(shed_no)
 
@@ -1657,6 +1674,7 @@ def restore_borehole_from_backup(path):
         save_borehole_meta(backup_meta)
 
 
+@shed_entries_locked
 def restore_shed_from_controller_backup(path, shed_no):
     shed_name = shed_name_from_number(shed_no)
     controller_state = zip_json_member(path, "controller_state.json", {})
@@ -2739,6 +2757,7 @@ def mortality_payload_for_shed(shed_no):
     }
 
 
+@shed_entries_locked
 def apply_mortality_to_shed(shed_no, dest_shed, bird_loss, note="", updated_by="dashboard", date_text=""):
     if shed_no not in SHED_NUMBERS or not valid_entry_shed(dest_shed):
         return False, "Invalid mortality entry"
@@ -3691,10 +3710,12 @@ def shed_sync_payload(shed_no):
         climate_limits = {key: limits.get(key) for key in CLIMATE_LIMIT_KEYS}
         climate_limits["updated_ts"] = office_ts
 
+    pen_bucket = state.get(shed_name, {})
     return {
         "shed_no": shed_no,
         "shed": shed_name,
         "entries": payload_entries,
+        "pen_order": {"order": pen_order_for_shed(state, shed_name), "updated_ts": pen_bucket.get("pen_order_ts") or None, "now": int(time.time())},
         "climate_limits": climate_limits,
         "current_crop_id": get_active_crop_id_for_shed(shed_name),
         "sync_version": sync_version,
@@ -3750,6 +3771,7 @@ def push_shed_state_to_controller_async(shed_no):
     threading.Thread(target=worker, daemon=True).start()
 
 
+@shed_entries_locked
 def apply_external_shed_entries(shed_no, incoming_entries, source, controller_meta=None):
     state = load_shed_entries_state()
     shed_name = shed_name_from_number(shed_no)
@@ -5660,9 +5682,125 @@ def load_shed_entries_state():
             if ended_ts > 0:
                 clean_ended_entries[str(dest_shed)] = ended_ts
 
-        result[shed_name] = {"entries": clean_entries, "ended_entries": clean_ended_entries}
+        pen_order = shed_rec.get("pen_order", [])
+        pen_order = [str(k) for k in pen_order] if isinstance(pen_order, list) else []
+        try:
+            pen_order_ts = int(shed_rec.get("pen_order_ts") or 0)
+        except Exception:
+            pen_order_ts = 0
+        slot_of = shed_rec.get("pen_slot_of", {})
+        slot_of = {str(k): int(v) for k, v in slot_of.items() if str(v).lstrip("-").isdigit()} if isinstance(slot_of, dict) else {}
+        try:
+            pen_slots = int(shed_rec.get("pen_slots") or 0)
+        except Exception:
+            pen_slots = 0
+        result[shed_name] = {"entries": clean_entries, "ended_entries": clean_ended_entries,
+                             "pen_order": pen_order, "pen_order_ts": pen_order_ts,
+                             "pen_slots": pen_slots, "pen_slot_of": slot_of}
 
     return result
+
+
+MAX_PENS_PER_SHED = 4
+
+
+def shed_no_for_name(shed_name):
+    # "Shed 6 & 6B" -> 6; works for every shed in SHED_NUMBERS.
+    for no in SHED_NUMBERS:
+        if shed_name_from_number(no) == shed_name:
+            return no
+    return shed_number_from_name(shed_name)
+
+
+def pen_order_for_shed(state, shed_name):
+    """Front-to-rear pen order (same as the shed controller's): pens with a known place
+    first, then any others in shed-number order."""
+    bucket = state.get(shed_name, {}) if isinstance(state.get(shed_name), dict) else {}
+    entries = bucket.get("entries", {}) or {}
+    known = [str(k) for k in (bucket.get("pen_order") or []) if str(k) in entries]
+    rest = sorted([str(k) for k in entries if str(k) not in known], key=lambda k: int(k) if k.isdigit() else 0)
+    ordered = known + rest
+    # The shed's own birds always sit at the rear; the pens nearest the door move out first.
+    home = shed_no_for_name(shed_name)
+    own = [k for k in ordered if entry_home_shed_no(k) == home]
+    return [k for k in ordered if k not in own] + own
+
+
+def plan_boxes(state, shed_name):
+    """The shed divided into pens, from the door (box 0) to the rear. The rear box(es)
+    are kept for the shed's own birds. Returns (boxes, own_boxes): each box holds a pen's
+    shed key or None when empty."""
+    bucket = state.get(shed_name, {}) if isinstance(state.get(shed_name), dict) else {}
+    entries = bucket.get("entries", {}) or {}
+    home = shed_no_for_name(shed_name)
+    active = [k for k in pen_order_for_shed(state, shed_name)
+              if clean_entry_record(entries.get(k, {}))["crop_active"] == 1 and clean_entry_record(entries.get(k, {}))["bird_count"] > 0]
+    visitors = [k for k in active if entry_home_shed_no(k) != home]
+    own = [k for k in active if entry_home_shed_no(k) == home]
+    # One rear box is kept for the shed's own birds, unless the visiting pens already
+    # fill the shed.
+    own_boxes = len(own) if own else (1 if len(visitors) < MAX_PENS_PER_SHED else 0)
+    try:
+        wanted = min(int(bucket.get("pen_slots") or 0), MAX_PENS_PER_SHED)
+    except Exception:
+        wanted = 0
+    n = max(wanted, len(visitors) + own_boxes, 1)
+    boxes = [None] * n
+    for i, k in enumerate(own):
+        boxes[n - own_boxes + i] = k
+    slot_of = bucket.get("pen_slot_of") if isinstance(bucket.get("pen_slot_of"), dict) else {}
+    last_visitor_box = n - own_boxes
+    placed = set()
+    for k in visitors:
+        idx = slot_of.get(k)
+        if isinstance(idx, int) and 0 <= idx < last_visitor_box and boxes[idx] is None:
+            boxes[idx] = k
+            placed.add(k)
+    for k in visitors:
+        if k in placed:
+            continue
+        for i in range(last_visitor_box):
+            if boxes[i] is None:
+                boxes[i] = k
+                break
+    return boxes, own_boxes
+
+
+def save_plan_boxes(state, shed_name, boxes, own_boxes):
+    """Store the boxes and the front-to-rear order the shed controller uses."""
+    bucket = state.setdefault(shed_name, {})
+    visitors = [(i, k) for i, k in enumerate(boxes[:len(boxes) - own_boxes]) if k]
+    slot_of = {k: i for i, k in visitors}
+    order = [k for k in boxes if k]
+    if order != bucket.get("pen_order") or slot_of != bucket.get("pen_slot_of"):
+        bucket["pen_order_ts"] = int(time.time())
+    bucket["pen_slot_of"] = slot_of
+    bucket["pen_order"] = order
+
+
+def set_pen_box(state, shed_name, dest_shed, box):
+    """Put a pen in a chosen box (0 = by the door). The shed's own birds go to the rear."""
+    boxes, own_boxes = plan_boxes(state, shed_name)
+    key = str(dest_shed)
+    if entry_home_shed_no(dest_shed) != shed_no_for_name(shed_name) and key in boxes:
+        boxes[boxes.index(key)] = None
+        last_visitor_box = len(boxes) - own_boxes
+        if 0 <= box < last_visitor_box and boxes[box] is None:
+            boxes[box] = key
+        else:
+            free = [i for i in range(last_visitor_box) if boxes[i] is None]
+            boxes[free[0] if free else 0] = key
+    save_plan_boxes(state, shed_name, boxes, own_boxes)
+
+
+def set_pen_count(state, shed_name, count):
+    boxes, own_boxes = plan_boxes(state, shed_name)
+    used = len([k for k in boxes if k]) + (own_boxes - len([k for k in boxes[len(boxes) - own_boxes:] if k]))
+    bucket = state.setdefault(shed_name, {})
+    bucket["pen_slots"] = min(max(int(count), used, 1), MAX_PENS_PER_SHED)
+    boxes, own_boxes = plan_boxes(state, shed_name)
+    save_plan_boxes(state, shed_name, boxes, own_boxes)
+    return bucket["pen_slots"]
 
 
 def save_shed_entries_state(state):
@@ -7841,7 +7979,20 @@ OFFICE_HOME_HTML = """
   .ss-nav { margin-left: auto; display: flex; gap: 10px; flex-wrap: wrap; }
   .ss-nav a { display: flex; align-items: center; min-height: 44px; padding: 0 16px; border-radius: 10px; border: 1px solid #c5d0dc; background: #ffffff; color: var(--navy); font-weight: 600; text-decoration: none; }
   .ss-nav a.primary { background: var(--navy); border-color: var(--navy); color: #ffffff; }
+  .ss-nav a.ss-gear, body.tv.tv-pc .ss-nav a.ss-gear { width: 44px; min-height: 44px; height: 44px; padding: 0; justify-content: center; border-radius: 50%; color: var(--muted); }
+  .ss-nav a.ss-gear:hover { color: var(--navy); border-color: var(--navy); }
+  body.tv:not(.tv-pc) .ss-nav a.ss-gear { width: 54px; height: 54px; min-height: 54px; }
+  body.tv:not(.tv-pc) .ss-nav a.ss-gear svg { width: 30px; height: 30px; }
   .ss-clock { font-size: 40px; font-weight: 700; color: var(--navy); }
+  .ss-weather { margin-left: auto; display: flex; align-items: center; gap: 10px; padding-left: 20px; border-left: 1px solid var(--line); color: var(--navy); white-space: nowrap; }
+  .ss-weather[hidden] { display: none; }
+  .ss-weather + .ss-nav, .ss-weather + .ss-clock, .ss-weather[hidden] + .ss-nav { margin-left: 0; }
+  .ss-weather[hidden] + .ss-nav, .ss-weather[hidden] + .ss-clock { margin-left: auto; }
+  .ss-wx-icon { font-size: 34px; line-height: 1; }
+  .ss-wx-temp { font-family: "Barlow Semi Condensed", "Barlow", sans-serif; font-size: 34px; font-weight: 700; line-height: 1; }
+  .ss-wx-info { display: flex; flex-direction: column; gap: 1px; }
+  .ss-wx-text { font-size: 16px; font-weight: 600; }
+  .ss-wx-sub { font-size: 13px; color: var(--muted); }
 
   main { max-width: none; margin: 0; padding: 20px 24px 32px; display: flex; flex-direction: column; gap: 18px; }
   /* Wide PC screens: use the whole width with more shed columns. */
@@ -7928,19 +8079,20 @@ OFFICE_HOME_HTML = """
   @media (max-width: 700px) {
     /* Phone header: logo and farm name side by side, then the date and time, then the
        office address, all centred, then the menu buttons. */
-    body:not(.tv) .ss-header { padding: 10px 14px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; column-gap: 12px; row-gap: 4px; text-align: center; }
+    body:not(.tv) .ss-header { padding: 10px 14px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; column-gap: 12px; row-gap: 4px; text-align: center; }
     body:not(.tv) .ss-farmblock { display: contents; }
     body:not(.tv) .ss-logo { grid-column: 1; grid-row: 1; }
     body:not(.tv) .ss-farm { grid-column: 2; grid-row: 1; white-space: nowrap; overflow: hidden; line-height: 1.1; text-align: left; }
     body:not(.tv) .ss-when { grid-column: 1 / -1; grid-row: 2; display: flex; flex-direction: column; align-items: stretch; gap: 2px; min-width: 0; }
     body:not(.tv) #ssDate { display: block; white-space: nowrap; overflow: hidden; font-weight: 600; color: var(--navy); line-height: 1.15; }
     body:not(.tv) .ss-ip-sep { display: none; }
-    body:not(.tv) .ss-nav { grid-column: 1 / -1; grid-row: 3; margin-top: 6px; }
+    body:not(.tv) .ss-weather { grid-column: 1 / -1; grid-row: 3; margin: 2px 0 0; padding: 6px 0 0; border-left: 0; border-top: 1px solid var(--line); justify-content: center; }
+    body:not(.tv) .ss-nav { grid-column: 3; grid-row: 1; }
     body:not(.tv) .ss-logo { height: 40px; }
     body:not(.tv) .ss-farmblock { padding-left: 12px; }
     body:not(.tv) .ss-farm { font-size: 20px; }
-    body:not(.tv) .ss-nav { margin-left: 0; width: 100%; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    body:not(.tv) .ss-nav a { justify-content: center; }
+    body:not(.tv) .ss-nav { margin-left: 0; display: flex; }
+    body:not(.tv) .ss-nav a.ss-gear { width: 38px; height: 38px; min-height: 38px; }
     body:not(.tv) main { padding: 12px 12px 24px; gap: 12px; }
     body:not(.tv) .ss-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
     body:not(.tv) .ss-sum { padding: 10px 12px; }
@@ -7971,7 +8123,6 @@ OFFICE_HOME_HTML = """
   body.tv { height: 100vh; overflow: hidden; }
   body.tv .ss-page { height: 100vh; display: flex; flex-direction: column; }
   body.tv.tv-scaled .ss-page { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; -webkit-transform-origin: 0 0; transform-origin: 0 0; }
-  body.tv .ss-nav { display: none; }
   body.tv .ss-header { padding: 8px 24px; }
   body.tv .ss-clock { margin-left: auto; }
   body.tv main { max-width: none; flex: 1 1 auto; min-height: 0; padding: 12px 20px 14px; gap: 12px; }
@@ -8028,8 +8179,8 @@ OFFICE_HOME_HTML = """
   body.tv .ss-farm { font-size: 44px; }
   body.tv .ss-when { font-size: 30px; font-weight: 600; color: var(--text); }
   body.tv .ss-farmblock { gap: 16px; }
-  body.tv .ss-farm-sep { font-size: 40px; font-weight: 700; color: var(--muted); }
-  body.tv .ss-clock { font-size: 64px; }
+  body.tv .ss-clock { font-size: 64px; display: flex; align-items: baseline; gap: 18px; white-space: nowrap; }
+  body.tv .ss-clock-date { font-size: 30px; font-weight: 600; color: var(--text); }
   body.tv .ss-sum-label { font-size: 15px; color: var(--muted); }
   body.tv .ss-sum-value { font-size: 32px; }
   body.tv .ss-alarms { font-size: 21px; }
@@ -8070,7 +8221,7 @@ OFFICE_HOME_HTML = """
   /* PC wall: same as the TV, plus the menu buttons and clickable sheds. */
   body.tv.tv-pc .ss-nav { display: flex; margin-left: auto; gap: 10px; }
   body.tv.tv-pc .ss-nav a { min-height: 50px; padding: 0 20px; font-size: 18px; }
-  body.tv.tv-pc .ss-clock { margin-left: 18px; font-size: 56px; }
+  body.tv.tv-pc .ss-clock { font-size: 56px; }
   /* The wall's header always stays on one line, so the cards keep their full height. */
   body.tv .ss-header { flex-wrap: nowrap; }
   body.tv .ss-header > * { flex-shrink: 0; }
@@ -8078,6 +8229,30 @@ OFFICE_HOME_HTML = """
   body.tv.tv-pc .ss-farm { font-size: 38px; }
   body.tv.tv-pc .ss-when { font-size: 26px; }
   body.tv.tv-pc .ss-nav a { min-height: 46px; padding: 0 16px; font-size: 17px; }
+  body.tv .ss-weather { gap: 14px; padding-left: 28px; border-left: 3px solid var(--line); }
+  body.tv .ss-wx-icon { font-size: 52px; }
+  body.tv .ss-wx-temp { font-size: 56px; }
+  body.tv .ss-wx-text { font-size: 24px; color: var(--text); }
+  body.tv .ss-wx-sub { font-size: 19px; color: var(--text); }
+  /* Divider lines between the weather, the date and time, and the settings gear. */
+  body.tv .ss-weather + .ss-clock { margin-left: 0; padding-left: 28px; }
+  body.tv .ss-clock + .ss-nav { display: flex; margin-left: 0; padding-left: 24px; align-items: center; }
+  /* All four header dividers are drawn the same height, centred, whatever is beside them. */
+  body.tv .ss-farmblock, body.tv .ss-weather { border-left: 0; }
+  body.tv .ss-farmblock, body.tv .ss-weather, body.tv .ss-weather + .ss-clock, body.tv .ss-clock + .ss-nav { position: relative; }
+  body.tv .ss-farmblock::before, body.tv .ss-weather::before, body.tv .ss-weather + .ss-clock::before, body.tv .ss-clock + .ss-nav::before {
+    content: ""; position: absolute; left: 0; top: 50%; width: 3px; height: var(--ss-div-h, 54px); margin-top: calc(var(--ss-div-h, 54px) / -2); background: var(--line); }
+  body.tv.tv-pc { --ss-div-h: 48px; }
+  body.tv.tv-pc .ss-weather + .ss-nav { margin-left: 8px; }
+
+  /* The farm name sits centred between the dividers either side of it. */
+  body.tv .ss-farmblock { flex: 1 1 auto; justify-content: center; text-align: center; padding-right: 28px; }
+  body.tv .ss-farm { overflow: hidden; text-overflow: ellipsis; }
+  body.tv .ss-weather { margin-left: 0; }
+  body.tv.tv-pc .ss-clock-date { font-size: 26px; }
+  body.tv.tv-pc .ss-wx-icon, body.tv.tv-pc .ss-wx-temp { font-size: 46px; }
+  body.tv.tv-pc .ss-wx-text { font-size: 21px; }
+  body.tv.tv-pc .ss-wx-sub { font-size: 16px; }
   body.tv .ss-grid .ss-birds { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .ss-card-link { color: inherit; text-decoration: none; cursor: pointer; }
   .ss-card-link:hover .ss-name { text-decoration: underline; }
@@ -8101,25 +8276,51 @@ OFFICE_HOME_HTML = """
     <img class="ss-logo" src="/static/stocksense-logo.png" alt="StockSense, Smarter Livestock Monitoring">
     <div class="ss-farmblock">
       <div class="ss-farm">{{ farm_name }}</div>
-      {% if tv %}<span class="ss-farm-sep" aria-hidden="true">·</span>{% endif %}
-      <div class="ss-when"><span id="ssDate">--</span>{% if not tv %}<span class="ss-ip"><span class="ss-ip-sep"> · </span>Office {{ host_ips }}</span>{% endif %}</div>
+      {% if not tv %}<div class="ss-when"><span id="ssDate">--</span><span class="ss-ip"><span class="ss-ip-sep"> · </span>Office {{ host_ips }}</span></div>{% endif %}
     </div>
-    {% if tv and not pc %}
-    <div class="ss-clock" id="ssClock">--:--</div>
-    {% else %}
-    <nav class="ss-nav" aria-label="Office pages">
-      <a href="{{ url_for('office_feed_stock_view') }}">Manual feed entry</a>
-      <a href="{{ url_for('office_farm_health_view') }}">Farm health</a>
-      <a href="{{ url_for('office_crop_reports_view') }}">Crop reports</a>
-      <a href="{{ url_for('office_settings_view') }}" class="primary">Settings</a>
-    </nav>
-    {% if pc %}<div class="ss-clock" id="ssClock">--:--</div>{% endif %}
+    <div class="ss-weather" id="ssWeather" title="Weather at NR15 1BE"{% if not weather %} hidden{% endif %}>
+      <span class="ss-wx-icon" id="ssWxIcon" aria-hidden="true">{{ weather.icon if weather else '' }}</span>
+      <span class="ss-wx-temp" id="ssWxTemp">{{ weather.temp if weather else '' }}</span>
+      <span class="ss-wx-info">
+        <span class="ss-wx-text" id="ssWxText">{{ weather.text if weather else '' }}</span>
+        <span class="ss-wx-sub" id="ssWxSub">{{ ([weather.wind, weather.range, weather.rain]|select|join(' · ')) if weather else '' }}</span>
+      </span>
+    </div>
+    {% if tv %}
+    <div class="ss-clock"><span class="ss-clock-date" id="ssDate">--</span><span id="ssClock">--:--</span></div>
     {% endif %}
+    <nav class="ss-nav" aria-label="Office pages">
+      <a href="{{ url_for('office_settings_view') }}" class="ss-gear" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></a>
+    </nav>
   </header>
   <main>
     <div id="ssCards">{{ cards_html|safe }}</div>
   </main>
 </div>
+<script>
+// Weather in the header, refreshed every 10 minutes. Old-style JavaScript so TVs run it.
+(function () {
+  function set(id, text) { var el = document.getElementById(id); if (el) el.textContent = text || ''; }
+  function load() {
+    var req = new XMLHttpRequest();
+    req.open('GET', '/api/weather?_=' + new Date().getTime(), true);
+    req.onload = function () {
+      var w = null;
+      try { w = JSON.parse(req.responseText); } catch (e) { return; }
+      var box = document.getElementById('ssWeather');
+      if (!box) return;
+      if (!w || !w.temp) { box.setAttribute('hidden', ''); return; }
+      set('ssWxIcon', w.icon); set('ssWxTemp', w.temp); set('ssWxText', w.text);
+      var sub = []; if (w.wind) sub.push(w.wind); if (w.range) sub.push(w.range); if (w.rain) sub.push(w.rain);
+      set('ssWxSub', sub.join(' \u00b7 '));
+      box.removeAttribute('hidden');
+    };
+    req.send();
+  }
+  setTimeout(load, {{ 15000 if weather else 3000 }});
+  setInterval(load, 600000);
+})();
+</script>
 {% if not tv or pc %}
 <script>
 // Fully Kiosk Browser (the farm TV) adds a "fully" object to every page. Show it the
@@ -9358,13 +9559,49 @@ DETAIL_HTML = """
         .pen-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
         .pen-name { font-size: 26px; font-weight: 600; color: var(--navy); }
         .pen-birds { margin-left: auto; text-align: right; }
+        .plan-box { background: var(--card); border-radius: 14px; padding: 14px 18px 18px; }
+        .plan-ends { display: flex; justify-content: space-between; font-size: 14px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+        .plan-shed { position: relative; height: 230px; border: 6px solid #6b5a3a; border-radius: 6px;
+            background-color: #c9a458;
+            background-image:
+                repeating-linear-gradient(28deg, rgba(255,236,170,0.35) 0px, rgba(255,236,170,0.35) 2px, transparent 2px, transparent 9px),
+                repeating-linear-gradient(-34deg, rgba(120,88,30,0.28) 0px, rgba(120,88,30,0.28) 2px, transparent 2px, transparent 13px),
+                repeating-linear-gradient(72deg, rgba(240,214,140,0.4) 0px, rgba(240,214,140,0.4) 1px, transparent 1px, transparent 17px); }
+        .plan-door { position: absolute; top: 50%; width: 10px; height: 90px; margin-top: -45px; background: repeating-linear-gradient(45deg, #f08a12 0 8px, #ffffff 8px 16px); }
+        .door-left .plan-door { left: -14px; } .door-right .plan-door { right: -14px; }
+        .plan-count { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+        .plan-count input { width: 90px; min-height: 48px; font-size: 20px; }
+        .plan-count button { width: auto; min-height: 48px; padding: 0 18px; }
+        .plan-row { position: absolute; inset: 0; display: flex; }
+        .plan-cell { flex: 1 1 0; min-width: 0; display: flex; align-items: center; justify-content: center; text-decoration: none; color: var(--text);
+            border: 0; border-radius: 0; background: transparent; padding: 0; min-height: 0; width: auto; font: inherit; cursor: pointer; }
+        .plan-cell + .plan-cell { border-left: 3px dashed #5a4722; }
+        .plan-cell.empty { background: rgba(255,255,255,0.18); }
+        .plan-cell.empty .plan-card { background: rgba(255,255,255,0.75); border: 2px dashed var(--navy); }
+        .plan-cell.empty .plan-card b { font-size: 34px; line-height: 1; }
+        .plan-cell.empty:hover .plan-card { background: #ffffff; }
+        .plan-cell.filled:hover .plan-card { box-shadow: 0 0 0 3px var(--navy); }
+        .plan-card { display: flex; flex-direction: column; align-items: center; max-width: calc(100% - 12px); padding: 10px 14px; border-radius: 12px; background: rgba(255,255,255,0.95); text-align: center; }
+        .plan-card b { font-size: 24px; color: var(--navy); line-height: 1.05; }
+        .plan-card span { font-size: 15px; color: var(--soft); white-space: nowrap; }
+        .plan-card small { font-size: 12px; color: var(--muted); font-weight: 600; }
+        .modal { position: fixed; inset: 0; z-index: 50; display: none; align-items: center; justify-content: center; padding: 16px; background: rgba(13,43,74,0.55); }
+        .modal.open { display: flex; }
+        .modal-card { width: 100%; max-width: 560px; max-height: calc(100vh - 32px); overflow-y: auto; padding: 22px; border-radius: 16px; background: var(--card); display: flex; flex-direction: column; gap: 14px; }
+        .shed-choices { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
+        .shed-choice input { position: absolute; opacity: 0; pointer-events: none; }
+        .shed-choice span { display: flex; align-items: center; justify-content: center; min-height: 52px; border-radius: 12px; border: 1px solid #c5d0dc; background: var(--card-2); font-size: 18px; font-weight: 600; cursor: pointer; }
+        .shed-choice input:checked + span { background: var(--navy); border-color: var(--navy); color: #ffffff; }
+        .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
         .pen-birds b { font-size: 28px; font-weight: 600; color: var(--navy); }
         .pen-birds span { display: block; font-size: 13px; color: var(--muted); }
         .pen-meta { margin: 2px 0 12px; font-size: 15px; color: var(--muted); }
         .pen-form { display: grid; grid-template-columns: 1.3fr 1.3fr 1fr 1fr 1fr; gap: 10px; align-items: end; }
         input[type="datetime-local"] { width: 100%; min-height: 60px; padding: 0 12px; border-radius: 12px; border: 1px solid #c5d0dc; background: var(--card-2); color: var(--text); font-family: inherit; font-size: 17px; }
         .list { border-radius: 14px; background: var(--card); overflow: hidden; }
-        .row { display: grid; grid-template-columns: 1fr 1.3fr 1.3fr 0.8fr 0.8fr 0.8fr; gap: 10px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--track); }
+        .row { display: grid; grid-template-columns: 1fr 1.2fr 1.3fr 0.8fr 0.8fr 0.8fr; gap: 8px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--track); }
+        .row.saved-row { grid-template-columns: 1fr 180px 140px; }
+        .row button { font-size: 16px; padding: 0 6px; }
         .row:first-child { border-top: 0; }
         .row-name { font-size: 20px; font-weight: 600; color: var(--text); }
         .row-name small { display: block; font-size: 14px; font-weight: 500; color: var(--muted); }
@@ -9373,7 +9610,7 @@ DETAIL_HTML = """
             .links { grid-template-columns: 1fr 1fr; }
             .pen-form { grid-template-columns: 1fr 1fr 1fr; }
             .pen-form .field-wrap { grid-column: span 3; }
-            .row { grid-template-columns: 1fr 1fr 1fr; }
+            .row { grid-template-columns: 1fr 1fr; }
             .row-name, .row .field-wrap { grid-column: 1 / -1; }
         }
     </style>
@@ -9397,14 +9634,44 @@ DETAIL_HTML = """
         </div>
 
         <section>
+            <h2 class="section-title">Shed plan</h2>
+            <div class="plan-box">
+                <form class="plan-count" method="post" action="{{ url_for('shed_pen_count', shed_no=shed_no) }}">
+                    <label class="field" for="penCount" style="margin:0">Pens in this shed</label>
+                    <input id="penCount" type="number" name="pen_count" min="1" max="4" step="1" inputmode="numeric" value="{{ pen_count }}">
+                    <button type="submit">Set</button>
+                    <span class="hint">Up to 4 pens. Each pen is drawn to its share of the shed's birds. Click an empty pen to fill it.</span>
+                </form>
+                <div class="plan-ends"><span>Rear end</span><span>Door end</span></div>
+                <div class="plan-shed door-right">
+                    <div class="plan-door" aria-hidden="true"></div>
+                    <div class="plan-row">
+                        {% for box in plan_boxes|reverse %}
+                        {% if box.pen %}
+                        <a class="plan-cell filled" href="#pen-{{ box.pen.dest_shed }}" style="flex-grow: {{ box.weight }}">
+                            <span class="plan-card"><b class="cond">{{ box.pen.name }}</b><span>{{ box.pen.placed }} ({{ box.pen.live }})</span>{% if box.pen.own %}<small>Own birds</small>{% endif %}</span>
+                        </a>
+                        {% else %}
+                        <button type="button" class="plan-cell empty" style="flex-grow: {{ box.weight }}" data-box="{{ box.index }}" data-label="{{ box.label }}" data-dest="{{ box.preselect }}" data-own="{{ 1 if box.own_box else 0 }}">
+                            <span class="plan-card"><b>+</b><span>{{ 'Own birds' if box.own_box else 'Empty pen' }}</span><small>Click to add</small></span>
+                        </button>
+                        {% endif %}
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section>
             <h2 class="section-title">Birds in this shed</h2>
             {% if active_rows %}
             <div class="pens">
                 {% for r in active_rows %}
-                <div class="pen">
+                <div class="pen" id="pen-{{ r.dest_shed }}">
                     <div class="pen-head">
                         <div class="pen-name cond">For {{ r.dest_shed_label }}</div>
                         <span class="pill on">Active</span>
+                        <span class="pill">{{ r.end_label }}</span>
                         <div class="pen-birds"><b class="cond">{{ r.placed_display }} ({{ r.live_display }})</b><span>Placed (live){% if r.entry_mortality > 0 %} · {{ r.entry_mortality }} lost{% endif %}</span></div>
                     </div>
                     <div class="pen-meta">Started {{ r.placement_str }} · Crop {{ r.crop_code }}</div>
@@ -9433,28 +9700,86 @@ DETAIL_HTML = """
             {% endif %}
         </section>
 
+        {% set saved_rows = idle_rows|selectattr('placed_bird_count')|list %}
+        {% if saved_rows %}
         <section>
-            <h2 class="section-title">Start a pen</h2>
+            <h2 class="section-title">Saved, not started</h2>
             <div class="list">
-                {% for r in idle_rows %}
-                <form class="row" method="post" action="{{ url_for('shed_entry_start', shed_no=shed_no, dest_shed=r.dest_shed) }}">
-                    <div class="row-name cond">For {{ r.dest_shed_label }}{% if r.placed_bird_count %}<small>{{ r.placed_display }} saved, not started</small>{% endif %}</div>
-                    <div class="field-wrap"><input type="number" name="placed_bird_count" min="0" step="1" inputmode="numeric" placeholder="Birds placed" aria-label="Birds placed for {{ r.dest_shed_label }}" value="{{ '' if r.placed_bird_count == 0 else r.placed_bird_count }}"></div>
-                    <div class="field-wrap"><input type="datetime-local" name="placement_at" aria-label="Placed at" value="{{ r.placement_input_value }}"></div>
-                    <button formaction="{{ url_for('shed_entry_save', shed_no=shed_no, dest_shed=r.dest_shed) }}" type="submit">Save</button>
-                    <button class="go" type="submit">Start</button>
-                    {% if r.placed_bird_count %}
-                    <button class="danger" formaction="{{ url_for('shed_entry_end', shed_no=shed_no, dest_shed=r.dest_shed) }}" type="submit" onclick="return confirm('Clear the saved count for {{ r.dest_shed_label }}?');">Clear</button>
-                    {% else %}
-                    <span></span>
-                    {% endif %}
+                {% for r in saved_rows %}
+                <form class="row saved-row" method="post" action="{{ url_for('shed_entry_end', shed_no=shed_no, dest_shed=r.dest_shed) }}">
+                    <div class="row-name cond">For {{ r.dest_shed_label }}<small>{{ r.placed_display }} birds saved</small></div>
+                    <button class="go" type="button" data-start="{{ r.dest_shed }}" data-birds="{{ r.placed_bird_count }}">Start…</button>
+                    <button class="danger" type="submit" onclick="return confirm('Clear the saved count for {{ r.dest_shed_label }}?');">Clear</button>
                 </form>
                 {% endfor %}
             </div>
         </section>
+        {% endif %}
+    </div>
+    <div class="modal" id="addPen" role="dialog" aria-modal="true" aria-labelledby="addPenTitle">
+        <form class="modal-card" method="post" id="addPenForm">
+            <h2 class="cond" id="addPenTitle" style="margin:0; color: var(--navy)">Add a pen</h2>
+            <div class="hint" id="addPenWhere"></div>
+            <input type="hidden" name="box" id="addPenPosition" value="0">
+            <div>
+                <label class="field">Which shed are these birds for?</label>
+                <div class="shed-choices">
+                    {% for r in idle_rows %}
+                    <label class="shed-choice" data-own="{{ 1 if r.dest_shed in own_dests else 0 }}"><input type="radio" name="dest_pick" value="{{ r.dest_shed }}" data-action="{{ url_for('shed_entry_start', shed_no=shed_no, dest_shed=r.dest_shed) }}"><span>{{ r.dest_shed_label }}</span></label>
+                    {% endfor %}
+                </div>
+            </div>
+            <div class="two">
+                <div><label class="field" for="addPenBirds">Birds placed</label><input id="addPenBirds" type="number" name="placed_bird_count" min="1" step="1" inputmode="numeric" required></div>
+                <div><label class="field" for="addPenAt">Placed at</label><input id="addPenAt" type="datetime-local" name="placement_at"></div>
+            </div>
+            <div class="two">
+                <button type="button" id="addPenCancel">Cancel</button>
+                <button class="go" type="submit">Start pen</button>
+            </div>
+        </form>
     </div>
 <script>
 setTimeout(() => { document.querySelectorAll('.auto-dismiss').forEach((el) => { el.style.display = 'none'; }); }, 10000);
+(function () {
+    const modal = document.getElementById('addPen');
+    const form = document.getElementById('addPenForm');
+    const where = document.getElementById('addPenWhere');
+    const pos = document.getElementById('addPenPosition');
+    const at = document.getElementById('addPenAt');
+    function nowLocal() {
+        const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+        return d.toISOString().slice(0, 16);
+    }
+    // The rear box only takes the shed's own birds, and the other boxes only visiting
+    // birds, so a pen always lands where it was clicked.
+    function open(position, label, dest, birds, own) {
+        pos.value = position;
+        form.querySelectorAll('.shed-choice').forEach((c) => {
+            c.style.display = (own === undefined || c.dataset.own === own) ? '' : 'none';
+        });
+        where.textContent = 'This pen goes ' + label + '. The shed’s own birds always stay at the rear.';
+        at.value = nowLocal();
+        document.getElementById('addPenBirds').value = birds || '';
+        form.querySelectorAll('input[name="dest_pick"]').forEach((r) => { r.checked = dest !== undefined && r.value === String(dest); });
+        modal.classList.add('open');
+    }
+    document.querySelectorAll('.plan-cell.empty').forEach((b) => b.addEventListener('click', () => open(b.dataset.box, b.dataset.label, b.dataset.dest || undefined, undefined, b.dataset.own)));
+    document.querySelectorAll('[data-start]').forEach((b) => b.addEventListener('click', () => {
+        const choice = form.querySelector('input[name="dest_pick"][value="' + b.dataset.start + '"]');
+        const own = choice ? choice.closest('.shed-choice').dataset.own : '0';
+        const empties = document.querySelectorAll('.plan-cell.empty[data-own="' + own + '"]');
+        const spot = empties.length ? empties[empties.length - 1] : null;   // nearest the door
+        open(spot ? spot.dataset.box : 0, spot ? spot.dataset.label : (own === '1' ? 'at the rear' : 'nearest the door'), b.dataset.start, b.dataset.birds);
+    }));
+    document.getElementById('addPenCancel').addEventListener('click', () => modal.classList.remove('open'));
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.remove('open'); });
+    form.addEventListener('submit', (e) => {
+        const pick = form.querySelector('input[name="dest_pick"]:checked');
+        if (!pick) { e.preventDefault(); alert('Pick which shed these birds are for.'); return; }
+        form.action = pick.dataset.action;
+    });
+})();
 </script>
 </body>
 </html>
@@ -11189,9 +11514,89 @@ def office_home_context(tv=False):
     }
 
 
+# Current weather for the farm (NR15 1BE, Bergh Apton) from Open-Meteo: free, no key.
+# Fetched in the background at most every 10 minutes so the home page never waits on it.
+WEATHER_LAT, WEATHER_LON = 52.5693, 1.4067
+WEATHER_CODES = {
+    0: ("Clear", "\u2600\ufe0f"), 1: ("Mainly clear", "\U0001F324\ufe0f"), 2: ("Partly cloudy", "\u26c5"), 3: ("Overcast", "\u2601\ufe0f"),
+    45: ("Fog", "\U0001F32B\ufe0f"), 48: ("Freezing fog", "\U0001F32B\ufe0f"),
+    51: ("Light drizzle", "\U0001F326\ufe0f"), 53: ("Drizzle", "\U0001F326\ufe0f"), 55: ("Heavy drizzle", "\U0001F327\ufe0f"),
+    56: ("Freezing drizzle", "\U0001F327\ufe0f"), 57: ("Freezing drizzle", "\U0001F327\ufe0f"),
+    61: ("Light rain", "\U0001F326\ufe0f"), 63: ("Rain", "\U0001F327\ufe0f"), 65: ("Heavy rain", "\U0001F327\ufe0f"),
+    66: ("Freezing rain", "\U0001F327\ufe0f"), 67: ("Freezing rain", "\U0001F327\ufe0f"),
+    71: ("Light snow", "\U0001F328\ufe0f"), 73: ("Snow", "\U0001F328\ufe0f"), 75: ("Heavy snow", "\u2744\ufe0f"), 77: ("Snow grains", "\U0001F328\ufe0f"),
+    80: ("Light showers", "\U0001F326\ufe0f"), 81: ("Showers", "\U0001F327\ufe0f"), 82: ("Heavy showers", "\U0001F327\ufe0f"),
+    85: ("Snow showers", "\U0001F328\ufe0f"), 86: ("Heavy snow showers", "\U0001F328\ufe0f"),
+    95: ("Thunderstorm", "\u26c8\ufe0f"), 96: ("Thunder and hail", "\u26c8\ufe0f"), 99: ("Thunder and hail", "\u26c8\ufe0f"),
+}
+_weather_cache = {"data": None, "fetched": 0, "ok_ts": 0, "busy": False}
+_weather_lock = threading.Lock()
+
+
+def _fetch_weather():
+    try:
+        url = ("https://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s"
+               "&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,wind_direction_10m,is_day"
+               "&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max"
+               "&wind_speed_unit=mph&timezone=Europe%%2FLondon&forecast_days=1") % (WEATHER_LAT, WEATHER_LON)
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            raw = json.loads(resp.read().decode("utf-8"))
+        cur = raw.get("current") or {}
+        daily = raw.get("daily") or {}
+        code = int(cur.get("weather_code") or 0)
+        text, icon = WEATHER_CODES.get(code, ("", "\u2601\ufe0f"))
+        if code in (0, 1) and not cur.get("is_day", 1):
+            icon = "\U0001F319"
+        points = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+        wind_dir = points[int(((float(cur.get("wind_direction_10m") or 0) + 22.5) % 360) // 45)]
+
+        def first(key):
+            vals = daily.get(key) or []
+            return vals[0] if vals else None
+
+        hi, lo, rain = first("temperature_2m_max"), first("temperature_2m_min"), first("precipitation_probability_max")
+        data = {
+            "temp": "%d\u00b0C" % round(float(cur.get("temperature_2m"))),
+            "text": text,
+            "icon": icon,
+            "wind": "%s %d mph" % (wind_dir, round(float(cur.get("wind_speed_10m") or 0))),
+            "range": ("High %d\u00b0 \u00b7 Low %d\u00b0" % (round(hi), round(lo))) if hi is not None and lo is not None else "",
+            "rain": ("%d%% rain" % rain) if rain is not None else "",
+        }
+        with _weather_lock:
+            _weather_cache["data"] = data
+            _weather_cache["fetched"] = _weather_cache["ok_ts"] = time.time()
+    except Exception:
+        with _weather_lock:
+            _weather_cache["fetched"] = time.time() - 480  # try again in about 2 minutes
+    finally:
+        with _weather_lock:
+            _weather_cache["busy"] = False
+
+
+def current_weather():
+    with _weather_lock:
+        stale = time.time() - _weather_cache["fetched"] > 600
+        if stale and not _weather_cache["busy"]:
+            _weather_cache["busy"] = True
+            threading.Thread(target=_fetch_weather, daemon=True).start()
+        data = _weather_cache["data"]
+        ok_ts = _weather_cache["ok_ts"]
+    # Weather last fetched successfully over 3 hours ago is not "current" any more.
+    if data and time.time() - ok_ts > 10800:
+        return None
+    return data
+
+
+@app.route("/api/weather")
+def office_weather_api():
+    return jsonify(current_weather() or {})
+
+
 def render_office_home(tv=False, pc=False):
     ctx = office_home_context(tv=tv)
     ctx["pc"] = pc
+    ctx["weather"] = current_weather()
     ctx["cards_html"] = render_template_string(OFFICE_CARDS_HTML, **ctx)
     return render_template_string(OFFICE_HOME_HTML, **ctx)
 
@@ -11202,6 +11607,12 @@ SMART_TV_AGENT_RE = re.compile(
     r"smart-?tv|tizen|web0s|webos|netcast|bravia|android tv|googletv|google tv|aft[a-z]|crkey|hbbtv|vidaa|hisense|roku|philipstv|nettv|viera|tv safari",
     re.I,
 )
+
+
+# Fully Kiosk runs in an Android web view ("; wv)" in its browser name); PCs never do.
+FULLY_AGENT_RE = re.compile(r"fully|; wv\)", re.I)
+# Apps that open links in their own Android web view (Facebook, Instagram, Google app...).
+IN_APP_BROWSER_RE = re.compile(r"FBAN|FBAV|FB_IAB|Instagram|GSA/|Line/|Twitter|LinkedInApp|Snapchat", re.I)
 
 
 PHONE_AGENT_RE = re.compile(r"iphone|ipod|android.*mobile|mobile safari|windows phone|blackberry|opera mini", re.I)
@@ -11216,11 +11627,14 @@ def request_wants_tv():
 
 def office_home_layout():
     """(tv, pc): TVs get the wall, PCs get the wall with menu buttons, phones the stacked cards."""
-    choice = str(request.args.get("tv", "") or "").strip()
+    # ?tv=0 / ?tv=1 is remembered on that device (cookie), so a wrongly detected screen
+    # only needs setting once.
+    choice = str(request.args.get("tv", "") or request.cookies.get("ss_tv", "") or "").strip()
     agent = request.headers.get("User-Agent", "") or ""
     if choice == "0":
         return False, False
-    if choice == "1" or SMART_TV_AGENT_RE.search(agent):
+    fully = FULLY_AGENT_RE.search(agent) and not PHONE_AGENT_RE.search(agent) and not IN_APP_BROWSER_RE.search(agent)
+    if choice == "1" or SMART_TV_AGENT_RE.search(agent) or fully:
         return True, False
     if PHONE_AGENT_RE.search(agent):
         return False, False
@@ -11230,7 +11644,11 @@ def office_home_layout():
 @app.route("/")
 def dashboard():
     tv, pc = office_home_layout()
-    return render_office_home(tv=tv, pc=pc)
+    resp = Response(render_office_home(tv=tv, pc=pc), mimetype="text/html")
+    choice = str(request.args.get("tv", "") or "").strip()
+    if choice in ["0", "1"]:
+        resp.set_cookie("ss_tv", choice, max_age=5 * 365 * 86400, samesite="Lax")
+    return resp
 
 
 @app.route("/tv")
@@ -11905,8 +12323,43 @@ def shed_detail(shed_no):
     for r in entry_rows:
         r["placed_display"] = fmt_value(r.get("placed_bird_count"), "i")
         r["live_display"] = fmt_value(r.get("bird_count"), "i")
-    active_rows = [r for r in entry_rows if r.get("crop_active") == 1]
+    boxes, own_boxes = plan_boxes(state, shed_name)
+    rank = {k: i for i, k in enumerate(boxes) if k}
+    active_rows = sorted([r for r in entry_rows if r.get("crop_active") == 1], key=lambda r: rank.get(str(r["dest_shed"]), 999))
+    home_no = shed_no_for_name(shed_name)
+    last_visitor_box = len(boxes) - own_boxes
+    for r in active_rows:
+        idx = rank.get(str(r["dest_shed"]), 0)
+        r["is_own"] = entry_home_shed_no(r["dest_shed"]) == home_no
+        if len(boxes) == 1:
+            r["end_label"] = "Whole shed"
+        elif r["is_own"]:
+            r["end_label"] = "Rear end"
+        elif idx == 0:
+            r["end_label"] = "Nearest the door"
+        else:
+            r["end_label"] = "Pen %d from the door" % (idx + 1)
     idle_rows = [r for r in entry_rows if r.get("crop_active") != 1]
+
+    # Shed plan: the shed divided into the number of pens set for it, door on the right
+    # (as seen from the office), the shed's own birds in the rear box(es). Empty boxes
+    # can be clicked to start a pen there.
+    by_key = {str(r["dest_shed"]): r for r in active_rows}
+    own_choices = [r for r in entry_rows if entry_home_shed_no(r["dest_shed"]) == home_no]
+    placed_of = {k: max(int(r.get("placed_bird_count") or 0), int(r.get("bird_count") or 0)) for k, r in by_key.items()}
+    filled = [v for v in placed_of.values() if v > 0]
+    empty_weight = (sum(filled) / len(filled)) if filled else 1
+    plan_boxes_view = []
+    for i, key in enumerate(boxes):
+        r = by_key.get(key) if key else None
+        plan_boxes_view.append({
+            "weight": (placed_of.get(key) or empty_weight) if r else empty_weight,
+            "index": i,
+            "pen": {"name": r["dest_shed_label"], "dest_shed": r["dest_shed"], "placed": r["placed_display"], "live": r["live_display"], "own": r["is_own"]} if r else None,
+            "own_box": i >= last_visitor_box,
+            "label": "by the door" if i == 0 else ("in the rear (own birds)" if i >= last_visitor_box else "in pen %d from the door" % (i + 1)),
+            "preselect": own_choices[0]["dest_shed"] if (i >= last_visitor_box and own_choices) else "",
+        })
     placed_total = sum(int(r.get("placed_bird_count") or 0) for r in active_rows)
     live_total = sum(int(r.get("bird_count") or 0) for r in active_rows)
     starts = [r.get("placement_epoch") for r in active_rows if r.get("placement_epoch")]
@@ -11918,8 +12371,11 @@ def shed_detail(shed_no):
         DETAIL_HTML,
         active_rows=active_rows,
         idle_rows=idle_rows,
+        own_dests=[r["dest_shed"] for r in entry_rows if entry_home_shed_no(r["dest_shed"]) == home_no],
         total_birds="%s (%s)" % (fmt_value(placed_total, "i"), fmt_value(live_total, "i")) if active_rows else "--",
         crop_started=datetime.fromtimestamp(int(min(starts))).strftime("%d %b %Y %H:%M") if starts else "",
+        plan_boxes=plan_boxes_view,
+        pen_count=len(boxes),
         shed_name=shed_display_name,
         shed_storage_name=shed_name,
         shed_display_name=shed_display_name,
@@ -12213,6 +12669,7 @@ def shed_mortality_api_post(shed_no):
 
 
 @app.route("/shed/<int:shed_no>/entry/<int:dest_shed>/save", methods=["POST"])
+@shed_entries_locked
 def shed_entry_save(shed_no, dest_shed):
     if shed_no not in SHED_NUMBERS or not valid_entry_shed(dest_shed):
         abort(404)
@@ -12290,6 +12747,7 @@ def shed_entry_save(shed_no, dest_shed):
 
 
 @app.route("/shed/<int:shed_no>/entry/<int:dest_shed>/start", methods=["POST"])
+@shed_entries_locked
 def shed_entry_start(shed_no, dest_shed):
     if shed_no not in SHED_NUMBERS or not valid_entry_shed(dest_shed):
         abort(404)
@@ -12308,6 +12766,12 @@ def shed_entry_start(shed_no, dest_shed):
         "updated_by": "dashboard",
     })
     rec = clean_entry_record(rec)
+    if rec.get("crop_active") != 1:
+        active_pens = [k for k, r in entries.items() if k != str(dest_shed)
+                       and clean_entry_record(r)["crop_active"] == 1 and clean_entry_record(r)["bird_count"] > 0]
+        if len(active_pens) >= MAX_PENS_PER_SHED:
+            return redirect(url_for("shed_detail", shed_no=shed_no, ok=0,
+                                    msg="A shed holds %d pens at most. End one first." % MAX_PENS_PER_SHED))
 
     raw = str(request.form.get("placed_bird_count", request.form.get("bird_count", "")) or "").strip()
     placement_at_raw = request.form.get("placement_at", "")
@@ -12354,6 +12818,8 @@ def shed_entry_start(shed_no, dest_shed):
     entries[str(dest_shed)] = rec
     if str(dest_shed) in ended_entries:
         del ended_entries[str(dest_shed)]
+    box_raw = str(request.form.get("box", "") or "").strip()
+    set_pen_box(state, shed_name, dest_shed, int(box_raw) if box_raw.isdigit() else 0)
     save_shed_entries_state(state)
     refresh_farm_crop_current_id(state)
     log_crop_event(shed_name, rec, True)
@@ -12362,7 +12828,30 @@ def shed_entry_start(shed_no, dest_shed):
     return redirect(url_for("shed_detail", shed_no=shed_no, ok=1, msg="Entry started"))
 
 
+@app.route("/shed/<int:shed_no>/pens", methods=["POST"])
+@shed_entries_locked
+def shed_pen_count(shed_no):
+    if shed_no not in SHED_NUMBERS:
+        abort(404)
+    try:
+        count = int(str(request.form.get("pen_count", "") or "").strip())
+        if count < 1 or count > MAX_PENS_PER_SHED:
+            raise ValueError()
+    except Exception:
+        return redirect(url_for("shed_detail", shed_no=shed_no, ok=0, msg="Enter between 1 and %d pens" % MAX_PENS_PER_SHED))
+    state = load_shed_entries_state()
+    shed_name = shed_name_from_number(shed_no)
+    saved = set_pen_count(state, shed_name, count)
+    save_shed_entries_state(state)
+    push_shed_state_to_controller_async(shed_no)
+    msg = "Shed set to %d pens" % saved
+    if saved != count:
+        msg += " (it has %d pens of birds in it)" % saved
+    return redirect(url_for("shed_detail", shed_no=shed_no, ok=1, msg=msg))
+
+
 @app.route("/shed/<int:shed_no>/entry/<int:dest_shed>/end", methods=["POST"])
+@shed_entries_locked
 def shed_entry_end(shed_no, dest_shed):
     if shed_no not in SHED_NUMBERS or not valid_entry_shed(dest_shed):
         abort(404)
@@ -12391,6 +12880,7 @@ def shed_entry_end(shed_no, dest_shed):
 
 
 @app.route("/shed/<int:shed_no>/entry/<int:dest_shed>/move", methods=["POST"])
+@shed_entries_locked
 def shed_entry_move(shed_no, dest_shed):
     if shed_no not in SHED_NUMBERS or not valid_entry_shed(dest_shed):
         abort(404)
@@ -12535,6 +13025,29 @@ def shed_sync_get(shed_no):
     return jsonify(shed_sync_payload(shed_no))
 
 
+@shed_entries_locked
+def adopt_controller_pen_order(shed_no, incoming):
+    # Pens added with the + at an end of the shed on the controller.
+    if not isinstance(incoming, dict) or not isinstance(incoming.get("order"), list):
+        return
+    try:
+        controller_ts = int(incoming.get("updated_ts") or 0)
+        # Put the controller's time on the office clock, in case the Pi's clock is out.
+        if incoming.get("now"):
+            controller_ts += int(time.time()) - int(incoming.get("now"))
+    except Exception:
+        return
+    order = [str(k) for k in incoming["order"]]
+    state = load_shed_entries_state()
+    bucket = state.get(shed_name_from_number(shed_no))
+    if not isinstance(bucket, dict) or order == bucket.get("pen_order") or controller_ts <= int(bucket.get("pen_order_ts") or 0) + 2:
+        return
+    bucket["pen_order"] = order
+    bucket["pen_order_ts"] = controller_ts
+    bucket["pen_slot_of"] = {}
+    save_shed_entries_state(state)
+
+
 @app.route("/api/shed/<int:shed_no>/sync", methods=["POST"])
 def shed_sync_post(shed_no):
     if shed_no not in SHED_NUMBERS:
@@ -12547,6 +13060,7 @@ def shed_sync_post(shed_no):
     incoming_entries = payload.get("entries", {})
     incoming_controller_meta = payload.get("controller_meta")
     changed = apply_external_shed_entries(shed_no, incoming_entries, source="controller", controller_meta=incoming_controller_meta)
+    adopt_controller_pen_order(shed_no, payload.get("pen_order"))
     if isinstance(incoming_controller_meta, dict):
         save_controller_meta_for_shed(shed_no, incoming_controller_meta)
         save_live_snapshot_for_shed(shed_no, incoming_controller_meta)
