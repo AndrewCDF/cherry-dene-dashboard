@@ -8347,8 +8347,9 @@ if (window.fully && !/[?&]tv=0/.test(window.location.search)) { window.location.
   var page = document.querySelector('.ss-page');
   document.documentElement.className += ' tv-html';
   // Some TV browsers report a window bigger than the screen they show (the page's full
-  // height, or the screen before the TV's own zoom), which made the wall too big and cut
-  // off the right and bottom. Use the smallest size any of them reports.
+  // height), which made the wall too big and cut off the right and bottom. Use the
+  // smallest of the sizes that measure the visible page (not the screen: on a PC with
+  // display scaling or two monitors that can be smaller than the window).
   function smallest(list) {
     var best = 0;
     for (var i = 0; i < list.length; i++) {
@@ -8360,8 +8361,8 @@ if (window.fully && !/[?&]tv=0/.test(window.location.search)) { window.location.
   function fit() {
     var de = document.documentElement;
     var vv = window.visualViewport;
-    var w = smallest([window.innerWidth, de.clientWidth, vv && vv.width, window.screen && window.screen.width]);
-    var h = smallest([window.innerHeight, de.clientHeight, vv && vv.height, window.screen && window.screen.height]);
+    var w = smallest([window.innerWidth, de.clientWidth, vv && vv.width]);
+    var h = smallest([window.innerHeight, de.clientHeight, vv && vv.height]);
     if (!w || !h || !page) return;
     // Fit the height to 1080 and let the width follow the screen's shape, so the wall
     // fills a browser window or TV edge to edge. Very narrow windows keep 1920 wide instead.
