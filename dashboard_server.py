@@ -8120,6 +8120,7 @@ OFFICE_HOME_HTML = """
   /* TV wall: everything on one screen, no buttons */
   /* TV: fills the screen on its own; once the fit script runs (tv-scaled) it is laid out
      at 1920 x 1080 and scaled to fit, so every TV shows the same wall. */
+  html.tv-html, body.tv { height: 100%; overflow: hidden; }
   body.tv { height: 100vh; overflow: hidden; }
   body.tv .ss-page { height: 100vh; display: flex; flex-direction: column; }
   body.tv.tv-scaled .ss-page { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; -webkit-transform-origin: 0 0; transform-origin: 0 0; }
@@ -8344,9 +8345,23 @@ if (window.fully && !/[?&]tv=0/.test(window.location.search)) { window.location.
 (function () {
   var body = document.body;
   var page = document.querySelector('.ss-page');
+  document.documentElement.className += ' tv-html';
+  // Some TV browsers report a window bigger than the screen they show (the page's full
+  // height, or the screen before the TV's own zoom), which made the wall too big and cut
+  // off the right and bottom. Use the smallest size any of them reports.
+  function smallest(list) {
+    var best = 0;
+    for (var i = 0; i < list.length; i++) {
+      var v = list[i];
+      if (v && v > 0 && (!best || v < best)) best = v;
+    }
+    return best;
+  }
   function fit() {
-    var w = window.innerWidth || document.documentElement.clientWidth;
-    var h = window.innerHeight || document.documentElement.clientHeight;
+    var de = document.documentElement;
+    var vv = window.visualViewport;
+    var w = smallest([window.innerWidth, de.clientWidth, vv && vv.width, window.screen && window.screen.width]);
+    var h = smallest([window.innerHeight, de.clientHeight, vv && vv.height, window.screen && window.screen.height]);
     if (!w || !h || !page) return;
     // Fit the height to 1080 and let the width follow the screen's shape, so the wall
     // fills a browser window or TV edge to edge. Very narrow windows keep 1920 wide instead.
