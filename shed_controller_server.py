@@ -1,4 +1,5 @@
 from flask import Flask, render_template_string, request, redirect, url_for, jsonify, Response, send_file
+from markupsafe import Markup, escape
 import hashlib
 import json
 import os
@@ -7200,84 +7201,6 @@ OVERVIEW_HTML = """
 """
 
 
-CLIMATE_HISTORY_HTML = """
-<!doctype html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <title>Shed {{ shed_no }} Daily High Low</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-    <style>
-        :root {
-            --bg: #5b5b5b;
-            --panel: rgba(115, 115, 115, 0.96);
-            --panel-2: rgba(104, 104, 104, 0.98);
-            --line: #858585;
-            --text: #ececec;
-            --muted: #d2d2d2;
-            --red: #ff7777;
-            --blue: #84d0ff;
-        }
-        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-        body { margin: 0; min-height: 100vh; color: var(--text); background: var(--bg); font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; }
-        .wrap { width: 100%; max-width: 1024px; margin: 0 auto; padding: 16px; }
-        .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 20px; padding: 16px; margin-bottom: 14px; }
-        h1 { margin: 0 0 4px; font-size: 30px; }
-        .sub { color: var(--muted); font-size: 15px; }
-        table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-        th, td { padding: 10px 8px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
-        th:first-child, td:first-child { text-align: left; }
-        th { font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
-        td { font-size: 19px; font-weight: 700; }
-        .hi { color: var(--red); }
-        .lo { color: var(--blue); }
-        .at { display: block; font-size: 12px; font-weight: 400; color: var(--muted); }
-        .group { text-align: center !important; }
-        .scroll { overflow-x: auto; }
-        .button-link {
-            display: flex; align-items: center; justify-content: center; min-height: 72px; border-radius: 16px;
-            border: 1px solid #d5dde6; background: #ffffff;
-            color: var(--text); font-size: 22px; font-weight: 700; text-decoration: none;
-        }
-        .nav { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-    </style>
-</head>
-<body>
-    <div class="wrap">
-        <nav class="page-nav" aria-label="Page navigation"><a class="page-nav-btn" href="{{ url_for('index') }}" data-nav-back>← Back</a><a class="page-nav-btn" href="{{ url_for('index') }}">⌂ Overview</a></nav>
-        <div class="panel">
-            <h1>Daily High / Low</h1>
-            <div class="sub">Shed {{ shed_no }} · midnight to midnight · last {{ rows|length }} day{% if rows|length != 1 %}s{% endif %} recorded</div>
-        </div>
-        <div class="panel scroll">
-            {% if rows %}
-            <table>
-                <thead>
-                    <tr><th></th><th class="group" colspan="2">Temp °C</th><th class="group" colspan="2">RH %</th></tr>
-                    <tr><th>Day</th><th>High</th><th>Low</th><th>High</th><th>Low</th></tr>
-                </thead>
-                <tbody>
-                    {% for r in rows %}
-                    <tr>
-                        <td>{{ r.date_label }}{% if r.date == today %}<span class="at">Today so far</span>{% endif %}</td>
-                        <td class="hi">{{ r.temp_max }}<span class="at">{{ r.temp_max_at }}</span></td>
-                        <td class="lo">{{ r.temp_min }}<span class="at">{{ r.temp_min_at }}</span></td>
-                        <td class="hi">{{ r.rh_max }}<span class="at">{{ r.rh_max_at }}</span></td>
-                        <td class="lo">{{ r.rh_min }}<span class="at">{{ r.rh_min_at }}</span></td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-            {% else %}
-            <div class="sub">No readings recorded yet. Highs and lows start filling in as soon as the Pico sends temperature and humidity.</div>
-            {% endif %}
-        </div>
-    </div>
-</body>
-</html>
-"""
-
-
 EXIT_KIOSK_HTML = """
 <!doctype html>
 <html lang="en">
@@ -9282,6 +9205,71 @@ setTimeout(() => { document.querySelectorAll('.auto-dismiss').forEach((el) => { 
 """
 
 
+TRENDS_CSS = """
+    <style>
+        .chart-card { border-radius: 14px; background: var(--card); padding: 14px 18px 10px; margin-bottom: 16px; }
+        .chart-card h2 { margin: 0 0 4px; font-family: "Barlow Semi Condensed", "Barlow", sans-serif; font-size: 22px; font-weight: 600; color: var(--navy, #0b3a6b); }
+        .line-chart { display: block; width: 100%; height: auto; }
+        .chart-empty { padding: 30px 0; text-align: center; color: var(--muted); }
+        .trend-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+        .trend-table th, .trend-table td { padding: 9px 10px; text-align: right; border-top: 1px solid var(--track); white-space: nowrap; }
+        .trend-table th:first-child, .trend-table td:first-child { text-align: left; }
+        .trend-table thead th { border-top: 0; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; background: var(--card-2); }
+        .trend-table td { font-size: 17px; font-weight: 600; }
+        .trend-table .hi { color: #d64545; } .trend-table .lo { color: #1676b8; }
+        .trend-table .group { text-align: center; }
+    </style>
+"""
+
+
+CLIMATE_HISTORY_HTML = """
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Shed {{ shed_no }} Trends</title>
+""" + ENTRY_PAGE_HEAD + TRENDS_CSS + """
+</head>
+<body>
+    <header class="topbar">
+        <a class="back" href="{{ url_for('index') }}" data-nav-back>← Back</a>
+        <a class="back" href="{{ url_for('index') }}">⌂ Overview</a>
+        <div class="title cond">Trends</div>
+        <img class="brand-logo" src="/static/stocksense-logo.png" alt="StockSense, Smarter Livestock Monitoring">
+    </header>
+    <div class="wrap">
+        <div class="hint" style="margin: 0 4px 12px">Shed {{ shed_no }} daily highs and lows, midnight to midnight. Last {{ rows|length }} day{% if rows|length != 1 %}s{% endif %} recorded. Dashed lines are the outside air (from the office).</div>
+        <section class="chart-card"><h2>Temperature °C</h2>{{ temp_chart }}</section>
+        <section class="chart-card"><h2>Humidity %</h2>{{ rh_chart }}</section>
+        <section class="card" style="padding: 0; overflow-x: auto">
+            {% if rows %}
+            <table class="trend-table">
+                <thead>
+                    <tr><th></th><th class="group" colspan="2">Temp °C</th><th class="group" colspan="2">RH %</th></tr>
+                    <tr><th>Day</th><th>High</th><th>Low</th><th>High</th><th>Low</th></tr>
+                </thead>
+                <tbody>
+                    {% for r in rows %}
+                    <tr>
+                        <td>{{ r.date_label }}{% if r.date == today %} <span class="hint">today so far</span>{% endif %}</td>
+                        <td class="hi">{{ r.temp_max }} <span class="hint">{{ r.temp_max_at }}</span></td>
+                        <td class="lo">{{ r.temp_min }} <span class="hint">{{ r.temp_min_at }}</span></td>
+                        <td class="hi">{{ r.rh_max }} <span class="hint">{{ r.rh_max_at }}</span></td>
+                        <td class="lo">{{ r.rh_min }} <span class="hint">{{ r.rh_min_at }}</span></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="hint" style="padding: 18px">No readings recorded yet. Highs and lows start filling in as soon as the Pico sends temperature and humidity.</div>
+            {% endif %}
+        </section>
+    </div>
+</body>
+</html>
+"""
+
+
 MORTALITY_HTML = """
 <!doctype html>
 <html lang="en">
@@ -9421,14 +9409,105 @@ def climate_history_view():
     cfg = load_config()
     state = load_state()
     sensors = state.get("sensors", default_sensor_state())
-    days = list(sensors.get("climate_days") or [])
-    days.reverse()
+    days = list(sensors.get("climate_days") or [])   # oldest first
+
+    def nums(key):
+        out = []
+        for rec in days:
+            try:
+                out.append(float(rec.get(key)) if rec.get(key) is not None else None)
+            except Exception:
+                out.append(None)
+        return out
+
+    labels = [datetime.strptime(rec["date"], "%Y-%m-%d").strftime("%d %b") if rec.get("date") else "" for rec in days]
+    outside = outside_temp_days_from_office(cfg)
+    out_hi = [outside.get(rec.get("date"), {}).get("max") for rec in days]
+    out_lo = [outside.get(rec.get("date"), {}).get("min") for rec in days]
+    temp_series = [("High", "#d64545", nums("temp_max")), ("Low", "#1676b8", nums("temp_min"))]
+    if any(v is not None for v in out_hi):
+        temp_series += [("Outside high", "#f08a12", out_hi, True), ("Outside low", "#7c8a99", out_lo, True)]
     return render_template_string(
         CLIMATE_HISTORY_HTML,
         shed_no=cfg["shed_no"],
         today=datetime.now().strftime("%Y-%m-%d"),
-        rows=[climate_day_display(rec) for rec in days],
+        rows=[climate_day_display(rec) for rec in reversed(days)],
+        temp_chart=line_chart_svg(labels, temp_series, unit="°"),
+        rh_chart=line_chart_svg(labels, [("High", "#d64545", nums("rh_max")), ("Low", "#1676b8", nums("rh_min"))], unit="%"),
     )
+
+
+# Outside air daily high / low, read from the office (which gets it from Open-Meteo).
+_outside_days_cache = {"data": {}, "ts": 0}
+
+
+def outside_temp_days_from_office(cfg):
+    if time.time() - _outside_days_cache["ts"] < 1800:
+        return _outside_days_cache["data"]
+    _outside_days_cache["ts"] = time.time()
+    try:
+        base = str(cfg.get("dashboard_url") or "").rstrip("/")
+        if base:
+            with urllib.request.urlopen(base + "/api/weather/daily", timeout=4) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            if isinstance(data, dict):
+                _outside_days_cache["data"] = data
+    except Exception:
+        pass
+    return _outside_days_cache["data"]
+
+
+def line_chart_svg(labels, series, unit="", height=280):
+    """A simple line graph as inline SVG (no chart library, so it works on the shed screens
+    and old TV browsers). series: [(name, colour, values[, dashed])], values line up with labels and may
+    hold None for a missing day (the line joins the days either side)."""
+    width, left, right, top, bottom = 1000, 52, 34, 34, 34
+    plot_w, plot_h = width - left - right, height - top - bottom
+    values = [v for item in series for v in item[2] if v is not None]
+    n = len(labels)
+    if not values or n == 0:
+        return Markup('<div class="chart-empty">No readings yet.</div>')
+    lo, hi = min(values), max(values)
+    if hi - lo < 4:
+        mid = (hi + lo) / 2.0
+        lo, hi = mid - 2, mid + 2
+    pad = (hi - lo) * 0.08
+    lo, hi = lo - pad, hi + pad
+    step = max(1, int(round((hi - lo) / 5.0)))
+    first_tick = int(lo // step + 1) * step
+
+    def x_of(i):
+        return left + (plot_w / 2.0 if n == 1 else plot_w * i / float(n - 1))
+
+    def y_of(v):
+        return top + plot_h * (1 - (v - lo) / float(hi - lo))
+
+    parts = ['<svg class="line-chart" viewBox="0 0 %d %d" role="img">' % (width, height)]
+    tick = first_tick
+    while tick < hi:
+        y = y_of(tick)
+        parts.append('<line x1="%d" x2="%d" y1="%.1f" y2="%.1f" stroke="#dbe3ec" stroke-width="1"/>' % (left, width - right, y, y))
+        parts.append('<text x="%d" y="%.1f" text-anchor="end" font-size="13" fill="#4a6078">%s%s</text>' % (left - 8, y + 4, tick, unit))
+        tick += step
+    every = max(1, int(round(n / 10.0)))
+    for i, label in enumerate(labels):
+        if i % every == 0 or i == n - 1:
+            parts.append('<text x="%.1f" y="%d" text-anchor="middle" font-size="13" fill="#4a6078">%s</text>' % (x_of(i), height - 10, escape(label)))
+    lx = left
+    for item in series:
+        name, colour, vals = item[0], item[1], item[2]
+        dashed = len(item) > 3 and item[3]
+        dash = ' stroke-dasharray="8 6"' if dashed else ""
+        parts.append('<line x1="%d" x2="%d" y1="10" y2="10" stroke="%s" stroke-width="4"%s/><text x="%d" y="15" font-size="14" font-weight="600" fill="#0d2b4a">%s</text>' % (lx, lx + 16, colour, ' stroke-dasharray="5 3"' if dashed else "", lx + 22, escape(name)))
+        lx += 36 + 8 * len(name)
+        run = ["%.1f,%.1f" % (x_of(i), y_of(v)) for i, v in enumerate(vals) if v is not None]
+        if len(run) > 1:
+            parts.append('<polyline points="%s" fill="none" stroke="%s" stroke-width="%s" stroke-linejoin="round" stroke-linecap="round"%s/>' % (" ".join(run), colour, "2" if dashed else "3", dash))
+        for i, v in enumerate(vals):
+            if v is not None and not dashed:
+                parts.append('<circle cx="%.1f" cy="%.1f" r="3.5" fill="%s"/>' % (x_of(i), y_of(v), colour))
+    parts.append("</svg>")
+    return Markup("".join(parts))
 
 
 @app.route("/settings")

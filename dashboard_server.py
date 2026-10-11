@@ -9616,7 +9616,7 @@ DETAIL_HTML = """
     <title>{{ shed_name }}</title>
     {{ office_page_head }}
     <style>
-        .links { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+        .links { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 20px; }
         .link-card { display: flex; flex-direction: column; gap: 4px; padding: 14px 18px; border-radius: 14px; background: var(--card); color: var(--text); text-decoration: none; }
         .link-card b { font-size: 19px; font-weight: 600; color: var(--navy); }
         .link-card span { font-size: 14px; color: var(--muted); }
@@ -9697,6 +9697,7 @@ DETAIL_HTML = """
             <a class="link-card" href="{{ url_for('shed_tables_graphs_view', shed_no=shed_no) }}"><b>Feed &amp; water</b><span>Daily totals, click a day for its hours</span></a>
             <a class="link-card" href="{{ url_for('shed_mortality_view', shed_no=shed_no) }}"><b>Mortality</b><span>Record losses and see the log</span></a>
             <a class="link-card" href="{{ url_for('shed_thresholds_view', shed_no=shed_no) }}"><b>Thresholds</b><span>Temperature, humidity, water and feed limits</span></a>
+            <a class="link-card" href="{{ url_for('shed_trends_view', shed_no=shed_no) }}"><b>Trends</b><span>Temperature and humidity highs and lows</span></a>
             <a class="link-card" href="{{ url_for('shed_crop_history', shed_no=shed_no) }}"><b>Crop history</b><span>The last crops in this shed</span></a>
         </div>
 
@@ -11660,6 +11661,41 @@ def office_weather_api():
     return jsonify(current_weather() or {})
 
 
+# Outside air daily high and low at the farm (Open-Meteo keeps the last 92 days), for the
+# Trends graphs. Fetched at most every 3 hours; the shed controllers read it from the office.
+_outside_days_cache = {"data": {}, "ok_ts": 0, "tried_ts": 0}
+_outside_days_lock = threading.Lock()
+
+
+def outside_temp_days():
+    """{"YYYY-MM-DD": {"max": float, "min": float}} for roughly the last three months."""
+    with _outside_days_lock:
+        if time.time() - _outside_days_cache["ok_ts"] < 3 * 3600 or time.time() - _outside_days_cache["tried_ts"] < 300:
+            return _outside_days_cache["data"]
+        _outside_days_cache["tried_ts"] = time.time()
+        try:
+            url = ("https://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s"
+                   "&daily=temperature_2m_max,temperature_2m_min&past_days=92&forecast_days=1"
+                   "&timezone=Europe%%2FLondon") % (WEATHER_LAT, WEATHER_LON)
+            with urllib.request.urlopen(url, timeout=6) as resp:
+                daily = (json.loads(resp.read().decode("utf-8")) or {}).get("daily") or {}
+            data = {}
+            for day, hi, lo in zip(daily.get("time") or [], daily.get("temperature_2m_max") or [], daily.get("temperature_2m_min") or []):
+                if hi is not None and lo is not None:
+                    data[day] = {"max": float(hi), "min": float(lo)}
+            if data:
+                _outside_days_cache["data"] = data
+                _outside_days_cache["ok_ts"] = time.time()
+        except Exception:
+            pass
+        return _outside_days_cache["data"]
+
+
+@app.route("/api/weather/daily")
+def office_outside_days_api():
+    return jsonify(outside_temp_days())
+
+
 def render_office_home(tv=False, pc=False):
     ctx = office_home_context(tv=tv)
     ctx["pc"] = pc
@@ -13326,6 +13362,151 @@ def borehole_period_view(period):
         period=period,
         bar_epochs=bar_epochs,
         water_values=water_values,
+    )
+
+
+def line_chart_svg(labels, series, unit="", height=280):
+    """A simple line graph as inline SVG (no chart library, so it works on the shed screens
+    and old TV browsers). series: [(name, colour, values[, dashed])], values line up with labels and may
+    hold None for a missing day (the line joins the days either side)."""
+    width, left, right, top, bottom = 1000, 52, 34, 34, 34
+    plot_w, plot_h = width - left - right, height - top - bottom
+    values = [v for item in series for v in item[2] if v is not None]
+    n = len(labels)
+    if not values or n == 0:
+        return Markup('<div class="chart-empty">No readings yet.</div>')
+    lo, hi = min(values), max(values)
+    if hi - lo < 4:
+        mid = (hi + lo) / 2.0
+        lo, hi = mid - 2, mid + 2
+    pad = (hi - lo) * 0.08
+    lo, hi = lo - pad, hi + pad
+    step = max(1, int(round((hi - lo) / 5.0)))
+    first_tick = int(lo // step + 1) * step
+
+    def x_of(i):
+        return left + (plot_w / 2.0 if n == 1 else plot_w * i / float(n - 1))
+
+    def y_of(v):
+        return top + plot_h * (1 - (v - lo) / float(hi - lo))
+
+    parts = ['<svg class="line-chart" viewBox="0 0 %d %d" role="img">' % (width, height)]
+    tick = first_tick
+    while tick < hi:
+        y = y_of(tick)
+        parts.append('<line x1="%d" x2="%d" y1="%.1f" y2="%.1f" stroke="#dbe3ec" stroke-width="1"/>' % (left, width - right, y, y))
+        parts.append('<text x="%d" y="%.1f" text-anchor="end" font-size="13" fill="#4a6078">%s%s</text>' % (left - 8, y + 4, tick, unit))
+        tick += step
+    every = max(1, int(round(n / 10.0)))
+    for i, label in enumerate(labels):
+        if i % every == 0 or i == n - 1:
+            parts.append('<text x="%.1f" y="%d" text-anchor="middle" font-size="13" fill="#4a6078">%s</text>' % (x_of(i), height - 10, escape(label)))
+    lx = left
+    for item in series:
+        name, colour, vals = item[0], item[1], item[2]
+        dashed = len(item) > 3 and item[3]
+        dash = ' stroke-dasharray="8 6"' if dashed else ""
+        parts.append('<line x1="%d" x2="%d" y1="10" y2="10" stroke="%s" stroke-width="4"%s/><text x="%d" y="15" font-size="14" font-weight="600" fill="#0d2b4a">%s</text>' % (lx, lx + 16, colour, ' stroke-dasharray="5 3"' if dashed else "", lx + 22, escape(name)))
+        lx += 36 + 8 * len(name)
+        run = ["%.1f,%.1f" % (x_of(i), y_of(v)) for i, v in enumerate(vals) if v is not None]
+        if len(run) > 1:
+            parts.append('<polyline points="%s" fill="none" stroke="%s" stroke-width="%s" stroke-linejoin="round" stroke-linecap="round"%s/>' % (" ".join(run), colour, "2" if dashed else "3", dash))
+        for i, v in enumerate(vals):
+            if v is not None and not dashed:
+                parts.append('<circle cx="%.1f" cy="%.1f" r="3.5" fill="%s"/>' % (x_of(i), y_of(v), colour))
+    parts.append("</svg>")
+    return Markup("".join(parts))
+
+
+# Shared look for the Trends pages: the temperature and humidity highs and lows as line
+# graphs, with the day-by-day table under them.
+TRENDS_CSS = """
+    <style>
+        .chart-card { border-radius: 14px; background: var(--card); padding: 14px 18px 10px; margin-bottom: 16px; }
+        .chart-card h2 { margin: 0 0 4px; font-family: "Barlow Semi Condensed", "Barlow", sans-serif; font-size: 22px; font-weight: 600; color: var(--navy, #0b3a6b); }
+        .line-chart { display: block; width: 100%; height: auto; }
+        .chart-empty { padding: 30px 0; text-align: center; color: var(--muted); }
+        .trend-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+        .trend-table th, .trend-table td { padding: 9px 10px; text-align: right; border-top: 1px solid var(--track); white-space: nowrap; }
+        .trend-table th:first-child, .trend-table td:first-child { text-align: left; }
+        .trend-table thead th { border-top: 0; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; background: var(--card-2); }
+        .trend-table td { font-size: 17px; font-weight: 600; }
+        .trend-table .hi { color: #d64545; } .trend-table .lo { color: #1676b8; }
+        .trend-table .group { text-align: center; }
+    </style>
+"""
+
+
+SHED_TRENDS_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>{{ shed_name }} Trends</title>
+    {{ office_page_head }}
+""" + TRENDS_CSS + """
+</head>
+<body>
+    {{ office_topbar(shed_name ~ ' trends') }}
+    <div class="wrap">
+        <div class="hint" style="margin: 0 4px 12px">Daily highs and lows for this crop{% if crop_code %} ({{ crop_code }}){% endif %}, midnight to midnight. Dashed lines are the outside air at NR15 1BE.</div>
+        <section class="chart-card"><h2>Temperature °C</h2>{{ temp_chart }}</section>
+        <section class="chart-card"><h2>Humidity %</h2>{{ rh_chart }}</section>
+        <section class="card table-wrap" style="padding: 0">
+            {% if rows %}
+            <table class="trend-table">
+                <thead>
+                    <tr><th></th><th class="group" colspan="2">Temp °C</th><th class="group" colspan="2">RH %</th></tr>
+                    <tr><th>Day</th><th>High</th><th>Low</th><th>High</th><th>Low</th></tr>
+                </thead>
+                <tbody>
+                    {% for r in rows|reverse %}
+                    <tr><td>{{ r.label }}</td>
+                        <td class="hi">{{ "%.1f"|format(r.temp_max) if r.temp_max is not none else "--" }}</td>
+                        <td class="lo">{{ "%.1f"|format(r.temp_min) if r.temp_min is not none else "--" }}</td>
+                        <td class="hi">{{ "%.0f"|format(r.rh_max) if r.rh_max is not none else "--" }}</td>
+                        <td class="lo">{{ "%.0f"|format(r.rh_min) if r.rh_min is not none else "--" }}</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="hint" style="padding: 18px">No days recorded for this crop yet.</div>
+            {% endif %}
+        </section>
+    </div>
+</body>
+</html>
+"""
+
+
+@app.route("/shed/<int:shed_no>/trends")
+def shed_trends_view(shed_no):
+    if shed_no not in SHED_NUMBERS:
+        abort(404)
+    shed_name = shed_name_from_number(shed_no)
+    crop_id = get_active_crop_id_for_shed(shed_name)
+    crop = active_crop_record_for_shed(shed_name)
+    rows = get_daily_history_for_shed(shed_name, max_days=0, crop_id=crop_id, include_manual_feed=True) if crop_id is not None else []
+    labels = [r.get("label") or "" for r in rows]
+    # Outside air high / low for the same days (rows are labelled "02 Oct").
+    outside = {}
+    for day, rec in outside_temp_days().items():
+        try:
+            outside[datetime.strptime(day, "%Y-%m-%d").strftime("%d %b")] = rec
+        except Exception:
+            pass
+    out_hi = [outside.get(label, {}).get("max") for label in labels]
+    out_lo = [outside.get(label, {}).get("min") for label in labels]
+    temp_series = [("High", "#d64545", [r.get("temp_max") for r in rows]), ("Low", "#1676b8", [r.get("temp_min") for r in rows])]
+    if any(v is not None for v in out_hi):
+        temp_series += [("Outside high", "#f08a12", out_hi, True), ("Outside low", "#7c8a99", out_lo, True)]
+    return render_template_string(
+        SHED_TRENDS_HTML,
+        shed_name=shed_display_name_from_number(shed_no),
+        crop_code=fmt_crop_code(crop_id, crop.get("placement_epoch")) if crop_id is not None else "",
+        rows=rows,
+        temp_chart=line_chart_svg(labels, temp_series, unit="°"),
+        rh_chart=line_chart_svg(labels, [("High", "#d64545", [r.get("rh_max") for r in rows]), ("Low", "#1676b8", [r.get("rh_min") for r in rows])], unit="%"),
     )
 
 
