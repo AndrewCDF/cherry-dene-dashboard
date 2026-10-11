@@ -8108,9 +8108,10 @@ OFFICE_HOME_HTML = """
     body:not(.tv) .ss-tile-label { font-size: 11px; }
     body:not(.tv) .ss-big, body:not(.tv) .ss-mid { font-size: 20px; }
     body:not(.tv) .ss-mid small { display: block; font-size: 12px; line-height: 1.1; }
-    body:not(.tv) .ss-hilo { display: none; }
+    /* Today's high and low show on the temperature and humidity tiles whether the card is open or not. */
+    body:not(.tv) .ss-hilo { display: flex; margin-left: 0; flex-direction: column; align-items: flex-start; gap: 0; font-size: 12px; line-height: 1.2; }
+    body:not(.tv) .ss-hilo span { white-space: nowrap; }
     body:not(.tv) .ss-card:not(.open) .ss-more { display: none; }
-    body:not(.tv) .ss-card.open .ss-hilo { display: flex; margin-left: 0; flex-direction: row; gap: 6px; font-size: 12px; }
     body:not(.tv) .ss-augers { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     body:not(.tv) .ss-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     body:not(.tv) .ss-borehole { gap: 10px 18px; }

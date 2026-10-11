@@ -3698,6 +3698,7 @@ def build_home_context():
         "feed_kg_live_display": fmt_value(sensors.get("feed_kg_live") if sensors.get("feed_kg_live") is not None else sensors.get("feed_kg"), "f0"),
         "feed_live_pct": feed_fill_pct(sensors.get("feed_kg_live") if sensors.get("feed_kg_live") is not None else feed_kg_f, cfg.get("feed_capacity_kg")),
         "clock_hm": datetime.now().strftime("%H:%M"),
+        "clock_date": "%s %d %s" % (datetime.now().strftime("%a"), datetime.now().day, datetime.now().strftime("%b")),
         "crop_subtitle": ("%s birds · Day %s" % (birds_display, fmt_value(oldest_age_days, "i"))) if active_crop_id is not None else "No active crop",
         "header_birds": ("%s birds" % birds_display) if active_crop_id is not None else "No active crop",
         "header_day": ("Day %s" % fmt_value(oldest_age_days, "i")) if active_crop_id is not None else "",
@@ -6459,6 +6460,20 @@ OVERVIEW_HTML = """
         .topbar-left { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
         /* The shed name box takes all the room between the logo and the status items. */
         .topbar-left.crop-badge { flex: 1 1 auto; min-width: 0; justify-content: space-evenly; align-items: center; align-self: stretch; padding-top: 0; padding-bottom: 0; }
+        /* The header always stays on one row, so the page never scrolls. The office sync
+           status is on the Settings page rather than up here, which leaves room for the
+           shed box in full. */
+        .topbar.one-row { flex-wrap: nowrap; gap: 14px; }
+        .topbar-left.crop-badge { flex: 1 0 auto; flex-wrap: nowrap; gap: 10px; padding-left: 14px; padding-right: 14px; white-space: nowrap; }
+        .topbar-left.crop-badge + .hdr-div + .topbar-right { flex-shrink: 0; gap: 18px; }
+        /* Same look as the office dashboard header: divider lines between the logo, the shed,
+           the alarms and the date and time, with the date in front of a bold clock. */
+        .topbar.one-row { gap: 18px; }
+        .hdr-div { flex: 0 0 3px; width: 3px; height: 48px; background: #7f93a9; }
+        .hdr-when { display: flex; align-items: baseline; gap: 12px; white-space: nowrap; }
+        .hdr-date { font-size: 20px; font-weight: 600; color: var(--text); }
+        .topbar.one-row .clock { font-size: 38px; font-weight: 700; color: #0b3a6b; line-height: 1; }
+        .topbar-left.crop-badge + .topbar-right .chip { padding: 7px 14px; }
         /* Barlow's letters sit ~2px below the centre of their line box; lift them so they look centred. */
         .topbar-left .shed-title, .topbar-left .subtitle { line-height: 1; margin: 0; position: relative; top: -2px; }
         .topbar-left .subtitle { font-size: 22px; font-weight: 600; color: var(--soft); }
@@ -6663,6 +6678,9 @@ OVERVIEW_HTML = """
             font-size: 18px; font-weight: 500; text-decoration: none; padding: 0 8px;
         }
         .nav a[aria-current="page"] { background: var(--text); color: var(--page); border-color: var(--text); font-weight: 600; }
+        /* The Alarms button turns red while any alarm is active (the count shows in it). */
+        .nav a.alarm-on { background: var(--red); border-color: var(--red); color: #ffffff; font-weight: 600; }
+        .nav a.alarm-on .nav-badge { background: #ffffff; color: var(--red); }
         .nav-badge { min-width: 24px; padding: 1px 7px; border-radius: 999px; background: var(--red); color: var(--page); font-size: 14px; font-weight: 600; }
         a:focus-visible, button:focus-visible { outline: 3px solid var(--text); outline-offset: 2px; }
 
@@ -6704,8 +6722,9 @@ OVERVIEW_HTML = """
 </head>
 <body>
 <div class="page">
-    <header class="topbar">
+    <header class="topbar one-row">
         <img class="brand-logo" src="/static/stocksense-logo.png" alt="StockSense, Smarter Livestock Monitoring">
+        <span class="hdr-div" aria-hidden="true"></span>
         <div class="topbar-left crop-badge {{ crop_class }}" id="shedTitle">
             <div class="shed-title cond">{{ shed_display_name }}</div>
             <span class="hdr-sep" aria-hidden="true">·</span>
@@ -6713,10 +6732,9 @@ OVERVIEW_HTML = """
             <span class="hdr-sep" id="headerDaySep" aria-hidden="true" {% if not header_day %}style="display:none"{% endif %}>·</span>
             <div class="subtitle" id="headerDay" {% if not header_day %}style="display:none"{% endif %}>{{ header_day }}</div>
         </div>
+        <span class="hdr-div" aria-hidden="true"></span>
         <div class="topbar-right">
-            <div id="overviewChip" class="chip {% if overview_chip_ok %}ok{% else %}attention{% endif %}">{{ overview_chip_text }}</div>
-            <div class="sync"><span id="syncDot" class="dot {{ sync_class }}"></span><span id="syncValue">Office sync {{ sync_short }}</span></div>
-            <div class="clock cond" id="clockValue">{{ clock_hm }}</div>
+            <div class="hdr-when"><span class="hdr-date" id="clockDate">{{ clock_date }}</span><span class="clock cond" id="clockValue">{{ clock_hm }}</span></div>
         </div>
     </header>
 
@@ -6972,10 +6990,9 @@ OVERVIEW_HTML = """
 
     <nav class="nav" aria-label="Controller pages">
         <a href="{{ url_for('index') }}" aria-current="page">Overview</a>
-        <a href="{{ url_for('controller_alarms_view') }}">Alarms <span class="nav-badge" id="alarmBadge" {% if not alarm_count %}style="display:none"{% endif %}>{{ alarm_count }}</span></a>
+        <a href="{{ url_for('controller_alarms_view') }}" id="alarmNav" class="{{ 'alarm-on' if alarm_count else '' }}">Alarms <span class="nav-badge" id="alarmBadge" {% if not alarm_count %}style="display:none"{% endif %}>{{ alarm_count }}</span></a>
         <a href="{{ url_for('climate_history_view') }}">Trends</a>
         <a href="{{ url_for('feed_history_view') }}">Feed and water log</a>
-        <a href="{{ url_for('classic_view') }}">Classic view</a>
         <a href="{{ url_for('controller_settings_view') }}">Settings</a>
     </nav>
 </div>
@@ -7060,11 +7077,9 @@ OVERVIEW_HTML = """
         document.getElementById('headerDaySep').style.display = d.header_day ? '' : 'none';
         setClass(document.getElementById('shedTitle'), d.crop_class, ['active', 'inactive']);
         setText('clockValue', d.clock_hm);
+        if (d.clock_date) setText('clockDate', d.clock_date);
         setText('syncValue', 'Office sync ' + (d.sync_short || '--'));
         setClass(document.getElementById('syncDot'), d.sync_class, ['ok', 'warn', 'bad']);
-        const chip = document.getElementById('overviewChip');
-        setClass(chip, d.overview_chip_ok ? 'ok' : 'attention', ['ok', 'attention']);
-        setText('overviewChip', d.overview_chip_text);
 
         setText('tempValue', d.temp_c);
         setText('rhValue', d.rh_pct);
@@ -7146,6 +7161,8 @@ OVERVIEW_HTML = """
         const badge = document.getElementById('alarmBadge');
         badge.style.display = d.alarm_count ? '' : 'none';
         badge.textContent = d.alarm_count;
+        const alarmNav = document.getElementById('alarmNav');
+        if (alarmNav) alarmNav.classList.toggle('alarm-on', !!d.alarm_count);
 
         toggleBanner('offlineBanner', d.offline_banner);
         toggleBanner('picoFreezeBanner', d.pico_warning_banner);
@@ -7394,6 +7411,7 @@ SETTINGS_HTML = """
                         <a class="item" href="{{ url_for('controller_config_view') }}"><span>Config</span><span class="chev" style="margin-left: auto">›</span></a>
                         <a class="item" href="{{ url_for('commissioning_view') }}"><span>Commissioning</span><span class="chev" style="margin-left: auto">›</span></a>
                         <a class="item" href="{{ url_for('hx711_diagnostics_view') }}"><span>Feed scale diagnostics</span><span class="chev" style="margin-left: auto">›</span></a>
+                        <a class="item" href="{{ url_for('classic_view') }}"><span>Classic view</span><span class="item-sub">The old overview screen</span><span class="chev">›</span></a>
                     </nav>
                 </section>
             </div>
