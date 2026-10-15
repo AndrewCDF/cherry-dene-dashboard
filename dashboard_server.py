@@ -1945,7 +1945,7 @@ def build_active_alarm_notifications():
             alarms.append({
                 "id": "alarm:borehole:%s:%s" % (alarm_key, message),
                 "kind": "alarm",
-                "title": "Bore Hole Alarm",
+                "title": "Water & Power alarm",
                 "body": message,
                 "url": "/borehole",
             })
@@ -4154,6 +4154,30 @@ def active_borehole_alarms():
         rec = latest[key]
         if rec.get("active"):
             result.append(rec)
+
+    # The controller's own current alarms (sent with every sync) while it is reporting.
+    meta = load_borehole_meta()
+    now_ts = int(time.time())
+    try:
+        meta_age = now_ts - int(meta.get("received_ts") or 0)
+    except Exception:
+        meta_age = None
+    seen = set(r.get("alarm_key") for r in result)
+    if meta_age is not None and meta_age <= 180:
+        for rec in meta.get("controller_alarms") or []:
+            if isinstance(rec, dict) and rec.get("alarm_key") and rec.get("alarm_key") not in seen:
+                result.append({"ts": now_ts, "active": True, "alarm_key": rec.get("alarm_key"), "message": rec.get("message", "")})
+                seen.add(rec.get("alarm_key"))
+
+    # Once the supply meter is set up, a silent controller may mean the phase it is powered
+    # from has gone (it can't report that itself), so the office raises it.
+    power = latest_borehole_live().get("power")
+    if isinstance(power, dict) and meta.get("received_ts") and meta_age is not None and meta_age > 180:
+        phase = str(power.get("controller_phase") or "").strip()
+        since = datetime.fromtimestamp(int(meta.get("received_ts"))).strftime("%H:%M")
+        msg = "Controller not reporting since %s." % since
+        msg += (" Its supply phase %s may be lost; check the %s fuse." % (phase, phase)) if phase else " It may have lost power (check its supply phase)."
+        result.append({"ts": now_ts, "active": True, "alarm_key": "controller_silent", "message": msg})
     return result
 
 
@@ -6035,8 +6059,45 @@ def build_borehole_row():
     is_online = controller_online(meta)
     tile_state = "online" if is_online and bool(live) else "offline"
 
+    # Incoming supply (Shelly 3EM via the borehole controller); live figures go stale
+    # after two minutes without an update.
+    power = live.get("power") if isinstance(live.get("power"), dict) else None
+    power_live = False
+    if power:
+        try:
+            power_live = int(time.time()) - int(power.get("ts") or 0) <= 120 and power.get("total_w") is not None
+        except Exception:
+            power_live = False
+    power_phases = []
+    for i, name in enumerate(["L1", "L2", "L3"]):
+        ph = (power.get("phases") or [])[i] if power and i < len(power.get("phases") or []) else {}
+        ph = ph if isinstance(ph, dict) else {}
+        peak = power.get("peak_today") if power and isinstance(power.get("peak_today"), dict) else {}
+        if peak.get("date") != datetime.now().strftime("%Y-%m-%d"):
+            peak = {}
+        peak_a = (peak.get("a") or [None, None, None])[i] if peak else None
+        peak_at = (peak.get("at") or [None, None, None])[i] if peak else None
+        fuse = (power or {}).get("fuse_amps") or 0
+        amps = ph.get("a") if power_live else None
+        power_phases.append({
+            "name": name,
+            "colour": PHASE_COLOURS[i],
+            "v": fmt_value(ph.get("v"), "f0") if power_live else "--",
+            "a": fmt_value(amps, "f1"),
+            "kw": fmt_value((ph.get("w") or 0) / 1000.0 if ph.get("w") is not None else None, "f2") if power_live else "--",
+            "peak_a": fmt_value(peak_a, "f1"),
+            "peak_at": datetime.fromtimestamp(peak_at).strftime("%H:%M") if peak_at else "",
+            "hot": bool(fuse and amps is not None and amps >= 0.9 * fuse),
+        })
+
     return {
-        "name": "Bore Hole",
+        "has_power": bool(power),
+        "power_kw": fmt_value(power.get("total_w") / 1000.0, "f2") if power_live else "--",
+        "power_today": fmt_value(power.get("today_kwh"), "f1") if power else "--",
+        "power_yesterday": fmt_value(power.get("yesterday_kwh"), "f1") if power else "--",
+        "power_phases": power_phases,
+        "power_fuse": (power or {}).get("fuse_amps") or 0,
+        "name": "Water & Power",
         "has_data": bool(live) or bool(days),
         "tile_state": tile_state,
         "water_lpm": fmt_value(water_lpm, "f2"),
@@ -7425,7 +7486,7 @@ HTML = """
                 <div id="borehole-card" class="card {% if borehole.alarm_active %}alarm{% else %}{{ borehole.water_glow }}{% endif %} {% if not borehole.has_data %}nodata{% endif %}">
                     <div class="head">
                         <div class="head-left">
-                            <div class="shed">Bore Hole</div>
+                            <div class="shed">Water &amp; Power</div>
                         </div>
 
                         <div class="badge-wrap">
@@ -7924,25 +7985,31 @@ OFFICE_CARDS_HTML = """
   {% if tv %}
   <article class="ss-card kind-water">
     {% if pc %}<a class="ss-card-head ss-static ss-card-link" href="{{ url_for('borehole_detail') }}">{% else %}<div class="ss-card-head ss-static">{% endif %}
-      <span class="ss-row"><span class="ss-name">Bore hole</span><span class="ss-status kind-{{ borehole.kind }}">{{ borehole.status }}</span></span>
+      <span class="ss-row"><span class="ss-name">Water &amp; Power</span><span class="ss-status kind-{{ borehole.kind }}">{{ borehole.status }}</span></span>
       <span class="ss-row"><span class="ss-birds">Flow now {{ borehole.water }} L/min</span></span>
     {% if pc %}</a>{% else %}</div>{% endif %}
     <div class="ss-idle"><b>{{ borehole.daily }} L</b> today<br>Last 7 days {{ borehole.weekly }} L</div>
+    {% if borehole.has_power %}<div class="ss-idle"><b>{{ borehole.power_kw }} kW</b> supply · {{ borehole.power_today }} kWh today<br>{% for ph in borehole.power_phases %}<span{% if ph.hot %} style="color:#c62828; font-weight:700"{% endif %}>{{ ph.name }} {{ ph.a }} A</span>{% if not loop.last %} · {% endif %}{% endfor %}</div>{% endif %}
     <div class="ss-foot"><span>Updated {{ borehole.updated }}</span></div>
   </article>
   {% endif %}
 </section>
 
 {% if not tv %}
-<section aria-label="Bore hole" class="ss-borehole kind-{{ borehole.kind }}">
-  <h2>Bore hole</h2>
+<section aria-label="Water and power" class="ss-borehole kind-{{ borehole.kind }}">
+  <h2>Water &amp; Power</h2>
   <span class="ss-status kind-{{ borehole.kind }}">{{ borehole.status }}</span>
   <div class="ss-bh-stat"><span>Flow now</span><b><span data-bore-water>{{ borehole.water }}</span> L/min</b></div>
   <div class="ss-bh-stat"><span>Today</span><b>{{ borehole.daily }} L</b></div>
   <div class="ss-bh-stat"><span>Last 7 days</span><b>{{ borehole.weekly }} L</b></div>
   <div class="ss-bh-stat"><span>Updated</span><b>{{ borehole.updated }}</b></div>
+  {% if borehole.has_power %}
+  <div class="ss-bh-stat"><span>Supply now</span><b>{{ borehole.power_kw }} kW</b></div>
+  <div class="ss-bh-stat"><span>Electric today</span><b>{{ borehole.power_today }} kWh</b></div>
+  {% for ph in borehole.power_phases %}<div class="ss-bh-stat"><span>{{ ph.name }} amps</span><b{% if ph.hot %} style="color:#c62828"{% endif %}>{{ ph.a }} A</b></div>{% endfor %}
+  {% endif %}
   {% if borehole.alarm %}<div class="ss-card-alarm">{{ borehole.alarm }}</div>{% endif %}
-  <a href="{{ url_for('borehole_detail') }}" class="ss-link">Bore hole history</a>
+  <a href="{{ url_for('borehole_detail') }}" class="ss-link">Water &amp; power details</a>
 </section>
 {% endif %}
 """
@@ -8790,7 +8857,7 @@ RESTORE_HTML = """
                 </form>
             </div>
             <div class="panel">
-                <h2>Bore Hole Restore</h2>
+                <h2>Water &amp; Power controller restore</h2>
                 <div class="sub">Restores the bore hole live/meta state from the selected backup.</div>
                 <form method="post" action="{{ url_for('restore_office_backup_borehole_view') }}" onsubmit="return confirm('Restore the bore hole state from the selected office backup?');">
                     <select name="backup_name">
@@ -8798,7 +8865,7 @@ RESTORE_HTML = """
                         <option value="{{ b.name }}">{{ b.name }} ({{ b.mtime }})</option>
                         {% endfor %}
                     </select>
-                    <button type="submit">Restore Bore Hole State</button>
+                    <button type="submit">Restore Water &amp; Power state</button>
                 </form>
             </div>
         </div>
@@ -8825,7 +8892,7 @@ RESTORE_HTML = """
                                     {% elif row.restore_kind == 'borehole' %}
                                     <form method="post" action="{{ url_for('restore_controller_copy_borehole_view') }}" onsubmit="return confirm('Restore the bore hole from the latest office-collected controller copy?');">
                                         <input type="hidden" name="controller_key" value="{{ row.controller_key }}">
-                                        <button type="submit">Restore Bore Hole</button>
+                                        <button type="submit">Restore Water &amp; Power</button>
                                     </form>
                                     {% else %}
                                     --
@@ -9595,7 +9662,7 @@ def compute_farm_health_summary(controller_meta=None, borehole_meta=None, collec
             collector_status.get("shed_%d" % shed_no, {}) if isinstance(collector_status, dict) else {},
         )
         i += 1
-    inspect_controller("Bore Hole", borehole_meta, collector_status.get("borehole", {}) if isinstance(collector_status, dict) else {})
+    inspect_controller("Water & Power", borehole_meta, collector_status.get("borehole", {}) if isinstance(collector_status, dict) else {})
     return {
         "stale_count": len(stale_labels),
         "stale_labels": ", ".join(stale_labels) if stale_labels else "All controller heartbeats are current",
@@ -10042,18 +10109,20 @@ BOREHOLE_DETAIL_HTML = """
 <html lang="en">
 <head>
     <meta charset="utf-8">
-    <title>Bore Hole</title>
+    <title>Water &amp; Power</title>
     {{ office_page_head }}
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     {{ day_bars_head|safe }}
     <style>
         .stats { grid-template-columns: repeat(4, 1fr); }
         .stat-value.flow { color: #1676b8; }
+        .line-chart { display: block; width: 100%; height: auto; }
+        .chart-empty { padding: 30px 0; text-align: center; color: var(--muted); }
         @media (max-width: 860px) { .stats { grid-template-columns: 1fr 1fr; } }
     </style>
 </head>
 <body>
-    {{ office_topbar('Bore hole') }}
+    {{ office_topbar('Water & Power') }}
     <div class="wrap">
         {% if bh.alarm %}<div class="msg error">{{ bh.alarm }}</div>{% endif %}
         <div class="stats">
@@ -10062,6 +10131,33 @@ BOREHOLE_DETAIL_HTML = """
             <div class="stat"><div class="stat-label">Today</div><div class="stat-value cond">{{ bh.daily }}{% if bh.daily != '--' %} <span style="font-size:18px">L</span>{% endif %}</div><div class="stat-sub">Since 6am</div></div>
             <div class="stat"><div class="stat-label">Last 7 days</div><div class="stat-value cond">{{ bh.weekly }}{% if bh.weekly != '--' %} <span style="font-size:18px">L</span>{% endif %}</div><div class="stat-sub">6am to 6am days</div></div>
         </div>
+        {% if bh.has_power %}
+        <h2 class="section-title">Incoming supply</h2>
+        <div class="stats">
+            <div class="stat"><div class="stat-label">Supply now</div><div class="stat-value cond">{{ bh.power_kw }}{% if bh.power_kw != '--' %} <span style="font-size:18px">kW</span>{% endif %}</div><div class="stat-sub">All three phases</div></div>
+            <div class="stat"><div class="stat-label">Today</div><div class="stat-value cond">{{ bh.power_today }}{% if bh.power_today != '--' %} <span style="font-size:18px">kWh</span>{% endif %}</div><div class="stat-sub">Since midnight</div></div>
+            <div class="stat"><div class="stat-label">Yesterday</div><div class="stat-value cond">{{ bh.power_yesterday }}{% if bh.power_yesterday != '--' %} <span style="font-size:18px">kWh</span>{% endif %}</div><div class="stat-sub">Midnight to midnight</div></div>
+            <div class="stat"><div class="stat-label">Fuse</div><div class="stat-value cond">{{ bh.power_fuse or '--' }}{% if bh.power_fuse %} <span style="font-size:18px">A</span>{% endif %}</div><div class="stat-sub">Per phase (set on the controller)</div></div>
+        </div>
+        <div class="stats">
+            {% for ph in bh.power_phases %}
+            <div class="stat" style="border-top: 5px solid {{ ph.colour }}{% if ph.hot %}; background: #fdecec{% endif %}">
+                <div class="stat-label">{{ ph.name }} amps now</div>
+                <div class="stat-value cond" {% if ph.hot %}style="color: #c62828"{% endif %}>{{ ph.a }}{% if ph.a != '--' %} <span style="font-size:18px">A</span>{% endif %}</div>
+                <div class="stat-sub">{{ ph.v }} V · {{ ph.kw }} kW · Peak today {{ ph.peak_a }} A {{ ph.peak_at }}</div>
+            </div>
+            {% endfor %}
+            <div class="stat"><div class="stat-label">Phase chart</div>
+                <div class="stat-sub" style="display:flex; gap:6px; flex-wrap:wrap; margin-top:6px">
+                    {% for h in [6, 24, 168] %}<a class="pill {{ 'on' if h == phase_hours else '' }}" href="{{ url_for('borehole_detail', hours=h) }}" style="text-decoration:none">{{ '7 days' if h == 168 else (h|string ~ ' h') }}</a>{% endfor %}
+                </div>
+            </div>
+        </div>
+        <section class="card" style="margin-bottom: 20px">
+            <div class="hint" style="margin-bottom:6px">Highest amps on each phase{% if phase_hours <= 6 %} each minute{% elif phase_hours <= 24 %} in each 5 minutes{% else %} in each half hour{% endif %}.{% if bh.power_fuse %} Red dashed line is the {{ bh.power_fuse }} A fuse.{% endif %}</div>
+            {{ phase_chart }}
+        </section>
+        {% endif %}
         <div id="waterBars"></div>
     </div>
 {{ day_bars_js|safe }}
@@ -11092,7 +11188,7 @@ BOREHOLE_PERIOD_HTML = """
 <html>
 <head>
     <meta charset="utf-8">
-    <title>Bore Hole Water</title>
+    <title>Bore hole water</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         * {
@@ -11251,7 +11347,7 @@ BOREHOLE_PERIOD_HTML = """
     {{ day_bars_head|safe }}
 </head>
 <body>
-    {{ office_topbar('Bore Hole Water') }}
+    {{ office_topbar('Bore hole water') }}
     <div class="wrap">
 
 
@@ -11544,7 +11640,7 @@ def office_home_context(tv=False):
             alarms.append("%s · %s" % (s["name"], s["status"].lower()))
     bh = ctx.get("borehole", {}) or {}
     if bh.get("alarm_active"):
-        alarms.append("Bore hole · %s" % bh.get("alarm_msg", ""))
+        alarms.append("Water & Power · %s" % bh.get("alarm_msg", ""))
 
     overall = ctx.get("overall", {}) or {}
     active_sheds = len([s for s in sheds if s["live"]])
@@ -11565,6 +11661,12 @@ def office_home_context(tv=False):
         "weekly": bh.get("weekly_water", "--"),
         "updated": bh.get("updated", "--"),
         "alarm": bh.get("alarm_msg", ""),
+        "has_power": bh.get("has_power", False),
+        "power_kw": bh.get("power_kw", "--"),
+        "power_today": bh.get("power_today", "--"),
+        "power_yesterday": bh.get("power_yesterday", "--"),
+        "power_phases": bh.get("power_phases", []),
+        "power_fuse": bh.get("power_fuse", 0),
     }
 
     farm_name = farm_identity()[0]
@@ -11836,7 +11938,7 @@ def office_settings_view():
     borehole_meta = load_borehole_meta()
     borehole_copy = collector_status.get("borehole", {}) if isinstance(collector_status, dict) else {}
     controller_backup_rows.append({
-        "label": "Bore Hole",
+        "label": "Water & Power",
         "controller_key": "borehole",
         "last_backup": datetime.fromtimestamp(int(borehole_meta.get("last_backup_ts"))).strftime("%d %b %Y %H:%M:%S") if borehole_meta.get("last_backup_ts") not in [None, ""] else "--",
         "last_backup_status": str(borehole_meta.get("last_backup_status", "") or "--"),
@@ -12096,7 +12198,7 @@ def office_farm_health_view():
     office_copy_status = str(office_copy.get("last_status", "") or "--")
     office_copy_ok = office_copy_status != "--" and "failed" not in office_copy_status.lower()
     rows.append({
-        "label": "Bore Hole",
+        "label": "Water & Power",
         "heartbeat": heartbeat,
         "heartbeat_ok": heartbeat_ok,
         "pico": pico,
@@ -12294,10 +12396,10 @@ def restore_office_backup_borehole_view():
         return redirect(url_for("restore_office_backup_view", ok=0, msg="Backup not found"))
     try:
         restore_borehole_from_backup(path)
-        log_event("office", "borehole_restored", "Bore hole backup restored", detail=os.path.basename(path))
-        return redirect(url_for("restore_office_backup_view", ok=1, msg="Bore hole restored from backup"))
+        log_event("office", "borehole_restored", "Water & Power backup restored", detail=os.path.basename(path))
+        return redirect(url_for("restore_office_backup_view", ok=1, msg="Water & Power restored from backup"))
     except Exception as exc:
-        return redirect(url_for("restore_office_backup_view", ok=0, msg="Bore hole restore failed: %s" % exc))
+        return redirect(url_for("restore_office_backup_view", ok=0, msg="Water & Power restore failed: %s" % exc))
 
 
 @app.route("/backup/restore/controller-copy/shed", methods=["POST"])
@@ -12326,8 +12428,8 @@ def restore_controller_copy_borehole_view():
         return redirect(url_for("restore_office_backup_view", ok=0, msg="Controller copy not found"))
     try:
         restore_borehole_from_controller_backup(files[0])
-        log_event("office", "borehole_restored", "Bore hole restored from office-collected controller copy", detail=os.path.basename(files[0]))
-        return redirect(url_for("restore_office_backup_view", ok=1, msg="Bore hole restored from collected controller copy"))
+        log_event("office", "borehole_restored", "Water & Power restored from office-collected controller copy", detail=os.path.basename(files[0]))
+        return redirect(url_for("restore_office_backup_view", ok=1, msg="Water & Power restored from collected controller copy"))
     except Exception as exc:
         return redirect(url_for("restore_office_backup_view", ok=0, msg="Controller copy restore failed: %s" % exc))
 
@@ -12355,7 +12457,7 @@ def office_versions_view():
         i += 1
     borehole_meta = load_borehole_meta()
     controller_rows.append({
-        "label": "Bore Hole",
+        "label": "Water & Power",
         "app_version": str(borehole_meta.get("app_version", "") or "--"),
         "pico_local": str(borehole_meta.get("pico_local_hash", "") or "--"),
         "pico_deployed": str(borehole_meta.get("pico_deployed_hash", "") or "--"),
@@ -13226,6 +13328,51 @@ def borehole_sync_api_get():
     })
 
 
+PHASE_COLOURS = ["#8b5a2b", "#1f2933", "#8a96a3"]   # L1 brown, L2 black, L3 grey (UK wiring colours)
+BOREHOLE_POWER_MINUTES_FILE = "borehole_power_minutes.ndjson"
+BOREHOLE_POWER_MINUTES_KEEP = 8 * 24 * 60
+_borehole_power_lock = threading.Lock()
+
+
+def store_borehole_power_minutes(minutes):
+    with _borehole_power_lock:
+        rows = read_all_json_lines(BOREHOLE_POWER_MINUTES_FILE)
+        last_ts = max([int(r.get("ts") or 0) for r in rows] or [0])
+        new = [r for r in minutes if isinstance(r, dict) and int(r.get("ts") or 0) > last_ts]
+        new.sort(key=lambda r: int(r.get("ts") or 0))
+        for rec in new:
+            append_named_json_line(BOREHOLE_POWER_MINUTES_FILE, {"ts": int(rec["ts"]), "max_a": rec.get("max_a"), "avg_a": rec.get("avg_a")})
+        if len(rows) + len(new) > BOREHOLE_POWER_MINUTES_KEEP + 600:
+            write_named_json_lines_atomic(BOREHOLE_POWER_MINUTES_FILE, (rows + new)[-BOREHOLE_POWER_MINUTES_KEEP:])
+
+
+def phase_chart_series(rows, hours, fuse_amps=0):
+    """Line chart data for the last `hours`: each phase's highest amps per time slot."""
+    now = int(time.time())
+    slot = 300 if hours <= 24 else 1800
+    if hours <= 6:
+        slot = 60
+    start = (now - hours * 3600) // slot * slot
+    count = (now - start) // slot + 1
+    peaks = [[None] * count for _ in range(3)]
+    for rec in rows:
+        try:
+            idx = (int(rec["ts"]) - start) // slot
+        except Exception:
+            continue
+        if 0 <= idx < count:
+            for p in range(3):
+                v = (rec.get("max_a") or [None, None, None])[p]
+                if v is not None and (peaks[p][idx] is None or v > peaks[p][idx]):
+                    peaks[p][idx] = v
+    fmt = "%a %H:%M" if hours > 24 else "%H:%M"
+    labels = [datetime.fromtimestamp(start + i * slot).strftime(fmt) for i in range(count)]
+    series = [("L%d" % (p + 1), PHASE_COLOURS[p], peaks[p]) for p in range(3)]
+    if fuse_amps:
+        series.append(("Fuse %d A" % fuse_amps, "#d64545", [float(fuse_amps)] * count, True))
+    return labels, series
+
+
 @app.route("/api/borehole/sync", methods=["POST"])
 def borehole_sync_api_post():
     auth_error = require_controller_token("borehole")
@@ -13249,6 +13396,18 @@ def borehole_sync_api_post():
             "device": live.get("device"),
             "source": "borehole_controller",
         })
+        save_borehole_live(merged_live)
+
+    # Incoming three-phase supply from the Shelly 3EM the borehole controller reads.
+    power = payload.get("power")
+    if isinstance(power, dict):
+        # Each minute's peak amps per phase, for the phase chart (only minutes not already kept).
+        minutes = power.pop("minutes", None)
+        if isinstance(minutes, list) and minutes:
+            store_borehole_power_minutes(minutes)
+        merged_live = latest_borehole_live()
+        merged_live["power"] = power
+        merged_live["power_received_ts"] = int(time.time())
         save_borehole_live(merged_live)
 
     hourly = payload.get("hourly")
@@ -13346,7 +13505,17 @@ def borehole_detail():
     bh = office_home_context(tv=False).get("borehole", {})
     rows = get_borehole_hourly_history(max_points=24 * 45)
     bar_epochs, water_values = hourly_bar_series(rows, "water")
-    return render_template_string(BOREHOLE_DETAIL_HTML, bh=bh, bar_epochs=bar_epochs, water_values=water_values)
+    try:
+        phase_hours = int(request.args.get("hours", 24))
+    except Exception:
+        phase_hours = 24
+    phase_hours = phase_hours if phase_hours in [6, 24, 168] else 24
+    phase_chart = ""
+    if bh.get("has_power"):
+        labels, series = phase_chart_series(read_all_json_lines(BOREHOLE_POWER_MINUTES_FILE), phase_hours, bh.get("power_fuse") or 0)
+        phase_chart = line_chart_svg(labels, series, unit=" A", height=340)
+    return render_template_string(BOREHOLE_DETAIL_HTML, bh=bh, bar_epochs=bar_epochs, water_values=water_values,
+                                  phase_hours=phase_hours, phase_chart=phase_chart)
 
 
 @app.route("/borehole/<period>")
@@ -13381,7 +13550,13 @@ def line_chart_svg(labels, series, unit="", height=280):
         lo, hi = mid - 2, mid + 2
     pad = (hi - lo) * 0.08
     lo, hi = lo - pad, hi + pad
-    step = max(1, int(round((hi - lo) / 5.0)))
+    # A round step (1, 2, 5, 10, 20, 25, 50...) giving about five grid lines.
+    rough = (hi - lo) / 5.0
+    step = 1
+    for nice in [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000]:
+        step = nice
+        if nice >= rough:
+            break
     first_tick = int(lo // step + 1) * step
 
     def x_of(i):
@@ -13412,7 +13587,7 @@ def line_chart_svg(labels, series, unit="", height=280):
         if len(run) > 1:
             parts.append('<polyline points="%s" fill="none" stroke="%s" stroke-width="%s" stroke-linejoin="round" stroke-linecap="round"%s/>' % (" ".join(run), colour, "2" if dashed else "3", dash))
         for i, v in enumerate(vals):
-            if v is not None and not dashed:
+            if v is not None and not dashed and n <= 60:
                 parts.append('<circle cx="%.1f" cy="%.1f" r="3.5" fill="%s"/>' % (x_of(i), y_of(v), colour))
     parts.append("</svg>")
     return Markup("".join(parts))

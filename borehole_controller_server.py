@@ -1,4 +1,5 @@
 from flask import Flask, Response, jsonify, redirect, render_template_string, request, send_file, url_for
+from markupsafe import Markup, escape
 import hashlib
 import json
 import os
@@ -32,7 +33,17 @@ DEFAULT_CONFIG = {
     "water_low_lpm": 0.1,
     "water_pulses_per_litre": 450.0,
     "backup_keep": 6,
+    "shelly_host": "",
+    "supply_fuse_amps": 100,
+    "controller_phase": "",
 }
+PHASE_LOST_VOLTS = 100   # a phase reading below this has lost its supply (a blown fuse reads near 0 V)
+PHASE_COLOURS = ["#8b5a2b", "#1f2933", "#8a96a3"]   # L1 brown, L2 black, L3 grey (UK wiring colours)
+POWER_MINUTES_FILE = "power_minutes.ndjson"
+POWER_MINUTES_KEEP = 8 * 24 * 60
+# Shelly 3EM on the farm's three-phase incoming supply, read over the network.
+SHELLY_POLL_SECONDS = 5
+SHELLY_STALE_SECONDS = 60
 LOCAL_OFFICE_HEARTBEAT_SECONDS = 10
 LOCAL_BACKGROUND_SYNC_LOOP_SECONDS = 5
 SENSOR_STALE_SECONDS = 30
@@ -603,10 +614,38 @@ def mpremote_command():
     return [sys.executable, "-m", "mpremote"]
 
 
+def power_alarms(state, cfg):
+    """Supply alarms from the Shelly: a phase that has lost its voltage, or the Shelly going
+    silent (it is powered from one phase too). These stay on during commissioning: a lost
+    phase is real whatever mode the controller is in."""
+    if not str(cfg.get("shelly_host", "") or "").strip():
+        return []
+    power = state.get("power") if isinstance(state.get("power"), dict) else {}
+    try:
+        age = int(time.time()) - int(power.get("ts")) if power.get("ts") else None
+    except Exception:
+        age = None
+    if age is None or age > SHELLY_STALE_SECONDS:
+        return [{"alarm_key": "shelly_silent",
+                 "message": "Supply meter (Shelly) not responding. Check its phase has power."}]
+    alarms = []
+    for i, ph in enumerate((power.get("phases") or [])[:3]):
+        v = _num(ph.get("v")) if isinstance(ph, dict) else None
+        if v is not None and v < PHASE_LOST_VOLTS:
+            alarms.append({"alarm_key": "phase_lost_l%d" % (i + 1),
+                           "message": "L%d supply lost (%d V). Check the L%d fuse." % (i + 1, round(v), i + 1)})
+    return alarms
+
+
 def build_controller_alarms(state, cfg=None):
     cfg = cfg or load_config()
+    supply = power_alarms(state, cfg)
     if commissioning_mode_enabled(cfg):
-        return []
+        return supply
+    return supply + water_alarms(state, cfg)
+
+
+def water_alarms(state, cfg):
     sensors = state.get("sensors", {})
     alarms = []
     now_ts = int(time.time())
@@ -1071,7 +1110,17 @@ def push_current_state():
             "device": "borehole_controller",
         },
     }
-    return push_to_dashboard_payload(payload, state)
+    power = power_summary(state)
+    sent_minutes = []
+    if power:
+        payload["power"] = power["raw"]
+        sent_minutes = list(state.get("power_unsent") or [])
+        payload["power"]["minutes"] = sent_minutes
+    ok, msg = push_to_dashboard_payload(payload, state)
+    if ok and sent_minutes:
+        sent_ts = set(r.get("ts") for r in sent_minutes)
+        mutate_state(lambda s: s.update({"power_unsent": [r for r in (s.get("power_unsent") or []) if r.get("ts") not in sent_ts]}))
+    return ok, msg
 
 
 def maybe_heartbeat_to_dashboard(min_age_seconds=LOCAL_OFFICE_HEARTBEAT_SECONDS):
@@ -1096,6 +1145,447 @@ def background_sync_loop():
         time.sleep(LOCAL_BACKGROUND_SYNC_LOOP_SECONDS)
 
 
+def _shelly_get(host, path):
+    with urllib.request.urlopen("http://%s%s" % (host, path), timeout=4) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _num(value):
+    try:
+        return float(value) if value not in [None, ""] else None
+    except Exception:
+        return None
+
+
+def read_shelly_3em(host):
+    """One reading from a Shelly 3EM: the original 3EM (Gen1, /status) or the Pro 3EM /
+    3EM Gen3 (/rpc/EM.GetStatus). Returns per-phase volts, amps, watts and power factor,
+    total watts, and the meter's total energy in kWh."""
+    try:
+        em = _shelly_get(host, "/rpc/EM.GetStatus?id=0")
+    except Exception:
+        em = None
+    if isinstance(em, dict) and "total_act_power" in em:
+        phases = [{"v": _num(em.get(p + "_voltage")), "a": _num(em.get(p + "_current")),
+                   "w": _num(em.get(p + "_act_power")), "pf": _num(em.get(p + "_pf"))} for p in ["a", "b", "c"]]
+        total_kwh = None
+        try:
+            data = _shelly_get(host, "/rpc/EMData.GetStatus?id=0")
+            wh = _num(data.get("total_act"))
+            total_kwh = wh / 1000.0 if wh is not None else None
+        except Exception:
+            pass
+        return {"phases": phases, "total_w": _num(em.get("total_act_power")), "total_kwh": total_kwh, "model": "Pro 3EM"}
+    status = _shelly_get(host, "/status")
+    meters = status.get("emeters") if isinstance(status, dict) else None
+    if not isinstance(meters, list) or len(meters) < 3:
+        raise ValueError("Not a Shelly 3EM")
+    phases = [{"v": _num(m.get("voltage")), "a": _num(m.get("current")), "w": _num(m.get("power")), "pf": _num(m.get("pf"))} for m in meters[:3]]
+    totals = [_num(m.get("total")) for m in meters[:3]]
+    return {
+        "phases": phases,
+        "total_w": _num(status.get("total_power")) if status.get("total_power") is not None else sum(p["w"] or 0 for p in phases),
+        "total_kwh": (sum(totals) / 1000.0) if all(t is not None for t in totals) else None,
+        "model": "3EM",
+    }
+
+
+def poll_shelly_once():
+    host = str(load_config().get("shelly_host", "") or "").strip()
+    if not host:
+        return
+    host = host.replace("http://", "").replace("https://", "").strip("/")
+    try:
+        reading = read_shelly_3em(host)
+        reading["ts"] = int(time.time())
+        error = ""
+    except Exception as exc:
+        reading = None
+        error = str(exc)
+
+    finished_minutes = []
+
+    def mutator(state):
+        power = state.get("power") if isinstance(state.get("power"), dict) else {}
+        if reading is None:
+            power["error"] = error
+            power["error_ts"] = int(time.time())
+        else:
+            power.update(reading)
+            power["error"] = ""
+            amps = [_num(ph.get("a")) for ph in reading.get("phases", [])][:3]
+            # Highest amps on each phase today (fuses blow on the peaks).
+            today_key = datetime.now().strftime("%Y-%m-%d")
+            peak = power.get("peak_today") if isinstance(power.get("peak_today"), dict) else {}
+            if peak.get("date") != today_key:
+                peak = {"date": today_key, "a": [None, None, None], "at": [None, None, None]}
+            for i, a in enumerate(amps):
+                if a is not None and (peak["a"][i] is None or a > peak["a"][i]):
+                    peak["a"][i] = a
+                    peak["at"][i] = reading["ts"]
+            power["peak_today"] = peak
+            # Each minute's highest and average amps per phase, for the phase chart and the office.
+            minute = reading["ts"] // 60
+            bucket = power.get("minute") if isinstance(power.get("minute"), dict) else {}
+            if bucket.get("m") != minute:
+                if bucket.get("m") and bucket.get("n"):
+                    rec = {"ts": bucket["m"] * 60,
+                           "max_a": [round(x, 2) if x is not None else None for x in bucket["max"]],
+                           "avg_a": [round(t / bucket["n"], 2) for t in bucket["sum"]]}
+                    finished_minutes.append(rec)
+                    unsent = state.get("power_unsent") if isinstance(state.get("power_unsent"), list) else []
+                    state["power_unsent"] = (unsent + [rec])[-180:]
+                bucket = {"m": minute, "max": [None, None, None], "sum": [0.0, 0.0, 0.0], "n": 0}
+            for i, a in enumerate(amps):
+                if a is not None:
+                    bucket["max"][i] = a if bucket["max"][i] is None else max(bucket["max"][i], a)
+                    bucket["sum"][i] += a
+            bucket["n"] += 1
+            power["minute"] = bucket
+            # Today's use runs midnight to midnight from the meter's running total.
+            today = datetime.now().strftime("%Y-%m-%d")
+            if reading.get("total_kwh") is not None:
+                day = power.get("day") if isinstance(power.get("day"), dict) else {}
+                if day.get("date") != today:
+                    if day.get("date") and day.get("start_kwh") is not None:
+                        power["yesterday_kwh"] = round(reading["total_kwh"] - day["start_kwh"], 2)
+                    day = {"date": today, "start_kwh": reading["total_kwh"]}
+                power["day"] = day
+                power["today_kwh"] = round(reading["total_kwh"] - day["start_kwh"], 2)
+        state["power"] = power
+    mutate_state(mutator)
+    for rec in finished_minutes:
+        append_named_json_line(POWER_MINUTES_FILE, rec)
+    if finished_minutes and finished_minutes[-1]["ts"] % 3600 == 0:
+        trim_power_minutes()
+
+
+def trim_power_minutes():
+    rows = read_all_json_lines(POWER_MINUTES_FILE)
+    if len(rows) > POWER_MINUTES_KEEP:
+        path = os.path.join(DATA_DIR, POWER_MINUTES_FILE)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            for rec in rows[-POWER_MINUTES_KEEP:]:
+                f.write(json.dumps(rec) + "\n")
+        os.replace(tmp, path)
+
+
+def phase_chart_series(rows, hours, fuse_amps=0):
+    """Line chart data for the last `hours`: each phase's highest amps per time slot."""
+    now = int(time.time())
+    slot = 300 if hours <= 24 else 1800
+    if hours <= 6:
+        slot = 60
+    start = (now - hours * 3600) // slot * slot
+    count = (now - start) // slot + 1
+    peaks = [[None] * count for _ in range(3)]
+    for rec in rows:
+        try:
+            idx = (int(rec["ts"]) - start) // slot
+        except Exception:
+            continue
+        if 0 <= idx < count:
+            for p in range(3):
+                v = (rec.get("max_a") or [None, None, None])[p]
+                if v is not None and (peaks[p][idx] is None or v > peaks[p][idx]):
+                    peaks[p][idx] = v
+    fmt = "%a %H:%M" if hours > 24 else "%H:%M"
+    labels = [datetime.fromtimestamp(start + i * slot).strftime(fmt) for i in range(count)]
+    series = [("L%d" % (p + 1), PHASE_COLOURS[p], peaks[p]) for p in range(3)]
+    if fuse_amps:
+        series.append(("Fuse %d A" % fuse_amps, "#d64545", [float(fuse_amps)] * count, True))
+    return labels, series
+
+
+def shelly_loop():
+    while True:
+        try:
+            poll_shelly_once()
+        except Exception:
+            pass
+        time.sleep(SHELLY_POLL_SECONDS)
+
+
+def power_summary(state, cfg=None):
+    """The incoming supply for the screen and the office, or None when no Shelly is set."""
+    cfg = cfg or load_config()
+    if not str(cfg.get("shelly_host", "") or "").strip():
+        return None
+    power = state.get("power") if isinstance(state.get("power"), dict) else {}
+    try:
+        age = int(time.time()) - int(power.get("ts")) if power.get("ts") else None
+    except Exception:
+        age = None
+    live = age is not None and age <= SHELLY_STALE_SECONDS
+    phases = power.get("phases") if isinstance(power.get("phases"), list) else []
+    try:
+        fuse = float(cfg.get("supply_fuse_amps") or 0)
+    except Exception:
+        fuse = 0.0
+    peak = power.get("peak_today") if isinstance(power.get("peak_today"), dict) else {}
+    if peak.get("date") != datetime.now().strftime("%Y-%m-%d"):
+        peak = {}
+    rows = []
+    for i, name in enumerate(["L1", "L2", "L3"]):
+        ph = phases[i] if i < len(phases) and isinstance(phases[i], dict) else {}
+        w = _num(ph.get("w"))
+        a = _num(ph.get("a")) if live else None
+        peak_a = (peak.get("a") or [None, None, None])[i] if peak else None
+        peak_at = (peak.get("at") or [None, None, None])[i] if peak else None
+        rows.append({
+            "name": name,
+            "colour": PHASE_COLOURS[i],
+            "v": fmt_value(ph.get("v"), "f0") if live else "--",
+            "a": fmt_value(a, "f1"),
+            "kw": fmt_value(w / 1000.0 if w is not None else None, "f2") if live else "--",
+            "peak_a": fmt_value(peak_a, "f1"),
+            "peak_at": datetime.fromtimestamp(peak_at).strftime("%H:%M") if peak_at else "",
+            # Over 90% of the fuse rating shows red.
+            "hot": bool(fuse and a is not None and a >= 0.9 * fuse),
+        })
+    total_w = _num(power.get("total_w"))
+    return {
+        "live": live,
+        "status": "Live" if live else ("No reading" + (" (%s)" % power.get("error") if power.get("error") else "")),
+        "total_kw": fmt_value(total_w / 1000.0 if (live and total_w is not None) else None, "f2"),
+        "today_kwh": fmt_value(power.get("today_kwh"), "f1"),
+        "yesterday_kwh": fmt_value(power.get("yesterday_kwh"), "f1"),
+        "phases": rows,
+        "fuse_amps": int(fuse) if fuse else 0,
+        "ts": power.get("ts"),
+        # Raw numbers for the office.
+        "raw": {
+            "total_w": total_w if live else None,
+            "today_kwh": power.get("today_kwh"),
+            "yesterday_kwh": power.get("yesterday_kwh"),
+            "phases": [{k: _num(p.get(k)) for k in ["v", "a", "w", "pf"]} for p in phases if isinstance(p, dict)] if live else [],
+            "peak_today": peak or None,
+            "fuse_amps": int(fuse) if fuse else 0,
+            "controller_phase": str(cfg.get("controller_phase", "") or ""),
+            "ts": power.get("ts"),
+        },
+    }
+
+
+def line_chart_svg(labels, series, unit="", height=280):
+    """A simple line graph as inline SVG (no chart library, so it works on the shed screens
+    and old TV browsers). series: [(name, colour, values[, dashed])], values line up with labels and may
+    hold None for a missing day (the line joins the days either side)."""
+    width, left, right, top, bottom = 1000, 52, 34, 34, 34
+    plot_w, plot_h = width - left - right, height - top - bottom
+    values = [v for item in series for v in item[2] if v is not None]
+    n = len(labels)
+    if not values or n == 0:
+        return Markup('<div class="chart-empty">No readings yet.</div>')
+    lo, hi = min(values), max(values)
+    if hi - lo < 4:
+        mid = (hi + lo) / 2.0
+        lo, hi = mid - 2, mid + 2
+    pad = (hi - lo) * 0.08
+    lo, hi = lo - pad, hi + pad
+    # A round step (1, 2, 5, 10, 20, 25, 50...) giving about five grid lines.
+    rough = (hi - lo) / 5.0
+    step = 1
+    for nice in [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000]:
+        step = nice
+        if nice >= rough:
+            break
+    first_tick = int(lo // step + 1) * step
+
+    def x_of(i):
+        return left + (plot_w / 2.0 if n == 1 else plot_w * i / float(n - 1))
+
+    def y_of(v):
+        return top + plot_h * (1 - (v - lo) / float(hi - lo))
+
+    parts = ['<svg class="line-chart" viewBox="0 0 %d %d" role="img">' % (width, height)]
+    tick = first_tick
+    while tick < hi:
+        y = y_of(tick)
+        parts.append('<line x1="%d" x2="%d" y1="%.1f" y2="%.1f" stroke="#dbe3ec" stroke-width="1"/>' % (left, width - right, y, y))
+        parts.append('<text x="%d" y="%.1f" text-anchor="end" font-size="13" fill="#4a6078">%s%s</text>' % (left - 8, y + 4, tick, unit))
+        tick += step
+    every = max(1, int(round(n / 10.0)))
+    for i, label in enumerate(labels):
+        if i % every == 0 or i == n - 1:
+            parts.append('<text x="%.1f" y="%d" text-anchor="middle" font-size="13" fill="#4a6078">%s</text>' % (x_of(i), height - 10, escape(label)))
+    lx = left
+    for item in series:
+        name, colour, vals = item[0], item[1], item[2]
+        dashed = len(item) > 3 and item[3]
+        dash = ' stroke-dasharray="8 6"' if dashed else ""
+        parts.append('<line x1="%d" x2="%d" y1="10" y2="10" stroke="%s" stroke-width="4"%s/><text x="%d" y="15" font-size="14" font-weight="600" fill="#0d2b4a">%s</text>' % (lx, lx + 16, colour, ' stroke-dasharray="5 3"' if dashed else "", lx + 22, escape(name)))
+        lx += 36 + 8 * len(name)
+        run = ["%.1f,%.1f" % (x_of(i), y_of(v)) for i, v in enumerate(vals) if v is not None]
+        if len(run) > 1:
+            parts.append('<polyline points="%s" fill="none" stroke="%s" stroke-width="%s" stroke-linejoin="round" stroke-linecap="round"%s/>' % (" ".join(run), colour, "2" if dashed else "3", dash))
+        for i, v in enumerate(vals):
+            if v is not None and not dashed and n <= 60:
+                parts.append('<circle cx="%.1f" cy="%.1f" r="3.5" fill="%s"/>' % (x_of(i), y_of(v), colour))
+    parts.append("</svg>")
+    return Markup("".join(parts))
+
+
+# Page look shared with the shed controllers (their ENTRY_PAGE_HEAD).
+PAGE_HEAD = """
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <meta name="cdf-theme-native" content="1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@500;600&display=swap">
+    <style>
+        :root {
+            --page: #eef2f6; --card: #ffffff; --card-2: #f5f8fb; --rule: #d5dde6; --track: #dbe3ec;
+            --navy: #0b3a6b; --text: #0d2b4a; --muted: #4a6078; --soft: #31475e;
+            --green: #2f9e3a; --amber: #f08a12; --red: #d64545;
+        }
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        body { margin: 0; min-height: 100vh; background: var(--page); color: var(--text); font-family: "Barlow", "Helvetica Neue", Helvetica, sans-serif; }
+        .cond { font-family: "Barlow Semi Condensed", "Barlow", "Helvetica Neue", Helvetica, sans-serif; }
+        .topbar { min-height: 64px; background: #ffffff; padding: 10px 28px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--rule); }
+        .back { display: flex; align-items: center; justify-content: center; min-height: 48px; padding: 0 16px; border-radius: 12px; border: 1px solid #c5d0dc; background: var(--card); color: var(--text); text-decoration: none; font-size: 17px; font-weight: 600; white-space: nowrap; }
+        .title { margin-left: 6px; font-size: 34px; font-weight: 600; color: var(--navy); }
+        .brand-logo { height: 44px; width: auto; display: block; margin-left: auto; }
+        .wrap { max-width: 1200px; margin: 0 auto; padding: 16px 24px 24px; }
+        .msg { margin-bottom: 14px; padding: 12px 16px; border-radius: 12px; background: #e3f4e1; border: 1px solid #9fd39a; color: #1e6b16; font-size: 17px; font-weight: 600; }
+        .msg.error { background: #fdecec; border-color: #e3a0a0; color: #8f1f1f; }
+        .section-title { margin: 0 0 8px 4px; font-size: 14px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+        section + section { margin-top: 20px; }
+        .card { border-radius: 14px; background: var(--card); padding: 18px; }
+        .hint { font-size: 15px; color: var(--muted); line-height: 1.35; }
+        .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
+        .stat { border-radius: 14px; background: var(--card); padding: 14px 18px; }
+        .stat-label { font-size: 14px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+        .stat-value { margin-top: 2px; font-size: 32px; font-weight: 600; color: var(--navy); line-height: 1.1; }
+        .stat-sub { font-size: 14px; color: var(--muted); }
+        .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 14px; font-weight: 600; background: var(--card-2); color: var(--muted); }
+        .pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+        .pill.on { background: #e3f4e1; color: #1e6b16; } .pill.on::before { background: var(--green); }
+        .pill.wait { background: #fff4e5; color: #9a4b00; } .pill.wait::before { background: var(--amber); }
+        .pill.bad { background: #fdecec; color: #8f1f1f; } .pill.bad::before { background: var(--red); }
+        label.field { display: block; font-size: 14px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; margin: 0 0 6px 2px; }
+        input[type="number"], input[type="text"], select {
+            width: 100%; min-height: 60px; padding: 0 16px; border-radius: 12px; border: 1px solid #c5d0dc;
+            background: var(--card-2); color: var(--text); font-family: inherit; font-size: 22px; font-weight: 600;
+        }
+        input[type="text"], select { font-size: 19px; font-weight: 500; }
+        input:focus, select:focus { outline: none; border-color: var(--navy); background: #ffffff; }
+        button {
+            width: 100%; min-height: 60px; border-radius: 12px; border: 1px solid #c5d0dc; background: var(--card-2);
+            color: var(--text); font-family: inherit; font-size: 18px; font-weight: 600; cursor: pointer; white-space: nowrap;
+        }
+        button:active { background: var(--track); }
+        button:disabled { opacity: 0.4; cursor: default; }
+        button.primary { background: var(--navy); color: #ffffff; border-color: var(--navy); }
+        button.primary:active { background: var(--text); }
+        button.go { background: var(--green); color: #ffffff; border-color: var(--green); }
+        button.danger { background: #fdecec; border-color: #e3a0a0; color: #8f1f1f; }
+        form { margin: 0; }
+        .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+        .col { display: flex; flex-direction: column; gap: 20px; }
+        .col > section + section { margin-top: 0; }
+        .card.form { display: grid; gap: 12px; }
+        .now { display: flex; align-items: baseline; gap: 8px; }
+        .now b { font-size: 56px; font-weight: 600; color: var(--navy); line-height: 1; }
+        .now span { font-size: 22px; color: var(--muted); font-weight: 600; }
+        .now.ok b { color: var(--green); } .now.warn b { color: var(--amber); } .now.alarm b { color: var(--red); }
+        .details { margin-top: 10px; }
+        .detail { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--track); font-size: 17px; }
+        .detail > span:first-child { color: var(--muted); }
+        .detail > span:last-child { font-weight: 600; text-align: right; }
+        .inline { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
+        .inline button { width: auto; min-width: 150px; padding: 0 22px; }
+        .link-item { display: flex; align-items: center; justify-content: space-between; min-height: 54px; padding: 0 18px; border-radius: 14px; background: var(--card); color: var(--text); text-decoration: none; font-size: 18px; font-weight: 500; }
+        .link-item span:last-child { color: var(--muted); font-size: 22px; }
+        .table-wrap { overflow: auto; border-radius: 12px; border: 1px solid var(--track); }
+        table { width: 100%; border-collapse: collapse; font-size: 15px; }
+        th, td { padding: 9px 10px; border-top: 1px solid var(--track); text-align: left; vertical-align: top; }
+        thead th { border-top: 0; background: var(--card-2); font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+        a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid var(--navy); outline-offset: 2px; }
+        @media (max-width: 860px) {
+            .topbar { padding: 10px 16px; }
+            .title { font-size: 26px; }
+            .brand-logo { display: none; }
+            .wrap { padding: 14px 16px 20px; }
+            .stats { grid-template-columns: 1fr 1fr; }
+            .cols { grid-template-columns: 1fr; }
+        }
+        .list { border-radius: 14px; background: var(--card); overflow: hidden; }
+        .item { display: flex; align-items: center; gap: 12px; min-height: 50px; padding: 0 18px; color: var(--text); text-decoration: none; font-size: 18px; font-weight: 500; border-top: 1px solid var(--track); }
+        .item:first-child { border-top: 0; }
+        .item:active { background: var(--card-2); }
+        .item-sub { margin-left: auto; font-size: 15px; color: var(--muted); }
+        .chev { color: var(--muted); font-size: 22px; line-height: 1; }
+        .badge { margin-left: auto; min-width: 26px; padding: 2px 8px; border-radius: 999px; background: var(--red); color: #ffffff; font-size: 14px; font-weight: 600; text-align: center; }
+        .card.stack { display: flex; flex-direction: column; gap: 12px; }
+        .row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 16px; }
+        .row-label { color: var(--muted); }
+        .status { font-size: 18px; font-weight: 600; }
+        .status.is-busy { color: var(--amber); }
+        .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .mode-chip { padding: 4px 12px; border-radius: 999px; font-size: 15px; font-weight: 600; color: #ffffff; background: var(--amber); }
+        .mode-chip.live { background: var(--green); }
+        details summary { cursor: pointer; color: var(--muted); font-size: 15px; min-height: 32px; display: flex; align-items: center; }
+        details .row { margin-top: 6px; font-size: 15px; }
+        .mono { font-family: ui-monospace, Menlo, monospace; font-size: 14px; word-break: break-all; }
+        .ok-text { color: #1e6b16; } .bad-text { color: #8f1f1f; }
+    </style>
+"""
+
+
+POWER_HISTORY_HTML = """
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Phase load</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<style>
+  body { margin:0; background:#eef2f6; color:#0d2b4a; font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; }
+  .wrap { max-width:1100px; margin:0 auto; padding:14px 18px; }
+  .top { display:flex; align-items:center; gap:12px; margin-bottom:12px; flex-wrap:wrap; }
+  .top a { display:inline-flex; align-items:center; min-height:44px; padding:0 16px; border-radius:12px; border:1px solid #c5d0dc; background:#fff; color:#0d2b4a; text-decoration:none; font-weight:700; }
+  .top a.on { background:#0b3a6b; color:#fff; border-color:#0b3a6b; }
+  h1 { margin:0 8px 0 4px; font-size:28px; }
+  .card { background:#fff; border-radius:14px; padding:14px 18px; margin-bottom:12px; }
+  .line-chart { display:block; width:100%; height:auto; }
+  .chart-empty { padding:30px 0; text-align:center; color:#4a6078; }
+  .peaks { display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; }
+  .peaks div { border-radius:12px; background:#f5f8fb; padding:8px 12px; font-size:15px; color:#4a6078; }
+  .peaks b { font-size:24px; color:#0d2b4a; }
+  .hint { font-size:14px; color:#4a6078; }
+</style></head><body><div class="wrap">
+  <div class="top">
+    <a href="{{ url_for('index') }}">← Back</a>
+    <h1>Phase load</h1>
+    {% for h in [6, 24, 168] %}<a class="{{ 'on' if h == hours else '' }}" href="{{ url_for('power_history_view', hours=h) }}">{{ '7 days' if h == 168 else (h|string ~ ' hours') }}</a>{% endfor %}
+  </div>
+  <div class="card">
+    <div class="peaks">
+      {% for ph in phases %}<div style="border-top:5px solid {{ ph.colour }}">{{ ph.name }} now <b>{{ ph.a }}</b> A<br>Peak today {{ ph.peak_a }} A {{ ph.peak_at }}</div>{% endfor %}
+    </div>
+  </div>
+  <div class="card">
+    <div class="hint" style="margin-bottom:6px">Highest amps on each phase{% if hours <= 6 %} each minute{% elif hours <= 24 %} in each 5 minutes{% else %} in each half hour{% endif %}.{% if fuse_amps %} Red dashed line is the {{ fuse_amps }} A fuse.{% endif %}</div>
+    {{ chart }}
+  </div>
+</div></body></html>
+"""
+
+
+@app.route("/history/power")
+def power_history_view():
+    try:
+        hours = int(request.args.get("hours", 24))
+    except Exception:
+        hours = 24
+    hours = hours if hours in [6, 24, 168] else 24
+    cfg = load_config()
+    summary = power_summary(load_state(), cfg) or {"phases": [], "fuse_amps": 0}
+    rows = read_all_json_lines(POWER_MINUTES_FILE)
+    labels, series = phase_chart_series(rows, hours, summary.get("fuse_amps", 0))
+    return render_template_string(
+        POWER_HISTORY_HTML, hours=hours, phases=summary["phases"], fuse_amps=summary.get("fuse_amps", 0),
+        chart=line_chart_svg(labels, series, unit=" A", height=340),
+    )
+
+
 def require_office_token():
     expected = str(load_config().get("sync_token", "") or "").strip()
     if not expected:
@@ -1104,6 +1594,14 @@ def require_office_token():
     if provided != expected:
         return jsonify({"ok": False, "error": "Unauthorized"}), 401
     return None
+
+
+def water_week_total():
+    # The last 7 completed 6am-to-6am days, from this controller's own hourly log.
+    days = get_daily_history(max_days=7)
+    if not days:
+        return "--"
+    return fmt_value(sum(float(d.get("water") or 0) for d in days), "f0")
 
 
 def home_context():
@@ -1159,6 +1657,11 @@ def home_context():
         "log_class": log_class,
         "log_short": "OK" if log_class == "ok" else "WAIT",
         "current_datetime": datetime.now().strftime("%d %b %Y %H:%M:%S"),
+        "clock_hm": datetime.now().strftime("%H:%M"),
+        "clock_date": "%s %d %s" % (datetime.now().strftime("%a"), datetime.now().day, datetime.now().strftime("%b")),
+        "water_week": water_week_total(),
+        "alarm_count": len(alarms),
+        "power": power_summary(state, cfg),
     }
 
 
@@ -1167,155 +1670,185 @@ HOME_HTML = """
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Bore Hole Controller</title>
+  <title>Water &amp; Power</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <meta name="cdf-theme-native" content="1">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Semi+Condensed:wght@500;600;700&display=swap">
   <style>
-    :root { --bg:#5b5b5b; --panel:rgba(115,115,115,0.96); --panel2:rgba(104,104,104,0.98); --line:#8a8a8a; --text:#ececec; --muted:#d2d2d2; }
-    body { margin:0; background: var(--bg); color: var(--text); font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; }
-    .wrap { max-width:1024px; margin:0 auto; padding:18px; }
-    .panel { background: var(--panel); border: 1px solid var(--line); border-radius:20px; padding:18px; }
-    h1 { margin:0; font-size:40px; line-height:1; }
-    h1.active {
-      text-shadow: 0 0 10px rgba(47,158,58,0.52),0 0 20px rgba(47,158,58,0.36),0 0 34px rgba(47,158,58,0.19);
-    }
-    h1.inactive {
-      text-shadow: 0 0 10px rgba(214,69,69,0.52),0 0 20px rgba(214,69,69,0.36),0 0 34px rgba(214,69,69,0.19);
-    }
-    .title-row { display:flex; align-items:center; justify-content:space-between; gap:16px; }
-    .hero-datetime { font-size:18px; font-weight:700; }
-    .hero-datetime.active {
-      text-shadow: 0 0 10px rgba(47,158,58,0.52),0 0 20px rgba(47,158,58,0.36),0 0 34px rgba(47,158,58,0.19);
-    }
-    .hero-datetime.inactive {
-      text-shadow: 0 0 10px rgba(214,69,69,0.52),0 0 20px rgba(214,69,69,0.36),0 0 34px rgba(214,69,69,0.19);
-    }
-    .hero-pills { margin-top:14px; }
-    .pill-grid { display:grid; grid-template-columns:repeat(6, minmax(0,1fr)); gap:8px; }
-    .pill { border-radius:14px; border: 1px solid var(--line); background: var(--panel2); padding:7px 8px; min-height:44px; display:flex; flex-direction:column; justify-content:center; align-items:center; }
-    .pill-label { font-size:9px; letter-spacing:0.08em; text-transform:uppercase; color: var(--muted); }
-    .pill-value { font-size:12px; font-weight:700; color: var(--text); }
-    .pill.ok { border-color: #2f9e3a; box-shadow: 0 0 10px rgba(47,158,58,0.15); }
-    .pill.bad { border-color: #d64545; box-shadow: 0 0 10px rgba(214,69,69,0.13); }
-    .top-grid { margin-top:16px; display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-    .metric-link { color: inherit; text-decoration:none; display:block; }
-    .metric { min-height:188px; border-radius:20px; padding:16px; background: var(--panel); border: 1px solid var(--line); }
-    .metric-label { color: var(--muted); font-size:14px; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:12px; }
-    .metric-val { font-size:42px; font-weight:700; line-height:1; }
-    .metric-sub { margin-top:10px; font-size:15px; color: var(--muted); }
-    .metric.flow-green { border-color: #2f9e3a; box-shadow: 0 0 10px rgba(47,158,58,0.52),0 0 20px rgba(47,158,58,0.36),0 0 34px rgba(47,158,58,0.19); }
-    .metric.flow-red { border-color: #d64545; box-shadow: 0 0 10px rgba(214,69,69,0.52),0 0 20px rgba(214,69,69,0.36),0 0 34px rgba(214,69,69,0.19); }
-    .settings-row { margin-top:16px; }
-    .settings-button { display:flex; align-items:center; justify-content:center; gap:14px; min-height:98px; border-radius:16px; border: 1px solid var(--line); background: #ffffff; color: var(--text); text-decoration:none; font-size:26px; font-weight:700; }
-    .msg { margin-bottom:14px; padding:10px 12px; border-radius:12px; background: var(--panel); border: 1px solid var(--line); }
-    @media (min-width: 901px) and (max-width: 1100px) and (max-height: 700px) {
-      .wrap { padding:10px 12px 12px; }
-      .panel { border-radius:16px; padding:12px; }
-      h1 { font-size:32px; }
-      .hero-datetime { font-size:15px; }
-      .hero-pills { margin-top:10px; }
-      .pill-grid { gap:5px; }
-      .pill { min-height:38px; padding:5px 7px; border-radius:12px; }
-      .pill-label { font-size:7px; }
-      .pill-value { font-size:11px; }
-      .top-grid { margin-top:10px; gap:10px; }
-      .metric { min-height:120px; border-radius:16px; padding:10px; }
-      .metric-label { margin-bottom:8px; font-size:12px; }
-      .metric-val { font-size:30px; }
-      .metric-sub { margin-top:6px; font-size:12px; }
-      .settings-row { margin-top:10px; }
-      .settings-button { min-height:68px; border-radius:14px; font-size:20px; }
-      .msg { margin-bottom:10px; padding:10px 12px; border-radius:14px; font-size:15px; }
-    }
-    @media (max-width:900px) { .pill-grid,.top-grid { grid-template-columns:1fr; } }
+    :root { --page:#eef2f6; --card:#ffffff; --card-2:#f5f8fb; --rule:#d5dde6; --text:#0d2b4a; --muted:#4a6078; --soft:#31475e; --navy:#0b3a6b;
+            --green:#2f9e3a; --amber:#f08a12; --red:#d64545; }
+    * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+    body { margin:0; min-height:100vh; background:var(--page); color:var(--text); font-family:"Barlow","Helvetica Neue",Helvetica,sans-serif; }
+    .cond { font-family:"Barlow Semi Condensed","Barlow","Helvetica Neue",Helvetica,sans-serif; }
+    .page { display:flex; flex-direction:column; min-height:100vh; }
+    /* Header: the same as the shed controllers. */
+    .topbar { min-height:76px; padding:10px 28px; display:flex; align-items:center; gap:18px; border-bottom:1px solid var(--rule); background:#ffffff; flex-wrap:nowrap; }
+    .brand-logo { height:48px; width:auto; display:block; }
+    .hdr-div { flex:0 0 3px; width:3px; height:48px; background:#7f93a9; }
+    .name-box { flex:1 1 auto; display:flex; align-items:center; justify-content:center; align-self:stretch; padding:0 18px; border-radius:12px; border:2px solid var(--rule);
+                font-size:30px; font-weight:600; white-space:nowrap; transition:border-color .4s, box-shadow .4s; }
+    .name-box.active { border-color:#2f9e3a; box-shadow:0 0 6px rgba(47,158,58,0.5), 0 0 14px rgba(47,158,58,0.25); }
+    .name-box.inactive { border-color:#d64545; box-shadow:0 0 6px rgba(214,69,69,0.5), 0 0 14px rgba(214,69,69,0.25); }
+    .hdr-when { display:flex; align-items:baseline; gap:12px; white-space:nowrap; }
+    .hdr-date { font-size:20px; font-weight:600; }
+    .clock { font-size:38px; font-weight:700; color:var(--navy); line-height:1; }
+    .msg { margin:12px 24px 0; padding:10px 14px; border-radius:12px; background:var(--card); border:1px solid var(--rule); font-weight:600; }
+    /* Water on the left, power on the right. */
+    .split { flex:1; padding:14px 24px 12px; display:grid; grid-template-columns:1fr 1fr; gap:16px; min-height:0; }
+    .split.no-power { grid-template-columns:1fr; }
+    .col { display:flex; flex-direction:column; gap:8px; min-width:0; }
+    .col-title { font-size:14px; letter-spacing:0.08em; text-transform:uppercase; font-weight:700; color:var(--muted); margin-left:4px; }
+    .tile { flex:1; display:flex; flex-direction:column; gap:8px; border-radius:16px; padding:14px 18px; background:var(--card); border:2px solid var(--rule); color:var(--text); text-decoration:none; transition:border-color .3s, box-shadow .3s; }
+    .tile.flow-green { border-color:#2f9e3a; box-shadow:0 0 8px rgba(47,158,58,0.6), 0 0 18px rgba(47,158,58,0.3); }
+    .tile.flow-red { border-color:#d64545; box-shadow:0 0 8px rgba(214,69,69,0.6), 0 0 18px rgba(214,69,69,0.3); }
+    .tile-label { font-size:15px; color:var(--soft); }
+    .label-row { display:flex; justify-content:space-between; gap:10px; }
+    .label-row span:last-child { color:var(--muted); }
+    .big { font-size:52px; font-weight:600; line-height:1; white-space:nowrap; }
+    .big small { font-size:22px; color:var(--muted); font-weight:500; }
+    .rows { display:flex; flex-direction:column; }
+    /* The big figures sit centred in the space between the tile label and the totals below. */
+    .mid { margin:auto 0; } .mid-top { margin-top:auto; } .mid-bottom { margin-bottom:auto; }
+    .row { display:flex; justify-content:space-between; align-items:baseline; padding:6px 0; border-top:1px solid #dbe3ec; font-size:16px; }
+    .row span:first-child { color:var(--muted); }
+    .row b { font-size:24px; font-weight:600; }
+    .row b small { font-size:15px; color:var(--muted); font-weight:500; }
+    .tile-sub { font-size:14px; color:var(--muted); }
+    .phase-grid { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:8px; }
+    .phase-grid.bottom { margin-top:0; }
+    .phase { border-radius:12px; border:1px solid var(--rule); background:var(--card-2); padding:6px 10px; font-size:14px; color:var(--muted); line-height:1.25; }
+    .phase-name { font-size:13px; letter-spacing:0.08em; text-transform:uppercase; font-weight:700; color:var(--navy); }
+    .phase-amps b { font-size:26px; font-weight:600; color:var(--text); }
+    .phase.hot { background:#fdecec; border-color:#d64545; }
+    .phase.hot .phase-amps b { color:#c62828; }
+    /* Bottom buttons, like the shed controllers. */
+    .nav { padding:0 24px 16px; display:flex; gap:12px; }
+    .nav a { flex:1 1 0; min-height:56px; display:flex; align-items:center; justify-content:center; gap:8px; border:1px solid #c5d0dc; border-radius:12px;
+             background:var(--card); color:var(--text); font-size:18px; font-weight:500; text-decoration:none; }
+    .nav a.alarm-on { background:var(--red); border-color:var(--red); color:#ffffff; font-weight:600; }
+    .nav-badge { min-width:24px; padding:1px 7px; border-radius:999px; background:var(--red); color:#ffffff; font-size:14px; font-weight:600; text-align:center; }
+    .nav a.alarm-on .nav-badge { background:#ffffff; color:var(--red); }
+    @media (max-width:900px) { .split { grid-template-columns:1fr; } .topbar { flex-wrap:wrap; } .hdr-div { display:none; } }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    {% if msg and not hide_home_alerts %}<div class="msg">{{ msg }}</div>{% endif %}
-    <div class="panel">
-      <div class="title-row">
-        <div style="display: flex; align-items: center; gap: 16px">
-            <img src="/static/stocksense-logo.png" alt="StockSense, Smarter Livestock Monitoring" style="height: 52px; width: auto; display: block">
-            <h1 id="headerTitle" class="{{ header_class }}" style="padding-left: 16px; border-left: 1px solid #d5dde6">Bore Hole</h1>
+<div class="page">
+  <header class="topbar">
+    <img class="brand-logo" src="/static/stocksense-logo.png" alt="StockSense, Smarter Livestock Monitoring">
+    <span class="hdr-div" aria-hidden="true"></span>
+    <div class="name-box cond {{ header_class }}" id="nameBox">Water &amp; Power</div>
+    <span class="hdr-div" aria-hidden="true"></span>
+    <div class="hdr-when"><span class="hdr-date" id="clockDate">{{ clock_date }}</span><span class="clock cond" id="clockValue">{{ clock_hm }}</span></div>
+  </header>
+  {% if msg and not hide_home_alerts %}<div class="msg">{{ msg }}</div>{% endif %}
+
+  <main class="split{{ ' no-power' if not power else '' }}">
+    <section class="col" aria-label="Water">
+      <div class="col-title">Water</div>
+      <a class="tile {{ water_glow }}" id="waterTile" href="{{ url_for('water_history_view') }}">
+        <div class="tile-label">Water now</div>
+        <div class="big cond mid"><span id="waterValue">{{ water_lpm }}</span> <small>L/min</small></div>
+        <div class="rows">
+          <div class="row"><span>Yesterday 6am to 6am</span><b class="cond"><span id="water7to7Value">{{ water_7to7 }}</span> <small>L</small></b></div>
+          <div class="row"><span>Last 7 days</span><b class="cond"><span id="waterWeekValue">{{ water_week }}</span> <small>L</small></b></div>
         </div>
-        <div id="dateTime" class="hero-datetime {{ header_class }}">{{ current_datetime }}</div>
-      </div>
-      <div class="hero-pills">
-        <div class="pill-grid">
-          <div id="alarmPill" class="pill {{ alarm_class }}"><span class="pill-label">Alarm</span><span class="pill-value" id="alarmValue">{{ alarm_short }}</span></div>
-          <div id="officePill" class="pill {{ office_class }}"><span class="pill-label">Office Link</span><span class="pill-value" id="officeValue">{{ office_short }}</span></div>
-          <div id="syncPill" class="pill {{ sync_class }}"><span class="pill-label">Office Sync</span><span class="pill-value" id="syncValue">{{ sync_short }}</span></div>
-          <div id="picoPill" class="pill {{ pico_class }}"><span class="pill-label">Pico</span><span class="pill-value" id="picoValue">{{ pico_short }}</span></div>
-          <div id="pushPill" class="pill {{ push_class }}"><span class="pill-label">Update</span><span class="pill-value" id="pushValue">{{ push_short }}</span></div>
-          <div id="logPill" class="pill {{ log_class }}"><span class="pill-label">Logging</span><span class="pill-value" id="logValue">{{ log_short }}</span></div>
-        </div>
-      </div>
-    </div>
-    <div class="top-grid">
-      <a class="metric-link" href="{{ url_for('water_settings_view') }}">
-        <div id="waterTile" class="metric {{ water_glow }}">
-          <div class="metric-label">Water L/PM</div>
-          <div id="waterValue" class="metric-val">{{ water_lpm }}</div>
-          <div class="metric-sub">Live water flow</div>
-        </div>
+        <div class="tile-sub">Tap for water history</div>
       </a>
-      <a class="metric-link" href="{{ url_for('water_history_view') }}">
-        <div class="metric">
-          <div class="metric-label">Water Yesterday 6am-6am</div>
-          <div id="water7to7Value" class="metric-val">{{ water_7to7 }}</div>
-          <div class="metric-sub">Litres</div>
+    </section>
+    {% if power %}
+    <section class="col" aria-label="Power">
+      <div class="col-title">Power</div>
+      <a class="tile {{ 'flow-green' if power.live else 'flow-red' }}" id="powerTile" href="{{ url_for('power_history_view') }}">
+        <div class="tile-label label-row"><span>Incoming supply</span><span><span id="powerStatus">{{ power.status }}</span>{% if power.fuse_amps %} · {{ power.fuse_amps }} A fuse{% endif %}</span></div>
+        <div class="big cond mid"><span id="powerTotal">{{ power.total_kw }}</span> <small>kW</small></div>
+        <div class="rows">
+          <div class="row"><span>Today since midnight</span><b class="cond"><span id="powerToday">{{ power.today_kwh }}</span> <small>kWh</small></b></div>
+          <div class="row"><span>Yesterday</span><b class="cond"><span id="powerYesterday">{{ power.yesterday_kwh }}</span> <small>kWh</small></b></div>
         </div>
+        <div class="phase-grid bottom">
+          {% for ph in power.phases %}
+          <div class="phase {{ 'hot' if ph.hot else '' }}" id="ph{{ loop.index0 }}box" style="border-top: 5px solid {{ ph.colour }}">
+            <div class="phase-name">{{ ph.name }}</div>
+            <div class="phase-amps"><b class="cond" id="ph{{ loop.index0 }}a">{{ ph.a }}</b> A</div>
+            <div><span id="ph{{ loop.index0 }}v">{{ ph.v }}</span> V · <span id="ph{{ loop.index0 }}kw">{{ ph.kw }}</span> kW</div>
+            <div>Peak <b id="ph{{ loop.index0 }}peak">{{ ph.peak_a }}</b> A <span id="ph{{ loop.index0 }}peakat">{{ ph.peak_at }}</span></div>
+          </div>
+          {% endfor %}
+        </div>
+        <div class="tile-sub">Tap for the phase chart</div>
       </a>
-    </div>
-    <div class="settings-row">
-      <a class="settings-button" href="{{ url_for('settings_view') }}"><span>&#9881;</span><span>Settings</span></a>
-    </div>
-  </div>
-  <script>
-    function setText(id, value) { const el=document.getElementById(id); if(el) el.textContent=value; }
-    function setPillClass(id, cls) {
-      const el=document.getElementById(id); if(!el) return;
-      el.classList.remove('ok','bad'); el.classList.add(cls);
-    }
-    function setHeaderClass(cls) {
-      ['headerTitle', 'dateTime'].forEach((id) => {
-        const el = document.getElementById(id);
-        if (!el) return;
-        el.classList.remove('active', 'inactive');
-        el.classList.add(cls);
+    </section>
+    {% endif %}
+  </main>
+
+  <nav class="nav" aria-label="Pages">
+    <a href="{{ url_for('alarms_view') }}" id="alarmNav" class="{{ 'alarm-on' if alarm_count else '' }}">Alarms <span class="nav-badge" id="alarmBadge" {% if not alarm_count %}style="display:none"{% endif %}>{{ alarm_count }}</span></a>
+    <a href="{{ url_for('settings_view') }}">Settings</a>
+  </nav>
+</div>
+<script>
+  function setText(id, value) { const el = document.getElementById(id); if (el) el.textContent = (value === undefined || value === null) ? '--' : value; }
+  function render(d) {
+    setText('clockValue', d.clock_hm); setText('clockDate', d.clock_date);
+    const nb = document.getElementById('nameBox');
+    if (nb) { nb.classList.remove('active', 'inactive'); nb.classList.add(d.header_class || 'inactive'); }
+    setText('waterValue', d.water_lpm); setText('water7to7Value', d.water_7to7); setText('waterWeekValue', d.water_week);
+    const wt = document.getElementById('waterTile');
+    if (wt) { wt.classList.remove('flow-green', 'flow-red'); if (d.water_glow) wt.classList.add(d.water_glow); }
+    if (d.power) {
+      setText('powerTotal', d.power.total_kw); setText('powerStatus', d.power.status);
+      setText('powerToday', d.power.today_kwh); setText('powerYesterday', d.power.yesterday_kwh);
+      (d.power.phases || []).forEach((ph, i) => {
+        setText('ph' + i + 'v', ph.v); setText('ph' + i + 'a', ph.a); setText('ph' + i + 'kw', ph.kw);
+        setText('ph' + i + 'peak', ph.peak_a); setText('ph' + i + 'peakat', ph.peak_at);
+        const box = document.getElementById('ph' + i + 'box'); if (box) box.classList.toggle('hot', !!ph.hot);
       });
+      const pt = document.getElementById('powerTile');
+      if (pt) { pt.classList.remove('flow-green', 'flow-red'); pt.classList.add(d.power.live ? 'flow-green' : 'flow-red'); }
     }
-    function render(data) {
-      setText('dateTime', data.current_datetime || '--');
-      setHeaderClass(data.header_class || 'inactive');
-      setText('waterValue', data.water_lpm || '--');
-      setText('water7to7Value', data.water_7to7 || '--');
-      if (document.getElementById('alarmValue')) setText('alarmValue', data.alarm_short || '--');
-      setText('officeValue', data.office_short || '--');
-      setText('syncValue', data.sync_short || '--');
-      setText('picoValue', data.pico_short || '--');
-      setText('pushValue', data.push_short || '--');
-      setText('logValue', data.log_short || '--');
-      if (document.getElementById('alarmPill')) setPillClass('alarmPill', data.alarm_class);
-      setPillClass('officePill', data.office_class);
-      setPillClass('syncPill', data.sync_class);
-      setPillClass('picoPill', data.pico_class);
-      setPillClass('pushPill', data.push_class);
-      setPillClass('logPill', data.log_class);
-      const waterTile=document.getElementById('waterTile');
-      if (waterTile) {
-        waterTile.classList.remove('flow-green','flow-red');
-        if (data.water_glow) waterTile.classList.add(data.water_glow);
-      }
-    }
-    setInterval(async () => {
-      try {
-        const resp = await fetch('/api/home-state', {cache:'no-store'});
-        if (!resp.ok) return;
-        render(await resp.json());
-      } catch (err) {}
-    }, {{ refresh_seconds * 1000 }});
-  </script>
+    const badge = document.getElementById('alarmBadge');
+    if (badge) { badge.style.display = d.alarm_count ? '' : 'none'; badge.textContent = d.alarm_count; }
+    const an = document.getElementById('alarmNav'); if (an) an.classList.toggle('alarm-on', !!d.alarm_count);
+  }
+  // The flow figure is sized so 100.00 L/min would just fill the water tile's width;
+  // the supply kW figure uses the same size so the two columns match.
+  function fitBigFigures() {
+    const tile = document.getElementById('waterTile');
+    const big = tile && tile.querySelector('.big');
+    if (!big) return;
+    const probe = big.cloneNode(true);
+    probe.removeAttribute('id');
+    probe.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
+    probe.firstElementChild.textContent = '100.00';
+    probe.style.cssText = 'position:absolute; visibility:hidden; white-space:nowrap; font-size:100px; width:auto;';
+    probe.querySelector('small').style.fontSize = '42px';
+    tile.appendChild(probe);
+    const width100 = probe.getBoundingClientRect().width;
+    tile.removeChild(probe);
+    const cs = getComputedStyle(tile);
+    const room = tile.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    if (!width100 || room <= 0) return;
+    let size = Math.min(160, 100 * room / width100);
+    const apply = () => document.querySelectorAll('.big').forEach((el) => {
+      el.style.fontSize = size + 'px';
+      const small = el.querySelector('small'); if (small) small.style.fontSize = (size * 0.42) + 'px';
+    });
+    apply();
+    // Never let the page scroll: on a short screen, step the figures down until it fits.
+    while (size > 40 && document.documentElement.scrollHeight > window.innerHeight) { size -= 4; apply(); }
+  }
+  fitBigFigures();
+  window.addEventListener('resize', fitBigFigures);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitBigFigures);
+
+  setInterval(async () => {
+    try {
+      const resp = await fetch('/api/home-state', {cache: 'no-store'});
+      if (resp.ok) render(await resp.json());
+    } catch (err) {}
+  }, {{ refresh_seconds * 1000 }});
+</script>
 </body>
 </html>
 """
@@ -1325,339 +1858,199 @@ SETTINGS_HTML = """
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <title>Bore Hole Settings</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-  <style>
-    :root {
-      --bg:#5b5b5b;
-      --panel:rgba(115,115,115,0.96);
-      --panel-2:rgba(104,104,104,0.98);
-      --line:#8a8a8a;
-      --text:#ececec;
-      --muted:#d2d2d2;
-    }
-    body {
-      margin:0;
-      color: var(--text);
-      font-family:"Helvetica Neue", Helvetica, Arial, sans-serif;
-      background: #5b5b5b;
-    }
-    .wrap {
-      max-width:1024px;
-      margin:0 auto;
-      padding:18px;
-    }
-    .topbar {
-      margin-bottom:16px;
-    }
-    .topbar a {
-      color: var(--text);
-      text-decoration:none;
-      font-size:18px;
-    }
-    .grid {
-      display:grid;
-      grid-template-columns:1.05fr 0.95fr;
-      gap:16px;
-    }
-    .panel {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius:20px;
-      padding:18px;
-    }
-    h1 {
-      margin:0 0 8px 0;
-      font-size:38px;
-    }
-    .sub {
-      color: var(--muted);
-      margin-bottom:16px;
-      font-size:18px;
-    }
-    .action-grid {
-      display:grid;
-      grid-template-columns:1fr;
-      gap:12px;
-    }
-    .action-form {
-      margin:0;
-    }
-    .button-link {
-      display:block;
-      min-height:74px;
-      width:100%;
-      border-radius:16px;
-      border: 1px solid #d5dde6;
-      background: #ffffff;
-      color: var(--text);
-      font-size:20px;
-      font-weight:700;
-      text-decoration:none;
-      text-align:center;
-      line-height:74px;
-      white-space:nowrap;
-    }
-    .button-icon {
-      margin-right:10px;
-    }
-    .full-panel {
-      margin-top:16px;
-    }
-    .detail-list {
-      display:grid;
-      gap:10px;
-    }
-    .detail {
-      display:flex;
-      justify-content:space-between;
-      gap:12px;
-      padding:12px 0;
-      border-bottom: 1px solid #d5dde6;
-      font-size:18px;
-    }
-    .detail:last-child {
-      border-bottom: 0;
-    }
-    .label {
-      color: var(--muted);
-    }
-    .status-note {
-      margin:12px 0 0;
-      color: var(--muted);
-      font-size:16px;
-    }
-    .status-note.is-busy {
-      color: var(--text);
-    }
-    .msg {
-      margin-bottom:16px;
-      padding:12px 14px;
-      border-radius:14px;
-      border: 1px solid #d5dde6;
-      background: #ffffff;
-      font-size:18px;
-    }
-    .button-row {
-      display:grid;
-      grid-template-columns:1fr;
-      gap:12px;
-      margin-top:14px;
-      max-width:560px;
-      margin-left:auto;
-      margin-right:auto;
-    }
-    .update-split {
-      display:grid;
-      grid-template-columns:1fr 1fr;
-      gap:16px;
-      margin-top:12px;
-    }
-    .update-box {
-      background: var(--panel-2);
-      border: 1px solid var(--line);
-      border-radius:16px;
-      padding:16px;
-    }
-    .update-box h2 {
-      margin:0 0 10px 0;
-      font-size:24px;
-    }
-    .button-row form {
-      width:100%;
-      margin:0;
-    }
-    button {
-      min-height:74px;
-      width:100%;
-      border-radius:16px;
-      border: 1px solid #d5dde6;
-      background: #ffffff;
-      color: var(--text);
-      font-size:20px;
-      font-weight:700;
-      cursor:pointer;
-    }
-    button.secondary {
-      background: #ffffff;
-    }
-    @media (max-width:900px) {
-      .grid {
-        grid-template-columns:1fr;
-      }
-      .update-split {
-        grid-template-columns:1fr;
-      }
-    }
-  </style>
+    <meta charset="utf-8">
+    <title>Water &amp; Power Settings</title>
+""" + PAGE_HEAD + """
 </head>
 <body>
-  <div class="wrap">
-    {% if msg %}<div class="msg">{{ msg }}</div>{% endif %}
-    <div class="topbar"><a href="{{ url_for('index') }}">← Back</a></div>
-    <div class="grid">
-      <div class="panel">
-        <h1>Bore Hole Settings</h1>
-        <div class="sub">Controller actions, alarms, logs, config, and water tools.</div>
-        <div class="action-grid">
-          <div class="detail"><span class="label">Current Mode</span><span>{{ current_mode }}</span></div>
-          <a class="button-link" href="{{ url_for('water_settings_view') }}">Water Settings</a>
-          <a class="button-link" href="{{ url_for('water_history_view') }}">Water History</a>
-          <a class="button-link" href="{{ url_for('commissioning_view') }}">Commissioning</a>
-          <a class="button-link" href="{{ url_for('alarms_view') }}">Alarms{% if alarm_count %} ({{ alarm_count }}){% endif %}</a>
-          <a class="button-link" href="{{ url_for('events_view') }}">Event Log</a>
-          <a class="button-link" href="{{ url_for('config_view') }}">Controller Config</a>
-          <a class="button-link" href="{{ url_for('health_view') }}">Controller Health</a>
-          <form class="action-form" method="post" action="{{ url_for('controller_reboot_view') }}" onsubmit="return confirm('Reboot this controller Pi now?');">
-            <button class="secondary" type="submit"><span class="button-icon">↻</span>Reboot</button>
-          </form>
-          <form class="action-form" method="post" action="{{ url_for('controller_shutdown_view') }}" onsubmit="return confirm('Shut down this controller Pi now?');">
-            <button class="secondary" type="submit"><span class="button-icon">⏻</span>Shutdown</button>
-          </form>
+    <header class="topbar">
+        <a class="back" href="{{ url_for('index') }}">← Back</a>
+        <a class="back" href="{{ url_for('index') }}">⌂ Overview</a>
+        <div class="title cond">Settings</div>
+        <img class="brand-logo" src="/static/stocksense-logo.png" alt="StockSense, Smarter Livestock Monitoring">
+    </header>
+
+    <div class="wrap">
+        {% if msg %}<div class="msg auto-dismiss">{{ msg }}</div>{% endif %}
+        <div class="cols">
+            <div class="col">
+                <section>
+                    <h2 class="section-title">Water</h2>
+                    <nav class="list" aria-label="Water">
+                        <a class="item" href="{{ url_for('water_settings_view') }}"><span>Water meter</span><span class="item-sub">{{ water_lpm }} L/min</span><span class="chev">›</span></a>
+                        <a class="item" href="{{ url_for('water_history_view') }}"><span>Water history</span><span class="chev" style="margin-left: auto">›</span></a>
+                    </nav>
+                </section>
+                <section>
+                    <h2 class="section-title">Power</h2>
+                    <nav class="list" aria-label="Power">
+                        <a class="item" href="{{ url_for('power_history_view') }}"><span>Phase chart</span><span class="chev" style="margin-left: auto">›</span></a>
+                        <a class="item" href="{{ url_for('config_view') }}"><span>Shelly and fuse</span><span class="item-sub">In Config</span><span class="chev">›</span></a>
+                    </nav>
+                </section>
+                <section>
+                    <h2 class="section-title">Controller</h2>
+                    <nav class="list" aria-label="Controller tools">
+                        <a class="item" href="{{ url_for('alarms_view') }}"><span>Alarms</span>{% if alarm_count %}<span class="badge">{{ alarm_count }}</span>{% else %}<span class="item-sub">None active</span>{% endif %}<span class="chev">›</span></a>
+                        <a class="item" href="{{ url_for('health_view') }}"><span>Health</span><span class="chev" style="margin-left: auto">›</span></a>
+                        <a class="item" href="{{ url_for('events_view') }}"><span>Event log</span><span class="chev" style="margin-left: auto">›</span></a>
+                        <a class="item" href="{{ url_for('config_view') }}"><span>Config</span><span class="chev" style="margin-left: auto">›</span></a>
+                        <a class="item" href="{{ url_for('commissioning_view') }}"><span>Commissioning</span><span class="chev" style="margin-left: auto">›</span></a>
+                    </nav>
+                </section>
+                <section>
+                    <h2 class="section-title">Status</h2>
+                    <div class="card">
+                        <div class="detail" style="border-top: 0"><span>Alarm</span><span>{{ alarm_short }}</span></div>
+                        <div class="detail"><span>Office link</span><span>{{ office_short }}</span></div>
+                        <div class="detail"><span>Office sync</span><span>{{ sync_short }}</span></div>
+                        <div class="detail"><span>Office update</span><span>{{ push_short }}</span></div>
+                        <div class="detail"><span>Pico</span><span>{{ pico_short }}</span></div>
+                        <div class="detail"><span>Logging</span><span>{{ log_short }}</span></div>
+                        <div class="detail"><span>Last reading</span><span>{{ last_sensor }} ({{ last_sensor_age }})</span></div>
+                    </div>
+                </section>
+            </div>
+
+            <div class="col">
+                <section>
+                    <h2 class="section-title">Software</h2>
+                    <div class="card stack">
+                        <div class="row"><span class="status" id="controllerUpdateStatus">{{ update.status }}</span></div>
+                        <div class="btns">
+                            <form id="controllerUpdateCheckForm" method="post" action="{{ url_for('check_update_view') }}">
+                                <button id="controllerUpdateCheckButton" type="submit">Check for update</button>
+                            </form>
+                            <form id="controllerUpdateApplyForm" method="post" action="{{ url_for('apply_update_view') }}" {% if not update.update_available %}style="display:none;"{% endif %}>
+                                <button class="primary" type="submit">Install update</button>
+                            </form>
+                        </div>
+                        <details>
+                            <summary>Version details</summary>
+                            <div class="row"><span class="row-label">Branch</span><span class="mono" id="controllerUpdateBranch">{{ update.branch }}</span></div>
+                            <div class="row"><span class="row-label">Installed</span><span class="mono" id="controllerUpdateCurrent">{{ update.local_commit }}</span></div>
+                            <div class="row"><span class="row-label">Latest</span><span class="mono" id="controllerUpdateLatest">{{ update.remote_commit }}</span></div>
+                        </details>
+                        <div class="row"><span class="row-label">Pico firmware</span><span>{{ pico_status }}</span></div>
+                        <div class="btns">
+                            <form method="post" action="{{ url_for('pico_update_view') }}"><button type="submit">Update Pico</button></form>
+                            <form method="post" action="{{ url_for('pico_soft_reset_view') }}"><button type="submit">Soft reset Pico</button></form>
+                        </div>
+                    </div>
+                </section>
+
+                <section>
+                    <h2 class="section-title">Mode</h2>
+                    <div class="card stack">
+                        <div class="row"><span class="row-label">Current mode</span><span class="mode-chip {% if current_mode_key == 'live' %}live{% endif %}">{{ current_mode }}</span></div>
+                        <div class="hint">Use commissioning while wiring and proving sensors. Go live once it's ready for normal alarms. Switching needs the mode PIN.</div>
+                        <form method="post" action="{{ url_for('switch_mode_view') }}" class="btns">
+                            <input type="hidden" name="target_mode" value="{{ next_mode_key }}">
+                            <input type="number" name="mode_pin" inputmode="numeric" enterkeyhint="done" placeholder="Mode PIN" aria-label="Mode PIN">
+                            <button type="submit">{{ "Go live" if next_mode_key == "live" else "Back to commissioning" }}</button>
+                        </form>
+                    </div>
+                </section>
+
+                <section>
+                    <h2 class="section-title">Backups</h2>
+                    <div class="card stack">
+                        <div class="row"><span class="row-label">Last backup</span><span>{{ last_backup }}</span></div>
+                        <div class="row"><span class="row-label">Status</span><span>{{ last_backup_status }}</span></div>
+                        <div class="btns">
+                            <form method="get" action="{{ url_for('create_backup_view') }}"><button type="submit">Create backup now</button></form>
+                            <form method="get" action="{{ url_for('download_backup_view') }}"><button type="submit">Download latest</button></form>
+                        </div>
+                    </div>
+                </section>
+
+                <section>
+                    <h2 class="section-title">Power</h2>
+                    <div class="card">
+                        <div class="btns">
+                            <form method="post" action="{{ url_for('controller_reboot_view') }}" onsubmit="return confirm('Reboot this controller Pi now?');">
+                                <button type="submit">↻ Reboot</button>
+                            </form>
+                            <form method="post" action="{{ url_for('controller_shutdown_view') }}" onsubmit="return confirm('Shut down this controller Pi now? It will need power cycling to start again.');">
+                                <button class="danger" type="submit">⏻ Shut down</button>
+                            </form>
+                        </div>
+                    </div>
+                </section>
+            </div>
         </div>
-      </div>
-      <div class="panel">
-        <h1>Current State</h1>
-        <div class="sub">Live controller summary moved off the home screen.</div>
-        <div class="detail-list">
-          <div class="detail"><span class="label">Water L/PM</span><span>{{ water_lpm }}</span></div>
-          <div class="detail"><span class="label">Updated At</span><span>{{ last_sensor }}</span></div>
-          <div class="detail"><span class="label">Sensor Age</span><span>{{ last_sensor_age }}</span></div>
-          <div class="detail"><span class="label">Office Sync</span><span>{{ sync_short }}</span></div>
-          <div class="detail"><span class="label">Pico</span><span>{{ pico_short }}</span></div>
-          <div class="detail"><span class="label">Logging</span><span>{{ log_short }}</span></div>
-        </div>
-      </div>
     </div>
-    <div class="panel full-panel">
-      <h1 style="font-size:28px;">Software Update</h1>
-      <div class="sub">Check the controller version against GitHub and apply a newer version when one is available.</div>
-      <div class="update-split">
-        <div class="update-box">
-          <h2>Controller Update</h2>
-          <div class="detail-list">
-            <div class="detail"><span class="label">Branch</span><span id="controllerUpdateBranch">{{ update.branch }}</span></div>
-            <div class="detail"><span class="label">Current Version</span><span id="controllerUpdateCurrent">{{ update.local_commit }}</span></div>
-            <div class="detail"><span class="label">Latest Version</span><span id="controllerUpdateLatest">{{ update.remote_commit }}</span></div>
-          </div>
-          <div id="controllerUpdateStatus" class="status-note">{{ update.status }}</div>
-          <div class="button-row">
-            <form id="controllerUpdateCheckForm" method="post" action="{{ url_for('check_update_view') }}">
-              <button id="controllerUpdateCheckButton" class="secondary" type="submit">Check for Update</button>
-            </form>
-            <form id="controllerUpdateApplyForm" method="post" action="{{ url_for('apply_update_view') }}" {% if not update.update_available %}style="display:none;"{% endif %}>
-              <button type="submit">Update Now</button>
-            </form>
-          </div>
-        </div>
-        <div class="update-box">
-          <h2>Pico Update</h2>
-          <div class="detail-list">
-            <div class="detail"><span class="label">Status</span><span>{{ pico_status }}</span></div>
-            <div class="detail"><span class="label">Last Backup</span><span>{{ last_backup }}</span></div>
-            <div class="detail"><span class="label">Backup Status</span><span>{{ last_backup_status }}</span></div>
-          </div>
-          <div class="button-row">
-            <form method="post" action="{{ url_for('pico_update_view') }}">
-              <button type="submit">Update Pico</button>
-            </form>
-            <form method="post" action="{{ url_for('pico_soft_reset_view') }}">
-              <button type="submit" class="secondary">Soft Reset Pico</button>
-            </form>
-          </div>
-        </div>
-      </div>
-      <div class="update-split" style="margin-top:16px;">
-        <div class="update-box">
-          <h2>Mode Lock</h2>
-          <div class="detail-list">
-            <div class="detail"><span class="label">Current Mode</span><span>{{ current_mode }}</span></div>
-            <div class="detail"><span class="label">Next Mode</span><span>{{ next_mode_label }}</span></div>
-          </div>
-          <div class="status-note">A PIN is required before this controller can leave commissioning mode or return to it.</div>
-          <div class="button-row">
-            <form method="post" action="{{ url_for('switch_mode_view') }}">
-              <input type="hidden" name="target_mode" value="{{ next_mode_key }}">
-              <input type="number" name="mode_pin" inputmode="numeric" enterkeyhint="done" placeholder="Enter mode PIN" style="width:100%; min-height:64px; border-radius:14px; border: 1px solid #d5dde6; background: #f5f8fb; color: #0d2b4a; font-size:22px; padding:10px 14px; box-sizing:border-box; margin-bottom:12px;">
-              <button type="submit">{{ "Go Live" if next_mode_key == "live" else "Return to Commissioning" }}</button>
-            </form>
-          </div>
-        </div>
-        <div class="update-box">
-          <h2>Backup</h2>
-          <div class="button-row">
-            <a class="button-link" href="{{ url_for('create_backup_view') }}">Create Backup Now</a>
-            <a class="button-link" href="{{ url_for('download_backup_view') }}">Download Latest Backup</a>
-          </div>
-        </div>
-        <div class="update-box">
-          <h2>Office</h2>
-          <div class="detail-list">
-            <div class="detail"><span class="label">Office Link</span><span>{{ office_short }}</span></div>
-            <div class="detail"><span class="label">Office Sync</span><span>{{ sync_short }}</span></div>
-            <div class="detail"><span class="label">Alarm</span><span>{{ alarm_short }}</span></div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-  <script>
-  (function () {
+<script>
+setTimeout(() => { document.querySelectorAll('.auto-dismiss').forEach((el) => { el.style.display = 'none'; }); }, 10000);
+(function () {
     const form = document.getElementById('controllerUpdateCheckForm');
     if (!form) return;
     const button = document.getElementById('controllerUpdateCheckButton');
     const statusEl = document.getElementById('controllerUpdateStatus');
-    const branchEl = document.getElementById('controllerUpdateBranch');
-    const currentEl = document.getElementById('controllerUpdateCurrent');
-    const latestEl = document.getElementById('controllerUpdateLatest');
     const applyForm = document.getElementById('controllerUpdateApplyForm');
     const defaultLabel = button.textContent;
-
     form.addEventListener('submit', async function (event) {
-      event.preventDefault();
-      button.disabled = true;
-      button.textContent = 'Checking...';
-      statusEl.textContent = 'Checking GitHub...';
-      statusEl.classList.add('is-busy');
-      try {
-        const resp = await fetch(form.action, {
-          method: 'POST',
-          headers: {
-            'X-Requested-With': 'fetch',
-            'Accept': 'application/json'
-          }
-        });
-        if (!resp.ok) throw new Error('Update check failed');
-        const data = await resp.json();
-        branchEl.textContent = data.branch || '--';
-        currentEl.textContent = data.local_commit || '--';
-        latestEl.textContent = data.remote_commit || '--';
-        statusEl.textContent = data.status || '--';
-        if (data.update_available) {
-          applyForm.style.display = '';
-        } else {
-          applyForm.style.display = 'none';
+        event.preventDefault();
+        button.disabled = true;
+        button.textContent = 'Checking...';
+        statusEl.textContent = 'Checking GitHub...';
+        statusEl.classList.add('is-busy');
+        try {
+            const resp = await fetch(form.action, { method: 'POST', headers: { 'X-Requested-With': 'fetch', 'Accept': 'application/json' } });
+            if (!resp.ok) throw new Error('Update check failed');
+            const data = await resp.json();
+            document.getElementById('controllerUpdateBranch').textContent = data.branch || '--';
+            document.getElementById('controllerUpdateCurrent').textContent = data.local_commit || '--';
+            document.getElementById('controllerUpdateLatest').textContent = data.remote_commit || '--';
+            statusEl.textContent = data.status || '--';
+            applyForm.style.display = data.update_available ? '' : 'none';
+        } catch (err) {
+            statusEl.textContent = 'Update check failed';
+        } finally {
+            statusEl.classList.remove('is-busy');
+            button.disabled = false;
+            button.textContent = defaultLabel;
         }
-      } catch (err) {
-        statusEl.textContent = 'Update check failed';
-      } finally {
-        statusEl.classList.remove('is-busy');
-        button.disabled = false;
-        button.textContent = defaultLabel;
-      }
     });
-  })();
-  </script>
+})();
+</script>
 </body>
 </html>
 """
 
 
 SIMPLE_PAGE_HTML = """
-<!doctype html><html><head><meta charset="utf-8"><title>{{ title }}</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>
-body{margin:0;background: #5b5b5b;color: #0d2b4a;font-family:Arial,sans-serif}.wrap{max-width:1100px;margin:0 auto;padding:18px}.panel{background: #ffffff;border: 1px solid #d5dde6;border-radius:20px;padding:18px}.topbar{margin-bottom:14px}.topbar a{color: #0d2b4a;text-decoration:none}.detail{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom: 1px solid #d5dde6}.detail:last-child{border-bottom: 0}.label{color: #0d2b4a}.alarm{padding:10px 12px;border-radius:12px;border: 1px solid rgba(214,69,69,0.35);background: #fdecec;margin-top:10px}.mono{font-family:ui-monospace, monospace; color: #0d2b4a; word-break:break-word}.button-link,button,input,textarea{border-radius:14px;border: 1px solid #d5dde6}.button-link,button{display:flex;align-items:center;justify-content:center;min-height:58px;width:100%;background: #ffffff;color: #0d2b4a;text-decoration:none;font-size:20px;font-weight:700;cursor:pointer}input{width:100%;box-sizing:border-box;min-height:58px;background: #ffffff;color: #0d2b4a;font-size:20px;padding:12px 14px;margin-bottom:12px}table{width:100%;border-collapse:collapse}th,td{padding:10px 8px;border-bottom: 1px solid #d5dde6;text-align:left}th{color: #0d2b4a}
-</style></head><body><div class="wrap"><div class="topbar"><a href="{{ back_url }}">← Back</a></div><div class="panel">{{ body|safe }}</div></div></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>{{ title }}</title>
+""" + PAGE_HEAD + """
+    <style>
+        .card > h1:first-child { display: none; }   /* the page title is in the header */
+        .card h1, .card h2 { margin: 18px 0 8px; font-family: "Barlow Semi Condensed", "Barlow", sans-serif; font-size: 22px; font-weight: 600; color: var(--navy); }
+        .card .detail:first-of-type { border-top: 0; }
+        .card label { display: block; font-size: 14px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; margin: 14px 0 6px 2px; }
+        .card input[type="text"], .card input[type="number"] { margin-bottom: 4px; }
+        .card form button { margin-top: 16px; background: var(--navy); color: #ffffff; border-color: var(--navy); }
+        .card .label { color: var(--muted); }
+        .card .alarm { padding: 10px 12px; border-radius: 12px; border: 1px solid #e3a0a0; background: #fdecec; color: #8f1f1f; margin-top: 10px; }
+        .card table { margin-top: 6px; }
+        .card .button-link { display: flex; align-items: center; justify-content: center; min-height: 56px; margin-top: 10px; border-radius: 12px; border: 1px solid #c5d0dc; background: var(--card-2); color: var(--text); text-decoration: none; font-size: 18px; font-weight: 600; }
+    </style>
+</head>
+<body>
+    <header class="topbar">
+        <a class="back" href="{{ back_url }}">← Back</a>
+        <a class="back" href="{{ url_for('index') }}">⌂ Overview</a>
+        <div class="title cond">{{ title }}</div>
+        <img class="brand-logo" src="/static/stocksense-logo.png" alt="StockSense, Smarter Livestock Monitoring">
+    </header>
+    <div class="wrap">
+        <div class="card">{{ body|safe }}</div>
+    </div>
+</body>
+</html>
 """
 
 
@@ -1665,76 +2058,81 @@ WATER_SETTINGS_HTML = """
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <title>Bore Hole Water Settings</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-  <style>
-    :root { --bg:#5b5b5b; --panel:rgba(115,115,115,0.96); --line:#8a8a8a; --text:#ececec; --muted:#d2d2d2; }
-    body { margin:0; color: var(--text); font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; background: var(--bg); }
-    .wrap { max-width:860px; margin:0 auto; padding:18px; }
-    .topbar { margin-bottom:16px; }
-    .topbar a { color: var(--text); text-decoration:none; font-size:18px; }
-    .panel { background: var(--panel); border: 1px solid var(--line); border-radius:20px; padding:18px; margin-bottom:16px; }
-    h1 { margin:0 0 8px 0; font-size:38px; }
-    .sub { color: var(--muted); margin-bottom:16px; font-size:18px; }
-    .current { font-size:34px; font-weight:700; }
-    label { display:block; color: var(--muted); font-size:16px; margin-bottom:8px; }
-    input[type="number"] { width:100%; min-height:72px; border-radius:16px; border: 1px solid var(--line); background: #f5f8fb; color: var(--text); font-size:30px; padding:12px 16px; box-sizing:border-box; }
-    button { min-height:72px; width:100%; border-radius:16px; border: 1px solid #d5dde6; background: #ffffff; color: var(--text); font-size:22px; font-weight:700; padding:0 18px; cursor:pointer; margin-top:14px; }
-    .hint { color: var(--muted); font-size:16px; margin-top:12px; }
-    .detail { display:flex; justify-content:space-between; gap:12px; padding:10px 0; border-bottom: 1px solid #d5dde6; }
-    .detail:last-child { border-bottom: 0; }
-    .label { color: var(--muted); }
-    .grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-    @media (max-width:900px) { .grid { grid-template-columns:1fr; } }
-  </style>
+    <meta charset="utf-8">
+    <title>Water meter</title>
+""" + PAGE_HEAD + """
 </head>
 <body>
-  <div class="wrap">
-    <div class="topbar"><a href="{{ url_for('index') }}">← Back</a></div>
-    <div class="panel">
-      <h1>Bore Hole Water</h1>
-      <div class="sub">Adjust the low-flow alarm threshold and calibrate pulses per litre from the physical water meter.</div>
-      <div class="current">Current: {{ current_value }} L/PM</div>
-    </div>
-    <div class="panel">
-      <form method="post" action="{{ url_for('save_water_settings') }}">
-        <label for="threshold_value">Low flow alarm threshold L/PM</label>
-        <input id="threshold_value" name="threshold_value" type="number" min="0" step="0.01" value="{{ water_low_lpm }}" inputmode="decimal">
-        <button type="submit">Save Water Threshold</button>
-      </form>
-      <div class="hint">Tile glow and low-flow alarm use this threshold.</div>
-    </div>
-    <div class="panel">
-      <div class="detail"><span class="label">Pulses Per Litre</span><span>{{ water_pulses_per_litre }}</span></div>
-      <div class="detail"><span class="label">Total Flow Pulses</span><span>{{ total_flow_pulses }}</span></div>
-      <div class="detail"><span class="label">Calibration Status</span><span>{{ calibration_status }}</span></div>
-      <div class="detail"><span class="label">Time Remaining</span><span>{{ calibration_remaining }}</span></div>
-      <div class="detail"><span class="label">Pulse Count</span><span>{{ calibration_pulse_delta }}</span></div>
-    </div>
-    <div class="panel">
-      <div class="sub">5 minute calibration</div>
-      {% if calibration_can_start %}
-      <form method="post" action="{{ url_for('start_water_calibration') }}">
-        <button type="submit">Start 5 Minute Calibration</button>
-      </form>
-      {% elif calibration_active %}
-      <form method="post" action="{{ url_for('cancel_water_calibration') }}">
-        <button type="submit">Cancel Calibration</button>
-      </form>
-      {% endif %}
-      <form method="post" action="{{ url_for('finish_water_calibration') }}">
-        <div class="grid">
-          <div>
-            <label for="meter_litres">Physical meter litres</label>
-            <input id="meter_litres" name="meter_litres" type="number" min="0.1" step="0.1" value="" inputmode="decimal">
-          </div>
+    <header class="topbar">
+        <a class="back" href="{{ url_for('settings_view') }}">← Back</a>
+        <a class="back" href="{{ url_for('index') }}">⌂ Overview</a>
+        <div class="title cond">Water meter</div>
+        <img class="brand-logo" src="/static/stocksense-logo.png" alt="StockSense, Smarter Livestock Monitoring">
+    </header>
+
+    <div class="wrap">
+        {% if request.args.get('msg') %}<div class="msg auto-dismiss {% if request.args.get('ok') == '0' %}error{% endif %}">{{ request.args.get('msg') }}</div>{% endif %}
+        <div class="cols">
+            <div class="col">
+                <section>
+                    <h2 class="section-title">Flow now</h2>
+                    <div class="card">
+                        <div class="now"><b class="cond">{{ current_value }}</b><span>L/min</span></div>
+                        <div class="details">
+                            <div class="detail"><span>Low flow alarm below</span><span>{{ water_low_lpm }} L/min</span></div>
+                            <div class="detail"><span>Pulses per litre</span><span>{{ water_pulses_per_litre }}</span></div>
+                            <div class="detail"><span>Total flow pulses</span><span>{{ total_flow_pulses }}</span></div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+            <div class="col">
+                <section>
+                    <h2 class="section-title">Low flow alarm</h2>
+                    <form class="card form" method="post" action="{{ url_for('save_water_settings') }}">
+                        <div class="inline">
+                            <div>
+                                <label class="field" for="threshold_value">Alarm below (L/min)</label>
+                                <input id="threshold_value" type="number" name="threshold_value" min="0" step="0.01" inputmode="decimal" enterkeyhint="done" value="{{ water_low_lpm }}">
+                            </div>
+                            <button class="primary" type="submit">Save</button>
+                        </div>
+                        <div class="hint">Green at or above this flow. Red below it, or when there's no reading.</div>
+                    </form>
+                </section>
+                <section>
+                    <h2 class="section-title">Meter calibration</h2>
+                    <div class="card form">
+                        <div class="hint">Run a 5 minute test against the bore hole's water meter:</div>
+                        <div>
+                            <div class="detail"><span>Test</span><span class="status">{{ calibration_status }}</span></div>
+                            <div class="detail"><span>Pulses counted</span><span>{{ calibration_pulse_delta }}</span></div>
+                            <div class="detail"><span>Time left</span><span>{{ calibration_remaining }}</span></div>
+                        </div>
+                        {% if calibration_can_start %}
+                        <form method="post" action="{{ url_for('start_water_calibration') }}"><button class="go" type="submit">Start 5 minute test</button></form>
+                        {% elif calibration_active %}
+                        <form method="post" action="{{ url_for('cancel_water_calibration') }}"><button class="danger" type="submit">Cancel test</button></form>
+                        {% endif %}
+                        <form method="post" action="{{ url_for('finish_water_calibration') }}">
+                            <div class="inline">
+                                <div>
+                                    <label class="field" for="meter_litres">Litres on the meter for the test</label>
+                                    <input id="meter_litres" type="number" name="meter_litres" min="0.1" step="0.1" inputmode="decimal" enterkeyhint="done" value="" {% if not calibration_ready %}disabled{% endif %}>
+                                </div>
+                                <button class="primary" type="submit" {% if not calibration_ready %}disabled{% endif %}>Save</button>
+                            </div>
+                        </form>
+                        <div class="hint">New pulses per litre = counted pulses divided by the litres from the physical meter.{% if not calibration_ready %} Complete the 5 minute test first to enable saving.{% endif %}</div>
+                    </div>
+                </section>
+            </div>
         </div>
-        <button type="submit" {% if not calibration_ready %}disabled{% endif %}>Save New Pulses Per Litre</button>
-      </form>
-      <div class="hint">The calibration run stops automatically after 5 minutes. Enter the litres from the physical meter after the run completes.</div>
     </div>
-  </div>
+<script>
+setTimeout(() => { document.querySelectorAll('.auto-dismiss').forEach((el) => { el.style.display = 'none'; }); }, 10000);
+{% if calibration_active %}setTimeout(() => window.location.reload(), 5000);{% endif %}
+</script>
 </body>
 </html>
 """
@@ -1742,51 +2140,51 @@ WATER_SETTINGS_HTML = """
 
 BOREHOLE_COMMISSIONING_HTML = """
 <!doctype html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="utf-8">
-  <title>Bore Hole Commissioning</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    body { margin:0; font-family:Arial,sans-serif; background: #5b5b5b; color: #0d2b4a; }
-    .wrap { max-width:1040px; margin:0 auto; padding:24px; }
-    .topbar a { color: #0d2b4a; text-decoration:none; }
-    .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:16px; }
-    .panel { background: #f5f8fb; border: 1px solid #d5dde6; border-radius:14px; padding:16px; }
-    .detail { display:flex; justify-content:space-between; gap:12px; padding:10px 0; border-bottom: 1px solid #d5dde6; }
-    .detail:last-child { border-bottom: 0; }
-    .label { color: #0d2b4a; }
-    .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-all; }
-    pre { background: #656565; border: 1px solid #d5dde6; border-radius:12px; padding:12px; white-space:pre-wrap; word-break:break-word; }
-    @media (max-width:900px) { .grid { grid-template-columns:1fr; } }
-  </style>
+    <meta charset="utf-8">
+    <title>Water &amp; Power Commissioning</title>
+""" + PAGE_HEAD + """
+    <style>
+        pre { margin: 0; background: var(--card-2); border: 1px solid var(--track); border-radius: 12px; padding: 12px; white-space: pre-wrap; word-break: break-word; font-size: 13px; }
+    </style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="topbar"><a href="{{ url_for('settings_view') }}">← Back to settings</a></div>
-    <h1>Bore Hole Commissioning</h1>
-    <div class="grid">
-      <div class="panel">
-        <div class="detail"><span class="label">Water L/PM</span><span>{{ water_lpm }}</span></div>
-        <div class="detail"><span class="label">Flow Total Pulses</span><span>{{ flow_total_pulses }}</span></div>
-        <div class="detail"><span class="label">Low Flow Threshold</span><span>{{ water_low_lpm }}</span></div>
-        <div class="detail"><span class="label">Pulses Per Litre</span><span>{{ water_ppl }}</span></div>
-        <div class="detail"><span class="label">Last Sensor</span><span>{{ last_sensor }} • {{ last_sensor_age }}</span></div>
-        <div class="detail"><span class="label">Office Sync</span><span>{{ sync_short }}</span></div>
-      </div>
-      <div class="panel">
-        <div class="detail"><span class="label">Controller Version</span><span class="mono">{{ app_version }}</span></div>
-        <div class="detail"><span class="label">Pico Local</span><span class="mono">{{ pico_local }}</span></div>
-        <div class="detail"><span class="label">Pico Deployed</span><span class="mono">{{ pico_deployed }}</span></div>
-        <div class="detail"><span class="label">State Version</span><span>{{ state_version }}</span></div>
-        <div class="detail"><span class="label">Alarm Count</span><span>{{ alarm_count }}</span></div>
-      </div>
+    <header class="topbar">
+        <a class="back" href="{{ url_for('settings_view') }}">← Back</a>
+        <a class="back" href="{{ url_for('index') }}">⌂ Overview</a>
+        <div class="title cond">Commissioning</div>
+        <img class="brand-logo" src="/static/stocksense-logo.png" alt="StockSense, Smarter Livestock Monitoring">
+    </header>
+    <div class="wrap">
+        <div class="cols">
+            <section>
+                <h2 class="section-title">Water</h2>
+                <div class="card">
+                    <div class="detail" style="border-top: 0"><span>Water L/min</span><span>{{ water_lpm }}</span></div>
+                    <div class="detail"><span>Flow total pulses</span><span>{{ flow_total_pulses }}</span></div>
+                    <div class="detail"><span>Low flow threshold</span><span>{{ water_low_lpm }}</span></div>
+                    <div class="detail"><span>Pulses per litre</span><span>{{ water_ppl }}</span></div>
+                    <div class="detail"><span>Last sensor</span><span>{{ last_sensor }} · {{ last_sensor_age }}</span></div>
+                    <div class="detail"><span>Office sync</span><span>{{ sync_short }}</span></div>
+                </div>
+            </section>
+            <section>
+                <h2 class="section-title">Controller</h2>
+                <div class="card">
+                    <div class="detail" style="border-top: 0"><span>Controller version</span><span class="mono">{{ app_version }}</span></div>
+                    <div class="detail"><span>Pico local</span><span class="mono">{{ pico_local }}</span></div>
+                    <div class="detail"><span>Pico deployed</span><span class="mono">{{ pico_deployed }}</span></div>
+                    <div class="detail"><span>State version</span><span>{{ state_version }}</span></div>
+                    <div class="detail"><span>Alarm count</span><span>{{ alarm_count }}</span></div>
+                </div>
+            </section>
+        </div>
+        <section style="margin-top: 20px">
+            <h2 class="section-title">Raw packet</h2>
+            <div class="card"><pre>{{ raw_json }}</pre></div>
+        </section>
     </div>
-    <div class="panel" style="margin-top:16px;">
-      <h2>Raw Packet</h2>
-      <pre>{{ raw_json }}</pre>
-    </div>
-  </div>
 </body>
 </html>
 """
@@ -1796,89 +2194,322 @@ HISTORY_HTML = """
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <title>{{ metric_title }}</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-  <style>
-    :root { --bg:#5b5b5b; --panel:rgba(115,115,115,0.96); --line:#8a8a8a; --text:#ececec; --muted:#d2d2d2; }
-    body { margin:0; color: var(--text); font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; background: var(--bg); }
-    .wrap { max-width:1100px; margin:0 auto; padding:18px; }
-    .topbar { margin-bottom:16px; }
-    .topbar a { color: var(--text); text-decoration:none; font-size:18px; }
-    .panel { background: var(--panel); border: 1px solid var(--line); border-radius:20px; padding:18px; margin-bottom:16px; }
-    h1 { margin:0 0 8px 0; font-size:38px; }
-    .sub { color: var(--muted); margin-bottom:16px; font-size:18px; }
-    .chart-wrap { margin-top:10px; }
-    .chart-box { position:relative; height:340px; }
-    table { width:100%; border-collapse:collapse; }
-    th, td { padding:10px 8px; border-bottom: 1px solid #d5dde6; text-align:left; }
-    th { color: var(--muted); }
-    .empty { color: var(--muted); font-size:18px; }
-  </style>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <meta charset="utf-8">
+    <title>{{ metric_title }}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <style>
+        :root {
+            --bg: #5b5b5b;
+            --panel: rgba(115, 115, 115, 0.96);
+            --panel-2: rgba(104, 104, 104, 0.98);
+            --line: #8a8a8a;
+            --text: #ececec;
+            --muted: #d2d2d2;
+        }
+        body {
+            margin: 0;
+            color: var(--text);
+            font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+            background: #5b5b5b;
+        }
+        .wrap {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 18px;
+        }
+        .topbar {
+            margin-bottom: 16px;
+        }
+        .topbar a {
+            color: var(--text);
+            text-decoration: none;
+            font-size: 18px;
+        }
+        .panel {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 20px;
+            padding: 18px;
+            margin-bottom: 16px;
+        }
+        .action-row {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 14px;
+        }
+        .action-link {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 44px;
+            padding: 10px 14px;
+            border-radius: 12px;
+            border: 1px solid #d5dde6;
+            background: var(--panel-2);
+            color: var(--text);
+            text-decoration: none;
+            font-weight: 700;
+        }
+        h1 {
+            margin: 0 0 8px 0;
+            font-size: 38px;
+        }
+        .sub {
+            color: var(--muted);
+            margin-bottom: 16px;
+            font-size: 18px;
+        }
+        .chart-wrap {
+            background: var(--panel-2);
+            border: 1px solid #d5dde6;
+            border-radius: 16px;
+            padding: 14px;
+        }
+        .chart-box {
+            position: relative;
+            height: 360px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 15px;
+        }
+        th, td {
+            border-bottom: 1px solid #d5dde6;
+            padding: 10px 8px;
+            text-align: left;
+        }
+        th {
+            color: var(--muted);
+        }
+        .empty {
+            color: var(--muted);
+            font-size: 18px;
+        }
+        .view-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+        .view-head .action-link { min-height: 48px; padding: 0 18px; font-size: 17px; cursor: pointer; }
+        #allDaysBtn[hidden] { display: none !important; }
+        .chart-scroll { overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; }
+        .day-link { all: unset; cursor: pointer; color: #1676b8; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; min-height: 32px; display: inline-flex; align-items: center; }
+        .day-link:focus-visible { outline: 3px solid #f08a12; outline-offset: 2px; }
+        .table-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-top: 12px;
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
-  <div class="wrap">
-    <div class="topbar"><a href="{{ url_for('index') }}">← Back</a></div>
-    <div class="panel">
-      <h1>{{ metric_title }}</h1>
-      <div class="sub">Recent hourly water history from the bore hole controller.</div>
-      {% if rows %}
-      <div class="chart-wrap">
-        <div class="chart-box"><canvas id="historyChart"></canvas></div>
-      </div>
-      {% else %}
-      <div class="empty">No hourly history available yet.</div>
-      {% endif %}
+    <div class="wrap">
+        <nav class="page-nav" aria-label="Page navigation"><a class="page-nav-btn" href="{{ url_for('settings_view') }}" data-nav-back>← Back</a><a class="page-nav-btn" href="{{ url_for('index') }}">⌂ Overview</a></nav>
+        <div class="panel">
+            <div class="view-head">
+                <div>
+                    <h1>{{ metric_title }}</h1>
+                    <div class="sub" id="viewSub">Bore hole water, last 45 days. Daily totals, 6am to 6am. Tap a day to see its hours.</div>
+                </div>
+                <button type="button" id="allDaysBtn" class="action-link" hidden>← All days</button>
+            </div>
+            {% if rows %}
+            <div class="chart-wrap">
+                <div class="chart-scroll" id="chartScroll">
+                    <div class="chart-box" id="chartInner"><canvas id="historyChart" aria-label="{{ metric_title }} chart"></canvas></div>
+                </div>
+            </div>
+            {% else %}
+            <div class="empty">No water history recorded yet.</div>
+            {% endif %}
+        </div>
+        {% if rows %}
+        <div class="panel">
+            <h1 style="font-size:26px;" id="tableTitle">Daily totals</h1>
+            <table>
+                <thead><tr><th id="colWhen">Day</th><th id="colValue">{{ series[0].axis_title }}</th><th id="colMore"></th></tr></thead>
+                <tbody id="historyBody"></tbody>
+            </table>
+        </div>
+        {% endif %}
     </div>
-    <div class="panel">
-      <h1 style="font-size:26px;">Hourly Table</h1>
-      {% if rows %}
-      <table>
-        <thead><tr><th>Hour</th><th>{{ y_axis_title }}</th></tr></thead>
-        <tbody>
-          {% for row in rows %}
-          <tr><td>{{ row.label }}</td><td>{{ row.value }}</td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      {% else %}
-      <div class="empty">No rows to display.</div>
-      {% endif %}
-    </div>
-  </div>
-  <script>
+    <script>
     const labels = {{ labels|tojson }};
-    const values = {{ values|tojson }};
-    const ctx = document.getElementById('historyChart');
-    if (ctx) {
-      new Chart(ctx, {
-        type: 'line',
-        data: {
-          labels: labels,
-          datasets: [{
-            label: {{ metric_title|tojson }},
-            data: values,
-            borderWidth: 2,
-            pointRadius: 2,
-            tension: 0.2,
-            borderColor: {{ color|tojson }},
-            backgroundColor: {{ color|tojson }}
-          }]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          animation: false,
-          plugins: { legend: { labels: { color: '#0d2b4a'} } },
-          scales: {
-            x: { ticks: { color: '#4a6078'}, grid: { color: '#0d2b4a'} },
-            y: { ticks: { color: '#4a6078'}, grid: { color: '#0d2b4a'} }
-          }
-        }
-      });
+    const epochs = {{ epochs|tojson }};
+    const series = {{ series|tojson }};
+    const metric = series.length ? series[0] : null;
+    const unit = metric ? metric.axis_title.split(' ').pop().replace('KG', 'kg') : '';
+    const DAY_START_HOUR = 6;   // farm day runs 6am to 6am, matching the yesterday figures
+
+    function pad(n) { return String(n).padStart(2, '0'); }
+    function fmt(v) { return v === null || v === undefined ? '--' : Number(v).toLocaleString('en-GB', { maximumFractionDigits: 1 }); }
+    function dayKeyFor(epoch) {
+        const d = new Date((epoch - DAY_START_HOUR * 3600) * 1000);
+        return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
     }
-  </script>
+
+    // Group the hourly points into farm days.
+    const days = [];
+    const dayMap = {};
+    if (metric) {
+        epochs.forEach((epoch, i) => {
+            if (epoch === null || epoch === undefined) return;
+            const key = dayKeyFor(epoch);
+            if (!dayMap[key]) {
+                const parts = key.split('-').map(Number);
+                const start = new Date(parts[0], parts[1] - 1, parts[2], DAY_START_HOUR, 0, 0);
+                dayMap[key] = {
+                    key: key,
+                    start: start,
+                    label: start.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' }),
+                    total: 0, seen: 0, hours: {}
+                };
+                days.push(dayMap[key]);
+            }
+            const v = metric.values[i];
+            if (v !== null && v !== undefined) {
+                dayMap[key].total += Number(v);
+                dayMap[key].seen += 1;
+            }
+            dayMap[key].hours[epoch] = v;
+        });
+        days.sort((a, b) => a.start - b.start);
+        if (days.length) days[days.length - 1].partial = (Date.now() - days[days.length - 1].start.getTime()) < 24 * 3600 * 1000;
+    }
+
+    // Writes each bar's figure on the bar: across the top when the bar is wide enough,
+    // up the bar when it is narrow, or just above it when the bar is too short.
+    // Writes each bar's figure up the bar, inside it when it fits, otherwise just above it.
+    const barValueLabels = {
+        id: 'barValueLabels',
+        afterDatasetsDraw(c) {
+            const meta = c.getDatasetMeta(0);
+            const data = c.data.datasets[0].data;
+            const g = c.ctx;
+            g.save();
+            g.font = '600 13px "Barlow Semi Condensed", Barlow, sans-serif';
+            g.fillStyle = '#0d2b4a';
+            meta.data.forEach((bar, i) => {
+                const v = data[i];
+                if (v === null || v === undefined) return;
+                const text = fmt(v);
+                const p = bar.getProps(['x', 'y', 'base'], true);
+                const h = p.base - p.y;
+                const inside = h >= g.measureText(text).width + 10;
+                g.save();
+                g.translate(p.x, inside ? p.y + 5 : p.y - 4);
+                g.rotate(-Math.PI / 2);
+                g.textAlign = inside ? 'right' : 'left';
+                g.textBaseline = 'middle';
+                g.fillText(text, 0, 0);
+                g.restore();
+            });
+            g.restore();
+        }
+    };
+
+    const MIN_BAR_PX = 38;   // bars never squeeze below this; the chart scrolls sideways instead
+    let chart = null;
+    function drawChart(type, chartLabels, values, onPick) {
+        const el = document.getElementById('historyChart');
+        if (!el) return;
+        if (chart) chart.destroy();
+        const scroller = document.getElementById('chartScroll');
+        const inner = document.getElementById('chartInner');
+        const needed = chartLabels.length * MIN_BAR_PX + 70;
+        inner.style.width = needed > scroller.clientWidth ? needed + 'px' : '100%';
+        chart = new Chart(el, {
+            plugins: [barValueLabels],
+            type: type,
+            data: {
+                labels: chartLabels,
+                datasets: [{
+                    label: metric.label + ' (' + unit + ')',
+                    data: values,
+                    borderWidth: 2,
+                    pointRadius: 3,
+                    tension: 0.2,
+                    borderRadius: 4,
+                    borderColor: metric.color,
+                    backgroundColor: metric.color
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                onClick: (event, elements) => { if (onPick && elements.length) onPick(elements[0].index); },
+                onHover: (event, elements) => { event.native.target.style.cursor = (onPick && elements.length) ? 'pointer' : 'default'; },
+                layout: { padding: { top: 46 } },
+                plugins: { legend: { labels: { color: '#0d2b4a' } } },
+                scales: {
+                    x: { ticks: { color: '#4a6078', autoSkip: false, maxRotation: 50, minRotation: 0 }, grid: { color: '#e3e9ef' } },
+                    y: { beginAtZero: true, grace: '8%', ticks: { color: '#4a6078' }, grid: { color: '#e3e9ef' } }
+                }
+            }
+        });
+        scroller.scrollLeft = scroller.scrollWidth;   // open on the latest days
+    }
+
+    function showDays() {
+        document.getElementById('allDaysBtn').hidden = true;
+        document.getElementById('viewSub').textContent = 'Bore hole water, last 45 days. Daily totals, 6am to 6am. Tap a day to see its hours.';
+        document.getElementById('tableTitle').textContent = 'Daily totals';
+        document.getElementById('colWhen').textContent = 'Day';
+        document.getElementById('colMore').textContent = '';
+        drawChart('bar', days.map(d => d.label + (d.partial ? ' (so far)' : '')), days.map(d => d.seen ? Math.round(d.total * 10) / 10 : null), (i) => showDay(days[i].key));
+        const body = document.getElementById('historyBody');
+        body.innerHTML = '';
+        days.slice().reverse().forEach((d) => {
+            const tr = document.createElement('tr');
+            const when = document.createElement('td');
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'day-link';
+            btn.textContent = d.label + (d.partial ? ' (so far)' : '');
+            btn.addEventListener('click', () => showDay(d.key));
+            when.appendChild(btn);
+            const val = document.createElement('td');
+            val.textContent = d.seen ? fmt(d.total) + ' ' + unit : '--';
+            const more = document.createElement('td');
+            more.textContent = d.seen + ' h';
+            more.style.color = '#4a6078';
+            tr.append(when, val, more);
+            body.appendChild(tr);
+        });
+    }
+
+    function showDay(key) {
+        const d = dayMap[key];
+        if (!d) return;
+        const slots = [];
+        for (let h = 0; h < 24; h++) {
+            const t = new Date(d.start.getTime() + h * 3600 * 1000);
+            const epoch = Math.round(t.getTime() / 1000);
+            slots.push({ label: pad(t.getHours()) + ':00', value: Object.prototype.hasOwnProperty.call(d.hours, epoch) ? d.hours[epoch] : null });
+        }
+        document.getElementById('allDaysBtn').hidden = false;
+        document.getElementById('viewSub').textContent = d.label + ', 6am to 6am' + (d.partial ? ' (so far)' : '') + ' · ' + fmt(d.total) + ' ' + unit + ' in total';
+        document.getElementById('tableTitle').textContent = 'Hourly, ' + d.label;
+        document.getElementById('colWhen').textContent = 'Hour';
+        document.getElementById('colMore').textContent = '';
+        drawChart('bar', slots.map(s => s.label), slots.map(s => s.value), null);
+        const body = document.getElementById('historyBody');
+        body.innerHTML = '';
+        slots.forEach((s) => {
+            const tr = document.createElement('tr');
+            const when = document.createElement('td'); when.textContent = s.label;
+            const val = document.createElement('td'); val.textContent = s.value === null ? '--' : fmt(s.value) + ' ' + unit;
+            tr.append(when, val, document.createElement('td'));
+            body.appendChild(tr);
+        });
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    document.getElementById('allDaysBtn').addEventListener('click', showDays);
+    if (metric && days.length) showDays();
+    </script>
 </body>
 </html>
 """
@@ -1941,6 +2572,7 @@ def settings_view():
         sync_short=ctx.get("sync_short", "--"),
         pico_short=ctx.get("pico_short", "--"),
         log_short=ctx.get("log_short", "--"),
+        push_short=ctx.get("push_short", "--"),
         office_short=ctx.get("office_short", "--"),
         alarm_short=ctx.get("alarm_short", "--"),
         current_mode=current_mode_label(cfg),
@@ -2142,37 +2774,21 @@ def finish_water_calibration():
 
 
 def render_metric_history(metric_title, y_axis_title, color, fmt):
-    rows = get_hourly_history(max_points=168)
-    view_rows = []
-    labels = []
-    values = []
-
-    i = 0
-    while i < len(rows):
-        row = rows[i]
-        raw_val = row.get("water")
-        labels.append(row.get("label"))
-        values.append(raw_val)
-        view_rows.append({
-            "label": row.get("label"),
-            "value": fmt_value(raw_val, fmt),
-        })
-        i += 1
-
+    # Same daily-bars page as the shed controllers' water log (tap a day for its hours).
+    rows = get_hourly_history(max_points=24 * 45)
     return render_template_string(
         HISTORY_HTML,
         metric_title=metric_title,
-        y_axis_title=y_axis_title,
-        color=color,
-        rows=view_rows,
-        labels=labels,
-        values=values,
+        series=[{"label": metric_title, "axis_title": y_axis_title, "color": color, "values": [r.get("water") for r in rows]}],
+        rows=[{"label": r.get("label"), "values": [fmt_value(r.get("water"), fmt)]} for r in rows],
+        labels=[r.get("label") for r in rows],
+        epochs=[r.get("epoch") for r in rows],
     )
 
 
 @app.route("/history/water")
 def water_history_view():
-    return render_metric_history("Water History", "Water L", "#4db6ff", "f1")
+    return render_metric_history("Water History", "Water L", "#5fd0d8", "f1")
 
 
 @app.route("/health")
@@ -2221,6 +2837,13 @@ def config_view():
       <input type="number" name="water_low_lpm" min="0" step="0.01" value="%s">
       <label>Pulses Per Litre</label>
       <input type="number" name="water_pulses_per_litre" min="1" step="0.1" value="%s">
+      <label>Shelly 3EM address (incoming supply)</label>
+      <input type="text" name="shelly_host" placeholder="e.g. 192.168.1.60 (leave blank if none)" value="%s">
+      <label>Supply fuse rating per phase (A, 0 for none)</label>
+      <input type="number" name="supply_fuse_amps" min="0" step="1" value="%s">
+      <label>Phase this controller is powered from</label>
+      <select name="controller_phase">%s</select>
+      <div class="hint" style="margin-top:6px">If that phase is lost the controller switches off too, so the office raises the alarm instead.</div>
       <button type="submit">Save Config</button>
     </form>
     """ % (
@@ -2230,6 +2853,10 @@ def config_view():
         cfg.get("touch_refresh_seconds", 1),
         cfg.get("water_low_lpm", 0.1),
         cfg.get("water_pulses_per_litre", 450.0),
+        escape(cfg.get("shelly_host", "") or ""),
+        cfg.get("supply_fuse_amps", 0) or 0,
+        "".join('<option value="%s"%s>%s</option>' % (v, " selected" if str(cfg.get("controller_phase", "") or "") == v else "", label)
+                for v, label in [("", "Not set"), ("L1", "L1"), ("L2", "L2"), ("L3", "L3")]),
     )
     return render_template_string(SIMPLE_PAGE_HTML, title="Config", back_url=url_for("settings_view"), body=body)
 
@@ -2250,6 +2877,14 @@ def save_config_view():
         cfg["water_pulses_per_litre"] = float(request.form.get("water_pulses_per_litre", cfg["water_pulses_per_litre"]))
     except Exception:
         pass
+    try:
+        cfg["supply_fuse_amps"] = max(0, int(float(request.form.get("supply_fuse_amps", cfg.get("supply_fuse_amps", 0)) or 0)))
+    except Exception:
+        pass
+    if request.form.get("controller_phase", None) in ["", "L1", "L2", "L3"]:
+        cfg["controller_phase"] = request.form.get("controller_phase")
+    if "shelly_host" in request.form:
+        cfg["shelly_host"] = str(request.form.get("shelly_host") or "").strip().replace("http://", "").replace("https://", "").strip("/")
     save_config(cfg)
     return redirect(url_for("settings_view", msg="Config saved"))
 
@@ -2447,4 +3082,5 @@ if __name__ == "__main__":
         save_state(default_state())
     threading.Thread(target=backup_worker, daemon=True).start()
     threading.Thread(target=background_sync_loop, daemon=True).start()
+    threading.Thread(target=shelly_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=int(load_config().get("listen_port", 8092)))

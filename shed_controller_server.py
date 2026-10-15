@@ -9473,7 +9473,13 @@ def line_chart_svg(labels, series, unit="", height=280):
         lo, hi = mid - 2, mid + 2
     pad = (hi - lo) * 0.08
     lo, hi = lo - pad, hi + pad
-    step = max(1, int(round((hi - lo) / 5.0)))
+    # A round step (1, 2, 5, 10, 20, 25, 50...) giving about five grid lines.
+    rough = (hi - lo) / 5.0
+    step = 1
+    for nice in [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000]:
+        step = nice
+        if nice >= rough:
+            break
     first_tick = int(lo // step + 1) * step
 
     def x_of(i):
@@ -9504,7 +9510,7 @@ def line_chart_svg(labels, series, unit="", height=280):
         if len(run) > 1:
             parts.append('<polyline points="%s" fill="none" stroke="%s" stroke-width="%s" stroke-linejoin="round" stroke-linecap="round"%s/>' % (" ".join(run), colour, "2" if dashed else "3", dash))
         for i, v in enumerate(vals):
-            if v is not None and not dashed:
+            if v is not None and not dashed and n <= 60:
                 parts.append('<circle cx="%.1f" cy="%.1f" r="3.5" fill="%s"/>' % (x_of(i), y_of(v), colour))
     parts.append("</svg>")
     return Markup("".join(parts))
