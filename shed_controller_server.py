@@ -9669,7 +9669,7 @@ def apply_update_view():
 <head>
     <meta charset="utf-8">
     <title>Updating Controller</title>
-    <meta http-equiv="refresh" content="6; url={{ url_for('controller_settings_view') }}">
+    <meta http-equiv="refresh" content="90; url={{ url_for('index') }}">
     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
     <style>
         body { margin:0; background: #5b5b5b; color: #0d2b4a; font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; }
@@ -9683,9 +9683,23 @@ def apply_update_view():
     <div class="wrap">
         <div class="panel">
             <h1>Updating Controller</h1>
-            <div class="sub">The latest code has been pulled. {{ pico_message }} This controller is restarting now and will return to settings automatically.</div>
+            <div class="sub">The latest code has been pulled. {{ pico_message }} This controller is restarting now and will open the overview when it's back.</div>
         </div>
     </div>
+<script>
+// Wait for the restart, then open the main screen. The old copy keeps answering for a
+// moment, so wait until it has gone away and come back (or 20 seconds, if it was quick).
+(function () {
+  var start = Date.now(), wentDown = false;
+  function check() {
+    fetch('/favicon.png?restart=' + Date.now(), { cache: 'no-store' }).then(function (r) {
+      if (r.ok && (wentDown || Date.now() - start > 20000)) { window.location.replace('/'); return; }
+      setTimeout(check, 1500);
+    }).catch(function () { wentDown = true; setTimeout(check, 1500); });
+  }
+  setTimeout(check, 2000);
+})();
+</script>
 </body>
 </html>
         """,

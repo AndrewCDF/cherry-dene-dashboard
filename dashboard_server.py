@@ -9270,20 +9270,49 @@ OFFICE_SETTINGS_HTML = """
                 <section>
                     <h2 class="section-title">Software</h2>
                     <div class="card" style="display:grid; gap:12px">
-                        <div class="row"><span class="status">{{ update_status.status }}</span></div>
-                        <div class="row"><span class="row-label">Last checked</span><span>{{ update_checked_at }}</span></div>
+                        <div class="row"><span class="status" id="officeUpdateStatus">{{ update_status.status }}</span></div>
+                        <div class="row"><span class="row-label">Last checked</span><span id="officeUpdateChecked">{{ update_checked_at }}</span></div>
                         <div class="btns">
-                            <form method="post" action="{{ url_for('office_check_update_view') }}"><button type="submit">Check for update</button></form>
-                            {% if update_status.update_available %}
-                            <form method="post" action="{{ url_for('office_apply_update_view') }}"><button class="primary" type="submit">Install update</button></form>
-                            {% endif %}
+                            <form id="officeUpdateCheckForm" method="post" action="{{ url_for('office_check_update_view') }}"><button id="officeUpdateCheckButton" type="submit">Check for update</button></form>
+                            <form id="officeUpdateApplyForm" method="post" action="{{ url_for('office_apply_update_view') }}" {% if not update_status.update_available %}style="display:none"{% endif %}><button class="primary" type="submit">Install update</button></form>
                         </div>
                         <details>
                             <summary>Version details</summary>
-                            <div class="row"><span class="row-label">Branch</span><span class="mono">{{ update_status.branch }}</span></div>
-                            <div class="row"><span class="row-label">Installed</span><span class="mono">{{ update_status.local_commit }}</span></div>
-                            <div class="row"><span class="row-label">Latest</span><span class="mono">{{ update_status.remote_commit }}</span></div>
+                            <div class="row"><span class="row-label">Branch</span><span class="mono" id="officeUpdateBranch">{{ update_status.branch }}</span></div>
+                            <div class="row"><span class="row-label">Installed</span><span class="mono" id="officeUpdateCurrent">{{ update_status.local_commit }}</span></div>
+                            <div class="row"><span class="row-label">Latest</span><span class="mono" id="officeUpdateLatest">{{ update_status.remote_commit }}</span></div>
                         </details>
+                        <script>
+                        // Check in place: the page stays where it is and the button shows it's working.
+                        (function () {
+                            const form = document.getElementById('officeUpdateCheckForm');
+                            const button = document.getElementById('officeUpdateCheckButton');
+                            const statusEl = document.getElementById('officeUpdateStatus');
+                            if (!form || !button) return;
+                            form.addEventListener('submit', async function (event) {
+                                event.preventDefault();
+                                button.disabled = true;
+                                button.textContent = 'Checking...';
+                                statusEl.textContent = 'Checking GitHub...';
+                                try {
+                                    const resp = await fetch(form.action, { method: 'POST', headers: { 'X-Requested-With': 'fetch', 'Accept': 'application/json' } });
+                                    if (!resp.ok) throw new Error('check failed');
+                                    const d = await resp.json();
+                                    statusEl.textContent = d.status || '--';
+                                    document.getElementById('officeUpdateChecked').textContent = d.checked_at || '--';
+                                    document.getElementById('officeUpdateBranch').textContent = d.branch || '--';
+                                    document.getElementById('officeUpdateCurrent').textContent = d.local_commit || '--';
+                                    document.getElementById('officeUpdateLatest').textContent = d.remote_commit || '--';
+                                    document.getElementById('officeUpdateApplyForm').style.display = d.update_available ? '' : 'none';
+                                } catch (err) {
+                                    statusEl.textContent = 'Update check failed';
+                                } finally {
+                                    button.disabled = false;
+                                    button.textContent = 'Check for update';
+                                }
+                            });
+                        })();
+                        </script>
                     </div>
                 </section>
 
@@ -12338,7 +12367,18 @@ def office_farm_health_view():
 
 @app.route("/settings/update/check", methods=["POST"])
 def office_check_update_view():
-    check_office_update()
+    status = check_office_update()
+    if request.headers.get("X-Requested-With") == "fetch":
+        # Checked in place on the Settings page, so it doesn't jump back to the top.
+        checked = status.get("checked_at")
+        return jsonify({
+            "status": status.get("status", "--"),
+            "update_available": bool(status.get("update_available")),
+            "branch": status.get("branch", "--"),
+            "local_commit": status.get("local_commit", "--"),
+            "remote_commit": status.get("remote_commit", "--"),
+            "checked_at": datetime.fromtimestamp(int(checked)).strftime("%d %b %Y %H:%M:%S") if checked else "--",
+        })
     return redirect(url_for("office_settings_view"))
 
 
@@ -12395,7 +12435,7 @@ def office_apply_update_view():
             <head>
                 <meta charset="utf-8">
                 <title>Restarting Office Dashboard</title>
-                <meta http-equiv="refresh" content="6;url={{ url_for('office_settings_view') }}">
+                <meta http-equiv="refresh" content="90;url={{ url_for('dashboard') }}">
                 <style>
                     body { margin:0; font-family:Arial, sans-serif; background: #5b5b5b; color: #0d2b4a; }
                     .wrap { max-width:900px; margin:0 auto; padding:30px 16px; }
@@ -12408,9 +12448,23 @@ def office_apply_update_view():
                 <div class="wrap">
                     <div class="panel">
                         <h1>Restarting office dashboard</h1>
-                        <div class="sub">The latest code has been pulled. The office dashboard is restarting now and will return to settings automatically.</div>
+                        <div class="sub">The latest code has been pulled. The office dashboard is restarting now and will open the dashboard when it's back.</div>
                     </div>
                 </div>
+<script>
+// Wait for the restart, then open the main screen. The old copy keeps answering for a
+// moment, so wait until it has gone away and come back (or 20 seconds, if it was quick).
+(function () {
+  var start = Date.now(), wentDown = false;
+  function check() {
+    fetch('/favicon.png?restart=' + Date.now(), { cache: 'no-store' }).then(function (r) {
+      if (r.ok && (wentDown || Date.now() - start > 20000)) { window.location.replace('/'); return; }
+      setTimeout(check, 1500);
+    }).catch(function () { wentDown = true; setTimeout(check, 1500); });
+  }
+  setTimeout(check, 2000);
+})();
+</script>
             </body>
             </html>
             """
