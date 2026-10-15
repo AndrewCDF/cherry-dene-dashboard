@@ -10181,6 +10181,10 @@ BOREHOLE_DETAIL_HTML = """
         .wp-split.no-power { grid-template-columns: 1fr; }
         .wp-col { display: flex; flex-direction: column; min-width: 0; }
         .wp-split > section + section { margin-top: 0; }
+        /* Each chart sits under its own box: water down the left, power down the right
+           (one after the other on a phone). */
+        .wp-split { align-items: start; }
+        .wp-col .wp-chart { margin-top: 16px; margin-bottom: 0; }
         .wp-tile { flex: 1; display: flex; flex-direction: column; gap: 10px; border-radius: 16px; padding: 16px 20px; background: var(--card); border: 2px solid var(--rule); }
         .wp-tile.flow-green { border-color: #2f9e3a; box-shadow: 0 0 8px rgba(47,158,58,0.6), 0 0 18px rgba(47,158,58,0.3); }
         .wp-tile.flow-red { border-color: #d64545; box-shadow: 0 0 8px rgba(214,69,69,0.6), 0 0 18px rgba(214,69,69,0.3); }
@@ -10232,6 +10236,7 @@ BOREHOLE_DETAIL_HTML = """
                         <button class="primary" type="submit">Save</button>
                     </form>
                 </div>
+                <div id="waterBars" class="wp-chart"></div>
             </section>
             {# Power always shows; "--" until the supply meter (Shelly) reports. #}
             <section class="wp-col">
@@ -10255,20 +10260,19 @@ BOREHOLE_DETAIL_HTML = """
                     </div>
                     {% if not bh.has_power %}<div class="hint">Set the Shelly 3EM address in the Water &amp; Power controller's Settings → Config and the supply readings and phase chart fill in.</div>{% endif %}
                 </div>
+                <section class="chart-card wp-chart">
+                    <div class="chart-head">
+                        <h2 class="section-title" style="margin: 0">Phase load</h2>
+                        <div style="display: flex; gap: 6px">
+                            {% for h in [6, 24, 168] %}<a class="pill {{ 'on' if h == phase_hours else '' }}" href="{{ url_for('borehole_detail', hours=h) }}" style="text-decoration: none">{{ '7 days' if h == 168 else (h|string ~ ' h') }}</a>{% endfor %}
+                        </div>
+                    </div>
+                    <div class="hint" style="margin-bottom: 6px">Highest amps on each phase{% if phase_hours <= 6 %} each minute{% elif phase_hours <= 24 %} in each 5 minutes{% else %} in each half hour{% endif %}.{% if bh.power_fuse %} Red dashed line is the {{ bh.power_fuse }} A fuse.{% endif %}</div>
+                    {{ phase_chart }}
+                </section>
             </section>
         </div>
 
-        <section class="chart-card">
-            <div class="chart-head">
-                <h2 class="section-title" style="margin: 0">Phase load</h2>
-                <div style="display: flex; gap: 6px">
-                    {% for h in [6, 24, 168] %}<a class="pill {{ 'on' if h == phase_hours else '' }}" href="{{ url_for('borehole_detail', hours=h) }}" style="text-decoration: none">{{ '7 days' if h == 168 else (h|string ~ ' h') }}</a>{% endfor %}
-                </div>
-            </div>
-            <div class="hint" style="margin-bottom: 6px">Highest amps on each phase{% if phase_hours <= 6 %} each minute{% elif phase_hours <= 24 %} in each 5 minutes{% else %} in each half hour{% endif %}.{% if bh.power_fuse %} Red dashed line is the {{ bh.power_fuse }} A fuse.{% endif %}</div>
-            {{ phase_chart }}
-        </section>
-        <div id="waterBars"></div>
     </div>
 {{ day_bars_js|safe }}
 <script>
