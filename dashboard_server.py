@@ -10214,7 +10214,7 @@ BOREHOLE_DETAIL_HTML = """
     <div class="wrap">
         {% if request.args.get('msg') %}<div class="msg auto-dismiss {% if request.args.get('ok') == '0' %}error{% endif %}">{{ request.args.get('msg') }}</div>{% endif %}
         {% if bh.alarm %}<div class="msg error">{{ bh.alarm }}</div>{% endif %}
-        <div class="wp-split{{ ' no-power' if not bh.has_power else '' }}">
+        <div class="wp-split">
             <section class="wp-col">
                 <h2 class="section-title">Water</h2>
                 <div class="wp-tile {{ water.glow }}">
@@ -10233,11 +10233,11 @@ BOREHOLE_DETAIL_HTML = """
                     </form>
                 </div>
             </section>
-            {% if bh.has_power %}
+            {# Power always shows; "--" until the supply meter (Shelly) reports. #}
             <section class="wp-col">
                 <h2 class="section-title">Power</h2>
-                <div class="wp-tile {{ 'flow-green' if bh.power_kw != '--' else 'flow-red' }}">
-                    <div class="wp-label"><span>Incoming supply</span><span>{{ 'Live' if bh.power_kw != '--' else 'No reading' }}{% if bh.power_fuse %} · {{ bh.power_fuse }} A fuse{% endif %}</span></div>
+                <div class="wp-tile {{ ('flow-green' if bh.power_kw != '--' else 'flow-red') if bh.has_power else '' }}">
+                    <div class="wp-label"><span>Incoming supply</span><span>{% if not bh.has_power %}Meter not connected{% else %}{{ 'Live' if bh.power_kw != '--' else 'No reading' }}{% if bh.power_fuse %} · {{ bh.power_fuse }} A fuse{% endif %}{% endif %}</span></div>
                     <div class="wp-big cond">{{ bh.power_kw }} <small>kW</small></div>
                     <div class="wp-rows">
                         <div class="wp-row"><span>Today since midnight</span><b class="cond">{{ bh.power_today }} <small>kWh</small></b></div>
@@ -10253,12 +10253,11 @@ BOREHOLE_DETAIL_HTML = """
                         </div>
                         {% endfor %}
                     </div>
+                    {% if not bh.has_power %}<div class="hint">Set the Shelly 3EM address in the Water &amp; Power controller's Settings → Config and the supply readings and phase chart fill in.</div>{% endif %}
                 </div>
             </section>
-            {% endif %}
         </div>
 
-        {% if bh.has_power %}
         <section class="chart-card">
             <div class="chart-head">
                 <h2 class="section-title" style="margin: 0">Phase load</h2>
@@ -10269,7 +10268,6 @@ BOREHOLE_DETAIL_HTML = """
             <div class="hint" style="margin-bottom: 6px">Highest amps on each phase{% if phase_hours <= 6 %} each minute{% elif phase_hours <= 24 %} in each 5 minutes{% else %} in each half hour{% endif %}.{% if bh.power_fuse %} Red dashed line is the {{ bh.power_fuse }} A fuse.{% endif %}</div>
             {{ phase_chart }}
         </section>
-        {% endif %}
         <div id="waterBars"></div>
     </div>
 {{ day_bars_js|safe }}
@@ -13632,10 +13630,8 @@ def borehole_detail():
     except Exception:
         phase_hours = 24
     phase_hours = phase_hours if phase_hours in [6, 24, 168] else 24
-    phase_chart = ""
-    if bh.get("has_power"):
-        labels, series = phase_chart_series(read_all_json_lines(BOREHOLE_POWER_MINUTES_FILE), phase_hours, bh.get("power_fuse") or 0)
-        phase_chart = line_chart_svg(labels, series, unit=" A", height=340)
+    labels, series = phase_chart_series(read_all_json_lines(BOREHOLE_POWER_MINUTES_FILE), phase_hours, bh.get("power_fuse") or 0)
+    phase_chart = line_chart_svg(labels, series, unit=" A", height=340)
     return render_template_string(BOREHOLE_DETAIL_HTML, bh=bh, bar_epochs=bar_epochs, water_values=water_values,
                                   phase_hours=phase_hours, phase_chart=phase_chart, water=borehole_water_panel(bh))
 
