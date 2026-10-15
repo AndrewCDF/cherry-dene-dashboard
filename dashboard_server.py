@@ -8000,11 +8000,11 @@ OFFICE_CARDS_HTML = """
         <div class="ss-stat"><span>Last 7 days</span><b>{{ borehole.water_week }} <small>L</small></b></div>
       </div>
     </div>
-    {% if borehole.has_power %}
+    {# Power always shows, so the card looks the same everywhere; "--" until the supply meter reports. #}
     <div class="ss-wp-sec">
       <div class="ss-wp-supply">
-        <div class="ss-tile edge-{{ 'ok' if borehole.power_kw != '--' else 'alarm' }}">
-          <div class="ss-tile-main"><span class="ss-tile-label">Supply now</span><span class="ss-mid">{{ borehole.power_kw_short }} <small>kW</small></span></div>
+        <div class="ss-tile edge-{{ ('ok' if borehole.power_kw != '--' else 'alarm') if borehole.has_power else 'none' }}">
+          <div class="ss-tile-main"><span class="ss-tile-label">{{ 'Supply now' if borehole.has_power else 'Meter not connected' }}</span><span class="ss-mid">{{ borehole.power_kw_short }} <small>kW</small></span></div>
         </div>
         <div class="ss-stat"><span>Today</span><b>{{ borehole.power_today }} <small>kWh</small></b></div>
         <div class="ss-stat"><span>Yesterday</span><b>{{ borehole.power_yesterday }} <small>kWh</small></b></div>
@@ -8017,7 +8017,6 @@ OFFICE_CARDS_HTML = """
       {% endfor %}
       </div>
     </div>
-    {% endif %}
   </article>
 """
 
