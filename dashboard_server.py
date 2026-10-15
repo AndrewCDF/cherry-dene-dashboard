@@ -6093,6 +6093,8 @@ def build_borehole_row():
     return {
         "has_power": bool(power),
         "power_kw": fmt_value(power.get("total_w") / 1000.0, "f2") if power_live else "--",
+        # One decimal on the home tile so up to 99.9 kW fits the Supply now box.
+        "power_kw_short": fmt_value(power.get("total_w") / 1000.0, "f1") if power_live else "--",
         # kWh: one decimal for small days, whole numbers from 100 kWh so big days fit the tile.
         "power_today": fmt_value(power.get("today_kwh"), "f0" if (power.get("today_kwh") or 0) >= 100 else "f1") if power else "--",
         "power_yesterday": fmt_value(power.get("yesterday_kwh"), "f0" if (power.get("yesterday_kwh") or 0) >= 100 else "f1") if power else "--",
@@ -8002,7 +8004,7 @@ OFFICE_CARDS_HTML = """
     <div class="ss-wp-sec">
       <div class="ss-wp-supply">
         <div class="ss-tile edge-{{ 'ok' if borehole.power_kw != '--' else 'alarm' }}">
-          <div class="ss-tile-main"><span class="ss-tile-label">Supply now</span><span class="ss-mid">{{ borehole.power_kw }} <small>kW</small></span></div>
+          <div class="ss-tile-main"><span class="ss-tile-label">Supply now</span><span class="ss-mid">{{ borehole.power_kw_short }} <small>kW</small></span></div>
         </div>
         <div class="ss-stat"><span>Today</span><b>{{ borehole.power_today }} <small>kWh</small></b></div>
         <div class="ss-stat"><span>Yesterday</span><b>{{ borehole.power_yesterday }} <small>kWh</small></b></div>
@@ -8016,7 +8018,6 @@ OFFICE_CARDS_HTML = """
       </div>
     </div>
     {% endif %}
-    {% if borehole.alarm %}<div class="ss-card-alarm">{{ borehole.alarm }}</div>{% endif %}
   </article>
 """
 
@@ -8326,11 +8327,19 @@ OFFICE_HOME_HTML = """
   body.tv .ss-grid .ss-stat b { font-size: 16px; line-height: 1.15; }
   body.tv .ss-grid .ss-card { gap: 5px; }
   /* Sections sit together with no empty gaps (an alarm line only takes space when
-     there is one). Any spare height goes into the eight boxed figures at the bottom,
-     so the reading tiles stay compact and there are no blank strips. */
-  body.tv .ss-grid .ss-more { flex: 1 1 auto; min-height: 0; }
-  body.tv .ss-grid .ss-stats { flex: 1 1 auto; grid-auto-rows: 1fr; align-content: stretch; }
+     there is one). The eight boxed figures at the bottom only take the room their label
+     and figure need; any spare height goes into the four reading tiles (temperature,
+     humidity, water and feed), whose figures are larger to use it. */
+  body.tv .ss-grid .ss-card:not(.ss-wp) .ss-more { flex: 0.6 1 auto; min-height: 0; }
+  body.tv .ss-grid .ss-card:not(.ss-wp) .ss-stats { flex: 1 1 auto; grid-auto-rows: 1fr; align-content: stretch; }
   body.tv .ss-grid .ss-stat { justify-content: center; }
+  body.tv .ss-grid .ss-card:not(.ss-wp) .ss-tiles { flex: 1 1 auto; min-height: 0; grid-auto-rows: 1fr; align-content: stretch; }
+  body.tv .ss-grid .ss-card:not(.ss-wp) .ss-tile { min-height: 0; }
+  body.tv .ss-grid .ss-card:not(.ss-wp) .ss-big { font-size: 46px; line-height: 1; }
+  body.tv .ss-grid .ss-card:not(.ss-wp) .ss-mid { font-size: 36px; line-height: 1.05; }
+  body.tv .ss-grid .ss-card:not(.ss-wp) .ss-mid small { font-size: 18px; }
+  body.tv .ss-grid .ss-card:not(.ss-wp) .ss-tile-label { font-size: 16px; }
+  body.tv .ss-grid .ss-card:not(.ss-wp) .ss-hilo { font-size: 17px; }
   body.tv .ss-card-alarm, body.tv .ss-card-note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   body.tv .ss-card-alarm { font-size: 16px; }
   body.tv .ss-card-note { font-size: 15px; color: var(--text); }
@@ -11768,6 +11777,7 @@ def office_home_context(tv=False):
         "alarm": bh.get("alarm_msg", ""),
         "has_power": bh.get("has_power", False),
         "power_kw": bh.get("power_kw", "--"),
+        "power_kw_short": bh.get("power_kw_short", "--"),
         "power_today": bh.get("power_today", "--"),
         "power_yesterday": bh.get("power_yesterday", "--"),
         "power_phases": bh.get("power_phases", []),
