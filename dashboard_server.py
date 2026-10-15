@@ -6093,8 +6093,9 @@ def build_borehole_row():
     return {
         "has_power": bool(power),
         "power_kw": fmt_value(power.get("total_w") / 1000.0, "f2") if power_live else "--",
-        "power_today": fmt_value(power.get("today_kwh"), "f1") if power else "--",
-        "power_yesterday": fmt_value(power.get("yesterday_kwh"), "f1") if power else "--",
+        # kWh: one decimal for small days, whole numbers from 100 kWh so big days fit the tile.
+        "power_today": fmt_value(power.get("today_kwh"), "f0" if (power.get("today_kwh") or 0) >= 100 else "f1") if power else "--",
+        "power_yesterday": fmt_value(power.get("yesterday_kwh"), "f0" if (power.get("yesterday_kwh") or 0) >= 100 else "f1") if power else "--",
         "power_phases": power_phases,
         "power_fuse": (power or {}).get("fuse_amps") or 0,
         "name": "Water & Power",
@@ -7982,36 +7983,41 @@ OFFICE_CARDS_HTML = """
   </article>
   {% endfor %}
 
-  {% if tv %}
-  <article class="ss-card kind-water">
-    {% if pc %}<a class="ss-card-head ss-static ss-card-link" href="{{ url_for('borehole_detail') }}">{% else %}<div class="ss-card-head ss-static">{% endif %}
+  <article class="ss-card kind-water ss-wp">
+    {% if tv and not pc %}<div class="ss-card-head ss-static">{% else %}<a class="ss-card-head ss-static ss-card-link" href="{{ url_for('borehole_detail') }}">{% endif %}
       <span class="ss-row"><span class="ss-name">Water &amp; Power</span><span class="ss-status kind-{{ borehole.kind }}">{{ borehole.status }}</span></span>
-      <span class="ss-row"><span class="ss-birds">Flow now {{ borehole.water }} L/min</span></span>
-    {% if pc %}</a>{% else %}</div>{% endif %}
-    <div class="ss-idle"><b>{{ borehole.daily }} L</b> today<br>Last 7 days {{ borehole.weekly }} L</div>
-    {% if borehole.has_power %}<div class="ss-idle"><b>{{ borehole.power_kw }} kW</b> supply · {{ borehole.power_today }} kWh today<br>{% for ph in borehole.power_phases %}<span{% if ph.hot %} style="color:#c62828; font-weight:700"{% endif %}>{{ ph.name }} {{ ph.a }} A</span>{% if not loop.last %} · {% endif %}{% endfor %}</div>{% endif %}
-    <div class="ss-foot"><span>Updated {{ borehole.updated }}</span></div>
+      <span class="ss-row"><span class="ss-birds">Updated {{ borehole.updated }}</span></span>
+    {% if tv and not pc %}</div>{% else %}</a>{% endif %}
+    <div class="ss-wp-sec">
+      <div class="ss-tile edge-{{ borehole.water_edge }}">
+        <div class="ss-tile-main"><span class="ss-tile-label">Water now</span><span class="ss-mid"><span data-bore-water>{{ borehole.water }}</span> <small>L/min</small></span></div>
+      </div>
+      <div class="ss-stats ss-stats-3">
+        <div class="ss-stat"><span>Today</span><b>{{ borehole.water_today }} <small>L</small></b></div>
+        <div class="ss-stat"><span>Yesterday</span><b>{{ borehole.water_yesterday }} <small>L</small></b></div>
+        <div class="ss-stat"><span>Last 7 days</span><b>{{ borehole.water_week }} <small>L</small></b></div>
+      </div>
+    </div>
+    {% if borehole.has_power %}
+    <div class="ss-wp-sec">
+      <div class="ss-wp-supply">
+        <div class="ss-tile edge-{{ 'ok' if borehole.power_kw != '--' else 'alarm' }}">
+          <div class="ss-tile-main"><span class="ss-tile-label">Supply now</span><span class="ss-mid">{{ borehole.power_kw }} <small>kW</small></span></div>
+        </div>
+        <div class="ss-stat"><span>Today</span><b>{{ borehole.power_today }} <small>kWh</small></b></div>
+        <div class="ss-stat"><span>Yesterday</span><b>{{ borehole.power_yesterday }} <small>kWh</small></b></div>
+      </div>
+      <div class="ss-phases">
+      {% for ph in borehole.power_phases %}
+      <div class="ss-phase{{ ' hot' if ph.hot else '' }}" style="border-top-color: {{ ph.colour }}">
+        <span>{{ ph.name }}</span><b>{{ ph.a }} <small>A</small></b>
+      </div>
+      {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+    {% if borehole.alarm %}<div class="ss-card-alarm">{{ borehole.alarm }}</div>{% endif %}
   </article>
-  {% endif %}
-</section>
-
-{% if not tv %}
-<section aria-label="Water and power" class="ss-borehole kind-{{ borehole.kind }}">
-  <h2>Water &amp; Power</h2>
-  <span class="ss-status kind-{{ borehole.kind }}">{{ borehole.status }}</span>
-  <div class="ss-bh-stat"><span>Flow now</span><b><span data-bore-water>{{ borehole.water }}</span> L/min</b></div>
-  <div class="ss-bh-stat"><span>Today</span><b>{{ borehole.daily }} L</b></div>
-  <div class="ss-bh-stat"><span>Last 7 days</span><b>{{ borehole.weekly }} L</b></div>
-  <div class="ss-bh-stat"><span>Updated</span><b>{{ borehole.updated }}</b></div>
-  {% if borehole.has_power %}
-  <div class="ss-bh-stat"><span>Supply now</span><b>{{ borehole.power_kw }} kW</b></div>
-  <div class="ss-bh-stat"><span>Electric today</span><b>{{ borehole.power_today }} kWh</b></div>
-  {% for ph in borehole.power_phases %}<div class="ss-bh-stat"><span>{{ ph.name }} amps</span><b{% if ph.hot %} style="color:#c62828"{% endif %}>{{ ph.a }} A</b></div>{% endfor %}
-  {% endif %}
-  {% if borehole.alarm %}<div class="ss-card-alarm">{{ borehole.alarm }}</div>{% endif %}
-  <a href="{{ url_for('borehole_detail') }}" class="ss-link">Water &amp; power details</a>
-</section>
-{% endif %}
 """
 
 
@@ -8123,6 +8129,54 @@ OFFICE_HOME_HTML = """
   .ss-stat { display: flex; flex-direction: column; min-width: 0; border: 2px solid #c9d4df; border-radius: 7px; background: var(--soft-bg); padding: 3px 7px; }
   .ss-stat span { font-size: 12px; color: var(--muted); white-space: nowrap; }
   .ss-stat b { font-size: 16px; white-space: nowrap; }
+  /* Water & Power card: water totals in three boxes, then one box per supply phase. */
+  /* The 7-day box is wider so a seven-figure total (1,234,567 L) fits. */
+  .ss-stats.ss-stats-3, body.tv .ss-grid .ss-stats.ss-stats-3, body:not(.tv) .ss-stats.ss-stats-3 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.3fr); }
+  .ss-wp .ss-stat b small { font-size: 0.7em; color: var(--muted); }
+  .ss-phases { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  .ss-phase { display: flex; flex-direction: column; min-width: 0; border: 2px solid #c9d4df; border-top-width: 5px; border-radius: 8px; background: var(--soft-bg); padding: 3px 8px; }
+  .ss-phase span { font-size: 12px; font-weight: 700; color: var(--muted); }
+  .ss-phase b { font-size: 22px; line-height: 1.1; white-space: nowrap; }
+  .ss-phase b small { font-size: 13px; color: var(--muted); }
+  .ss-phase.hot { background: #fdecec; border-color: var(--red); }
+  .ss-phase.hot b { color: #c62828; }
+  .ss-wp .ss-mid small, body:not(.tv) .ss-wp .ss-mid small { display: inline; font-size: 14px; color: var(--muted); font-weight: 600; }
+  .ss-wp .ss-mid, body:not(.tv) .ss-wp .ss-mid { font-size: 25px; }
+  body:not(.tv) .ss-wp .ss-stat, body:not(.tv) .ss-wp .ss-phase { padding-top: 3px; padding-bottom: 3px; }
+  body:not(.tv) .ss-wp .ss-phase b { font-size: 21px; }
+  body.tv .ss-phase span { font-size: 14px; }
+  body.tv .ss-phase b { font-size: 26px; }
+  /* TV / PC wall: the totals and the phase boxes share the card's height, figures centred. */
+  .ss-wp-sec { display: flex; flex-direction: column; gap: 6px; }
+  /* Supply now beside today's and yesterday's kWh. */
+  .ss-wp-supply { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  .ss-wp-supply .ss-stat { justify-content: center; }
+  body.tv .ss-grid .ss-wp .ss-wp-sec > .ss-wp-supply { flex: 1 1 0; min-height: 0; }
+  body.tv .ss-grid .ss-wp .ss-wp-supply .ss-tile { align-items: center; }
+  body.tv .ss-grid .ss-wp .ss-wp-supply .ss-stat { align-items: center; text-align: center; }
+  .ss-wp .ss-stats.ss-stats-3 { border-top: 0; padding-top: 0; }
+  body.tv .ss-grid .ss-wp .ss-wp-sec { flex: 1 1 0; min-height: 0; gap: 5px; }
+  /* The "now" boxes take the spare height; the three totals and three phases stay compact. */
+  body.tv .ss-grid .ss-wp .ss-wp-sec > .ss-tile { flex: 1 1 0; min-height: 0; align-items: center; }
+  body.tv .ss-grid .ss-wp .ss-stats-3, body.tv .ss-grid .ss-wp .ss-phases { flex: 0.7 1 0; min-height: 0; grid-auto-rows: 1fr; align-content: stretch; }
+  body.tv .ss-grid .ss-wp .ss-stat, body.tv .ss-grid .ss-wp .ss-phase { padding-top: 3px; padding-bottom: 3px; }
+  body.tv .ss-grid .ss-wp .ss-mid { font-size: 33px; }
+  body.tv .ss-grid .ss-wp .ss-mid small { font-size: 16px; }
+  body.tv .ss-grid .ss-wp .ss-stat, body.tv .ss-grid .ss-wp .ss-phase { justify-content: center; align-items: center; text-align: center; }
+  body.tv .ss-grid .ss-wp .ss-stat span { font-size: 14px; }
+  body.tv .ss-grid .ss-wp .ss-stat b { font-size: 21px; }
+  body.tv .ss-grid .ss-wp .ss-stat { padding-left: 3px; padding-right: 3px; }
+  body.tv .ss-grid .ss-wp .ss-phase b { font-size: 24px; }
+  /* Tidy: a divider between water and power; each half is a "now" row then a row of three,
+     the two halves the same height, and the small boxes sharing one text size. */
+  .ss-wp-sec + .ss-wp-sec { border-top: 2px solid var(--rule); padding-top: 6px; margin-top: 0; }
+  .ss-wp-sec:has(+ .ss-wp-sec) { padding-bottom: 6px; }
+  body.tv .ss-grid .ss-wp .ss-wp-sec + .ss-wp-sec { flex-basis: 8px; }
+  body.tv .ss-wp-sec + .ss-wp-sec { border-top-color: #b9c6d4; }
+  .ss-wp .ss-phase span, .ss-wp .ss-stat span { font-weight: 600; }
+  body.tv .ss-grid .ss-wp .ss-phase span { font-size: 14px; }
+  body:not(.tv) .ss-wp .ss-stat b, body:not(.tv) .ss-wp .ss-phase b { font-size: 18px; }
+  body:not(.tv) .ss-wp .ss-stat span, body:not(.tv) .ss-wp .ss-phase span { font-size: 12px; }
   .ss-foot { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; color: var(--muted); margin-top: auto; }
   .ss-foot a { font-weight: 600; }
   .ss-idle { border-radius: 12px; background: var(--soft-bg); padding: 16px; font-size: 15px; color: #31475e; line-height: 1.4; }
@@ -10114,47 +10168,97 @@ BOREHOLE_DETAIL_HTML = """
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     {{ day_bars_head|safe }}
     <style>
-        .stats { grid-template-columns: repeat(4, 1fr); }
-        .stat-value.flow { color: #1676b8; }
+        /* Laid out like the Water & Power controller: water left, power right. */
+        .wp-split { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+        .wp-split.no-power { grid-template-columns: 1fr; }
+        .wp-col { display: flex; flex-direction: column; min-width: 0; }
+        .wp-split > section + section { margin-top: 0; }
+        .wp-tile { flex: 1; display: flex; flex-direction: column; gap: 10px; border-radius: 16px; padding: 16px 20px; background: var(--card); border: 2px solid var(--rule); }
+        .wp-tile.flow-green { border-color: #2f9e3a; box-shadow: 0 0 8px rgba(47,158,58,0.6), 0 0 18px rgba(47,158,58,0.3); }
+        .wp-tile.flow-red { border-color: #d64545; box-shadow: 0 0 8px rgba(214,69,69,0.6), 0 0 18px rgba(214,69,69,0.3); }
+        .wp-label { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 15px; color: var(--soft); }
+        .wp-label > span:last-child { color: var(--muted); }
+        .wp-big { margin: 6px 0; font-size: 72px; font-weight: 600; line-height: 1; color: var(--text); white-space: nowrap; }
+        .wp-big small { font-size: 28px; color: var(--muted); font-weight: 500; }
+        .wp-rows { display: flex; flex-direction: column; }
+        .wp-row { display: flex; justify-content: space-between; align-items: baseline; padding: 8px 0; border-top: 1px solid var(--track); font-size: 16px; }
+        .wp-row span:first-child { color: var(--muted); }
+        .wp-row b { font-size: 24px; font-weight: 600; }
+        .wp-row b small { font-size: 15px; color: var(--muted); font-weight: 500; }
+        .wp-threshold { display: flex; align-items: center; gap: 8px; margin-top: auto; padding-top: 10px; border-top: 1px solid var(--track); font-size: 15px; color: var(--muted); flex-wrap: wrap; }
+        .wp-threshold input { width: 110px; min-height: 44px; font-size: 18px; padding: 0 10px; }
+        .wp-threshold button { width: auto; min-height: 44px; padding: 0 16px; font-size: 16px; }
+        .phase-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: auto; }
+        .phase { border-radius: 12px; border: 1px solid var(--rule); background: var(--card-2); padding: 8px 12px; font-size: 14px; color: var(--muted); line-height: 1.35; }
+        .phase-name { font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 700; color: var(--navy); }
+        .phase-amps b { font-size: 32px; font-weight: 600; color: var(--text); }
+        .phase.hot { background: #fdecec; border-color: #d64545; }
+        .phase.hot .phase-amps b { color: #c62828; }
+        .chart-card { border-radius: 14px; background: var(--card); padding: 14px 18px 10px; margin-bottom: 20px; }
+        .chart-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
         .line-chart { display: block; width: 100%; height: auto; }
         .chart-empty { padding: 30px 0; text-align: center; color: var(--muted); }
-        @media (max-width: 860px) { .stats { grid-template-columns: 1fr 1fr; } }
+        @media (max-width: 860px) { .wp-split { grid-template-columns: 1fr; } .wp-big { font-size: 56px; } }
     </style>
 </head>
 <body>
     {{ office_topbar('Water & Power') }}
     <div class="wrap">
+        {% if request.args.get('msg') %}<div class="msg auto-dismiss {% if request.args.get('ok') == '0' %}error{% endif %}">{{ request.args.get('msg') }}</div>{% endif %}
         {% if bh.alarm %}<div class="msg error">{{ bh.alarm }}</div>{% endif %}
-        <div class="stats">
-            <div class="stat"><div class="stat-label">Status</div><div class="stat-value cond" style="font-size:26px; padding-top:4px"><span class="pill {{ 'bad' if bh.kind == 'alarm' else ('on' if bh.kind == 'ok' else '') }}" style="font-size:18px">{{ bh.status }}</span></div><div class="stat-sub">Updated {{ bh.updated }}</div></div>
-            <div class="stat"><div class="stat-label">Flow now</div><div class="stat-value cond flow">{{ bh.water }}{% if bh.water != '--' %} <span style="font-size:18px">L/min</span>{% endif %}</div><div class="stat-sub">Live</div></div>
-            <div class="stat"><div class="stat-label">Today</div><div class="stat-value cond">{{ bh.daily }}{% if bh.daily != '--' %} <span style="font-size:18px">L</span>{% endif %}</div><div class="stat-sub">Since 6am</div></div>
-            <div class="stat"><div class="stat-label">Last 7 days</div><div class="stat-value cond">{{ bh.weekly }}{% if bh.weekly != '--' %} <span style="font-size:18px">L</span>{% endif %}</div><div class="stat-sub">6am to 6am days</div></div>
+        <div class="wp-split{{ ' no-power' if not bh.has_power else '' }}">
+            <section class="wp-col">
+                <h2 class="section-title">Water</h2>
+                <div class="wp-tile {{ water.glow }}">
+                    <div class="wp-label"><span>Flow now</span><span><span class="pill {{ 'bad' if bh.kind == 'alarm' else ('on' if bh.kind == 'ok' else '') }}">{{ bh.status }}</span> · Updated {{ bh.updated }}</span></div>
+                    <div class="wp-big cond">{{ water.lpm }} <small>L/min</small></div>
+                    <div class="wp-rows">
+                        <div class="wp-row"><span>Today since 6am</span><b class="cond">{{ water.today }} <small>L</small></b></div>
+                        <div class="wp-row"><span>Yesterday 6am to 6am</span><b class="cond">{{ water.yesterday }} <small>L</small></b></div>
+                        <div class="wp-row"><span>Last 7 days</span><b class="cond">{{ water.week }} <small>L</small></b></div>
+                    </div>
+                    <form class="wp-threshold" method="post" action="{{ url_for('borehole_threshold_save') }}">
+                        <label for="lowLpm">Glows red below</label>
+                        <input id="lowLpm" type="number" name="low_lpm" min="0" step="0.01" inputmode="decimal" value="{{ water.low_lpm }}">
+                        <span>L/min</span>
+                        <button class="primary" type="submit">Save</button>
+                    </form>
+                </div>
+            </section>
+            {% if bh.has_power %}
+            <section class="wp-col">
+                <h2 class="section-title">Power</h2>
+                <div class="wp-tile {{ 'flow-green' if bh.power_kw != '--' else 'flow-red' }}">
+                    <div class="wp-label"><span>Incoming supply</span><span>{{ 'Live' if bh.power_kw != '--' else 'No reading' }}{% if bh.power_fuse %} · {{ bh.power_fuse }} A fuse{% endif %}</span></div>
+                    <div class="wp-big cond">{{ bh.power_kw }} <small>kW</small></div>
+                    <div class="wp-rows">
+                        <div class="wp-row"><span>Today since midnight</span><b class="cond">{{ bh.power_today }} <small>kWh</small></b></div>
+                        <div class="wp-row"><span>Yesterday</span><b class="cond">{{ bh.power_yesterday }} <small>kWh</small></b></div>
+                    </div>
+                    <div class="phase-grid">
+                        {% for ph in bh.power_phases %}
+                        <div class="phase {{ 'hot' if ph.hot else '' }}" style="border-top: 5px solid {{ ph.colour }}">
+                            <div class="phase-name">{{ ph.name }}</div>
+                            <div class="phase-amps"><b class="cond">{{ ph.a }}</b> A</div>
+                            <div>{{ ph.v }} V · {{ ph.kw }} kW</div>
+                            <div>Peak <b>{{ ph.peak_a }}</b> A {{ ph.peak_at }}</div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </section>
+            {% endif %}
         </div>
+
         {% if bh.has_power %}
-        <h2 class="section-title">Incoming supply</h2>
-        <div class="stats">
-            <div class="stat"><div class="stat-label">Supply now</div><div class="stat-value cond">{{ bh.power_kw }}{% if bh.power_kw != '--' %} <span style="font-size:18px">kW</span>{% endif %}</div><div class="stat-sub">All three phases</div></div>
-            <div class="stat"><div class="stat-label">Today</div><div class="stat-value cond">{{ bh.power_today }}{% if bh.power_today != '--' %} <span style="font-size:18px">kWh</span>{% endif %}</div><div class="stat-sub">Since midnight</div></div>
-            <div class="stat"><div class="stat-label">Yesterday</div><div class="stat-value cond">{{ bh.power_yesterday }}{% if bh.power_yesterday != '--' %} <span style="font-size:18px">kWh</span>{% endif %}</div><div class="stat-sub">Midnight to midnight</div></div>
-            <div class="stat"><div class="stat-label">Fuse</div><div class="stat-value cond">{{ bh.power_fuse or '--' }}{% if bh.power_fuse %} <span style="font-size:18px">A</span>{% endif %}</div><div class="stat-sub">Per phase (set on the controller)</div></div>
-        </div>
-        <div class="stats">
-            {% for ph in bh.power_phases %}
-            <div class="stat" style="border-top: 5px solid {{ ph.colour }}{% if ph.hot %}; background: #fdecec{% endif %}">
-                <div class="stat-label">{{ ph.name }} amps now</div>
-                <div class="stat-value cond" {% if ph.hot %}style="color: #c62828"{% endif %}>{{ ph.a }}{% if ph.a != '--' %} <span style="font-size:18px">A</span>{% endif %}</div>
-                <div class="stat-sub">{{ ph.v }} V · {{ ph.kw }} kW · Peak today {{ ph.peak_a }} A {{ ph.peak_at }}</div>
-            </div>
-            {% endfor %}
-            <div class="stat"><div class="stat-label">Phase chart</div>
-                <div class="stat-sub" style="display:flex; gap:6px; flex-wrap:wrap; margin-top:6px">
-                    {% for h in [6, 24, 168] %}<a class="pill {{ 'on' if h == phase_hours else '' }}" href="{{ url_for('borehole_detail', hours=h) }}" style="text-decoration:none">{{ '7 days' if h == 168 else (h|string ~ ' h') }}</a>{% endfor %}
+        <section class="chart-card">
+            <div class="chart-head">
+                <h2 class="section-title" style="margin: 0">Phase load</h2>
+                <div style="display: flex; gap: 6px">
+                    {% for h in [6, 24, 168] %}<a class="pill {{ 'on' if h == phase_hours else '' }}" href="{{ url_for('borehole_detail', hours=h) }}" style="text-decoration: none">{{ '7 days' if h == 168 else (h|string ~ ' h') }}</a>{% endfor %}
                 </div>
             </div>
-        </div>
-        <section class="card" style="margin-bottom: 20px">
-            <div class="hint" style="margin-bottom:6px">Highest amps on each phase{% if phase_hours <= 6 %} each minute{% elif phase_hours <= 24 %} in each 5 minutes{% else %} in each half hour{% endif %}.{% if bh.power_fuse %} Red dashed line is the {{ bh.power_fuse }} A fuse.{% endif %}</div>
+            <div class="hint" style="margin-bottom: 6px">Highest amps on each phase{% if phase_hours <= 6 %} each minute{% elif phase_hours <= 24 %} in each 5 minutes{% else %} in each half hour{% endif %}.{% if bh.power_fuse %} Red dashed line is the {{ bh.power_fuse }} A fuse.{% endif %}</div>
             {{ phase_chart }}
         </section>
         {% endif %}
@@ -10162,6 +10266,7 @@ BOREHOLE_DETAIL_HTML = """
     </div>
 {{ day_bars_js|safe }}
 <script>
+setTimeout(() => { document.querySelectorAll('.auto-dismiss').forEach((el) => { el.style.display = 'none'; }); }, 8000);
 ssDayBars(document.getElementById('waterBars'), {
     title: 'Water', label: 'Water', unit: 'L', color: '#5fd0d8', subtitle: 'Last 45 days.',
     epochs: {{ bar_epochs|tojson }}, values: {{ water_values|tojson }}
@@ -11668,6 +11773,14 @@ def office_home_context(tv=False):
         "power_phases": bh.get("power_phases", []),
         "power_fuse": bh.get("power_fuse", 0),
     }
+    # Live flow glows against the office's low-flow setting; 6am-to-6am totals.
+    water_panel = borehole_water_panel(borehole)
+    borehole.update({
+        "water_edge": "ok" if water_panel["glow"] == "flow-green" else "alarm",
+        "water_today": water_panel["today"],
+        "water_yesterday": water_panel["yesterday"],
+        "water_week": water_panel["week"],
+    })
 
     farm_name = farm_identity()[0]
     if farm_name in ["", "Farm"]:
@@ -13515,7 +13628,58 @@ def borehole_detail():
         labels, series = phase_chart_series(read_all_json_lines(BOREHOLE_POWER_MINUTES_FILE), phase_hours, bh.get("power_fuse") or 0)
         phase_chart = line_chart_svg(labels, series, unit=" A", height=340)
     return render_template_string(BOREHOLE_DETAIL_HTML, bh=bh, bar_epochs=bar_epochs, water_values=water_values,
-                                  phase_hours=phase_hours, phase_chart=phase_chart)
+                                  phase_hours=phase_hours, phase_chart=phase_chart, water=borehole_water_panel(bh))
+
+
+def borehole_low_lpm():
+    try:
+        return float(load_office_config().get("borehole_low_lpm", 0.1))
+    except Exception:
+        return 0.1
+
+
+def borehole_water_panel(bh):
+    """Live flow (glowing green at or above the low-flow setting, red below it or when the
+    controller isn't reporting) and today / yesterday / last 7 days, 6am-to-6am days."""
+    totals = {}
+    for row in get_borehole_hourly_history(max_points=0):
+        try:
+            key = custom_day_key(datetime.fromtimestamp(int(row.get("epoch"))))
+            totals[key] = totals.get(key, 0.0) + float(row.get("water") or 0)
+        except Exception:
+            pass
+    now = datetime.now()
+    today_key = custom_day_key(now)
+    day_keys = [custom_day_key(now - timedelta(days=d)) for d in range(1, 8)]
+    live = latest_borehole_live()
+    try:
+        lpm = float(live.get("water_lpm")) if live.get("water_lpm") not in [None, ""] else None
+    except Exception:
+        lpm = None
+    low = borehole_low_lpm()
+    online = bh.get("kind") in ["ok", "alarm"]
+    return {
+        "lpm": fmt_value(lpm, "f2"),
+        "glow": "flow-green" if (online and lpm is not None and lpm >= low) else "flow-red",
+        "today": fmt_value(totals.get(today_key), "f0"),
+        "yesterday": fmt_value(totals.get(day_keys[0]), "f0"),
+        "week": fmt_value(sum(totals.get(k, 0.0) for k in day_keys) if any(k in totals for k in day_keys) else None, "f0"),
+        "low_lpm": ("%.2f" % low),
+    }
+
+
+@app.route("/borehole/threshold", methods=["POST"])
+def borehole_threshold_save():
+    try:
+        low = float(str(request.form.get("low_lpm", "") or "").strip())
+        if low < 0:
+            raise ValueError()
+    except Exception:
+        return redirect(url_for("borehole_detail", ok=0, msg="Enter a flow of 0 or more"))
+    cfg = load_office_config()
+    cfg["borehole_low_lpm"] = round(low, 2)
+    save_office_config(cfg)
+    return redirect(url_for("borehole_detail", ok=1, msg="Low flow set to %.2f L/min" % low))
 
 
 @app.route("/borehole/<period>")
