@@ -16,6 +16,9 @@ SHT_I2C_ID = 0
 SHT_I2C_SDA_PIN = 4
 SHT_I2C_SCL_PIN = 5
 SHT45_ADDR = 0x44
+# Temperature / humidity sensor: an SHT4x (SHT40/41/45) or SHT3x (SHT30/31/35) on I2C,
+# at 0x44 (ADDR pin low) or 0x45 (ADDR pin high). The Pico finds which is fitted itself.
+SHT_ADDRS = (0x44, 0x45)
 FLOW_PIN = 16
 LIGHTING_PIN = 28
 CROSS_AUGER_PIN = 18
@@ -29,6 +32,8 @@ AUGER_INPUT_ACTIVE_LOW = True
 
 # SHT4x high precision measurement command.
 SHT45_MEASURE_HIGH_PRECISION = b"\xFD"
+# SHT3x single-shot, high repeatability, no clock stretching.
+SHT3X_MEASURE_HIGH_REPEATABILITY = b"\x24\x00"
 
 # Hall-effect flow meter calibration.
 # Example for common YF-S201-style meters:
@@ -123,26 +128,64 @@ def crc8(data_bytes):
     return crc
 
 
+def sht_raw_words(addr, command, wait_ms, label):
+    sht_i2c.writeto(addr, command)
+    time.sleep_ms(wait_ms)
+    raw = sht_i2c.readfrom(addr, 6)
+    if crc8(raw[0:2]) != raw[2]:
+        raise Exception("%s temperature CRC failed" % label)
+    if crc8(raw[3:5]) != raw[5]:
+        raise Exception("%s humidity CRC failed" % label)
+    return (raw[0] << 8) | raw[1], (raw[3] << 8) | raw[4]
+
+
+def read_sht4x(addr):
+    raw_temp, raw_rh = sht_raw_words(addr, SHT45_MEASURE_HIGH_PRECISION, 10, "SHT4x")
+    return -45.0 + 175.0 * (raw_temp / 65535.0), -6.0 + 125.0 * (raw_rh / 65535.0)
+
+
+def read_sht3x(addr):
+    raw_temp, raw_rh = sht_raw_words(addr, SHT3X_MEASURE_HIGH_REPEATABILITY, 20, "SHT3x")
+    return -45.0 + 175.0 * (raw_temp / 65535.0), 100.0 * (raw_rh / 65535.0)
+
+
+sht_found = None   # (reader, addr, label) once a sensor has answered
+sht_label = "not found"
+
+
+def read_sht():
+    """Read whichever SHT sensor is fitted. Once found it's remembered; if it stops
+    answering, the next read searches again (so a swapped sensor is picked up)."""
+    global sht_found, sht_label
+    if sht_found is not None:
+        reader, addr, label = sht_found
+        try:
+            return reader(addr)
+        except Exception:
+            sht_found = None
+    present = sht_i2c.scan()
+    errors = []
+    for addr in SHT_ADDRS:
+        if addr not in present:
+            continue
+        for reader, label in ((read_sht4x, "SHT4x"), (read_sht3x, "SHT3x")):
+            try:
+                result = reader(addr)
+                sht_found = (reader, addr, label)
+                sht_label = "%s at 0x%02X" % (label, addr)
+                return result
+            except Exception as exc:
+                errors.append("%s 0x%02X: %s" % (label, addr, exc))
+    sht_label = "not found"
+    if not present:
+        raise Exception("no I2C devices found on GP4/GP5 (check power, SDA/SCL and pull-ups)")
+    if errors:
+        raise Exception("; ".join(errors))
+    raise Exception("no SHT sensor at 0x44/0x45 (I2C devices seen: %s)" % ", ".join("0x%02X" % a for a in present))
+
+
 def read_sht45():
-    sht_i2c.writeto(SHT45_ADDR, SHT45_MEASURE_HIGH_PRECISION)
-    time.sleep_ms(10)
-    raw = sht_i2c.readfrom(SHT45_ADDR, 6)
-
-    temp_bytes = raw[0:2]
-    temp_crc = raw[2]
-    rh_bytes = raw[3:5]
-    rh_crc = raw[5]
-
-    if crc8(temp_bytes) != temp_crc:
-        raise Exception("SHT45 temperature CRC failed")
-    if crc8(rh_bytes) != rh_crc:
-        raise Exception("SHT45 humidity CRC failed")
-
-    raw_temp = (temp_bytes[0] << 8) | temp_bytes[1]
-    raw_rh = (rh_bytes[0] << 8) | rh_bytes[1]
-
-    temp_c = -45.0 + 175.0 * (raw_temp / 65535.0)
-    rh_pct = -6.0 + 125.0 * (raw_rh / 65535.0)
+    temp_c, rh_pct = read_sht()
 
     if rh_pct < 0:
         rh_pct = 0
@@ -321,6 +364,7 @@ def build_payload():
     payload.update({
         "temp_c": temp_c,
         "rh_pct": rh_pct,
+        "temp_sensor": sht_label,
         "water_lpm": water_lpm,
         "total_flow_pulses": total_pulses,
         "feed_raw_units": feed_raw_units,
