@@ -7945,8 +7945,10 @@ OFFICE_CARDS_HTML = """
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#c76300" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2 20h20L12 3z"></path><path d="M12 10v4"></path><path d="M12 17h.01"></path></svg>
     {{ alarms|length }} need{% if alarms|length == 1 %}s{% endif %} a look
   </span>
-  {% for a in alarms %}<span class="ss-alarm-item">{{ a.text }}{% if a.kind and (pc or not tv) %}
-    <form class="ss-dismiss" method="post" action="{{ url_for('usage_drop_dismiss') }}"><input type="hidden" name="shed_no" value="{{ a.shed_no }}"><input type="hidden" name="kind" value="{{ a.kind }}"><button type="submit" title="Dismiss. It comes back if the {{ a.kind }} is still out over the next few hours.">Dismiss</button></form>{% endif %}</span>{% endfor %}
+  {# One line. When they don't all fit, ssTicker() scrolls them across like a ticker. #}
+  <div class="ss-ticker"><div class="ss-ticker-track" data-sig="{{ alarms|map(attribute='text')|join(' | ') }}">
+  {%- for a in alarms %}<span class="ss-alarm-item">{{ a.text }}{% if a.kind and (pc or not tv) %}<form class="ss-dismiss" method="post" action="{{ url_for('usage_drop_dismiss') }}"><input type="hidden" name="shed_no" value="{{ a.shed_no }}"><input type="hidden" name="kind" value="{{ a.kind }}"><button type="submit" title="Dismiss. It comes back if the {{ a.kind }} is still out over the next few hours.">Dismiss</button></form>{% endif %}</span>{% endfor -%}
+  </div></div>
 </section>
 {% endif %}
 
@@ -8102,6 +8104,8 @@ OFFICE_HOME_HTML = """
   @media (min-width: 2100px) { body:not(.tv) .ss-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
 
   /* Farm summary */
+  /* Summary, alarm bar and shed tiles spaced evenly (the TV sets its own below). */
+  body:not(.tv) #ssCards { display: flex; flex-direction: column; gap: 16px; }
   .ss-summary { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
   .ss-sum { background: #ffffff; border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 4px; }
   .ss-sum-label { font-size: 13px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
@@ -8110,8 +8114,21 @@ OFFICE_HOME_HTML = """
   .tone-navy { color: var(--navy); } .tone-blue { color: var(--blue); } .tone-green { color: #2f8a1f; } .tone-amber { color: #c76300; }
 
   /* Alarm strip */
-  .ss-alarms { background: #fff4e5; border: 1px solid #f3b366; border-radius: 14px; padding: 12px 16px; display: flex; align-items: center; gap: 10px 20px; flex-wrap: wrap; font-size: 16px; color: #5b3200; }
-  .ss-alarms-head { display: flex; align-items: center; gap: 8px; font-weight: 700; color: #a34f00; }
+  .ss-alarms { background: #fff4e5; border: 1px solid #f3b366; border-radius: 14px; padding: 12px 16px; display: flex; align-items: center; gap: 20px; flex-wrap: nowrap; font-size: 16px; color: #5b3200; }
+  .ss-alarms-head { flex: none; display: flex; align-items: center; gap: 8px; font-weight: 700; color: #a34f00; white-space: nowrap; }
+  /* Alarms on one line; scrolled across like a ticker when they don't fit. */
+  .ss-ticker { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; }
+  .ss-ticker-track { display: inline-flex; align-items: center; }
+  .ss-tick-half { display: inline-flex; align-items: center; }
+  .ss-alarm-item { display: inline-flex; align-items: center; white-space: nowrap; }
+  .ss-alarm-item + .ss-alarm-item::before { content: ""; display: inline-block; width: 6px; height: 6px; margin: 0 16px; border-radius: 50%; background: #e0a050; }
+  .ss-ticker.scrolling { -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 24px, #000 calc(100% - 24px), transparent 100%); mask-image: linear-gradient(90deg, transparent 0, #000 24px, #000 calc(100% - 24px), transparent 100%); }
+  .ss-ticker.scrolling .ss-tick-half { padding-right: 60px; }
+  .ss-ticker.scrolling .ss-tick-half .ss-alarm-item:first-child::before { content: none; }
+  .ss-ticker.scrolling .ss-ticker-track { -webkit-animation: ss-tick 30s linear infinite; animation: ss-tick 30s linear infinite; }
+  .ss-ticker.scrolling:hover .ss-ticker-track { -webkit-animation-play-state: paused; animation-play-state: paused; }
+  @-webkit-keyframes ss-tick { from { -webkit-transform: translateX(0); } to { -webkit-transform: translateX(-50%); } }
+  @keyframes ss-tick { from { transform: translateX(0); } to { transform: translateX(-50%); } }
   .ss-dismiss { display: inline; margin: 0 0 0 8px; }
   .ss-dismiss button { width: auto; min-height: 0; padding: 3px 12px; border-radius: 999px; border: 1px solid #f3b366; background: #ffffff; color: #a34f00; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
 
@@ -8250,8 +8267,9 @@ OFFICE_HOME_HTML = """
     body:not(.tv) .ss-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
     body:not(.tv) .ss-sum { padding: 10px 12px; }
     body:not(.tv) .ss-sum-value { font-size: 22px; }
-    body:not(.tv) .ss-alarms { flex-direction: column; align-items: flex-start; gap: 4px; font-size: 15px; }
+    body:not(.tv) .ss-alarms { gap: 12px; padding: 10px 12px; font-size: 15px; }
     body:not(.tv) .ss-grid { grid-template-columns: 1fr; gap: 12px; }
+    body:not(.tv) #ssCards { gap: 12px; }
     body:not(.tv) .ss-card { padding: 14px; gap: 10px; }
     body:not(.tv) .ss-card-head { cursor: pointer; }
     body:not(.tv) .ss-name { font-size: 22px; }
@@ -8562,7 +8580,11 @@ if (window.fully && !/[?&]tv=0/.test(window.location.search)) { window.location.
       req.open('GET', '/api/home-cards?tv=1&_=' + new Date().getTime(), true);
       req.onload = function () {
         var cards = document.getElementById('ssCards');
-        if (req.status === 200 && cards) cards.innerHTML = req.responseText;
+        if (req.status === 200 && cards) {
+          var prev = cards.querySelector('.ss-ticker-track');
+          cards.innerHTML = req.responseText;
+          ssTicker(prev);
+        }
       };
       req.send();
     }, 5000);
@@ -8570,6 +8592,40 @@ if (window.fully && !/[?&]tv=0/.test(window.location.search)) { window.location.
 })();
 </script>
 {% endif %}
+<script>
+// "Needs a look" ticker. Called after every refresh with the track that was showing, so
+// an unchanged list keeps scrolling smoothly instead of jumping back to the start.
+// Plain ES5 so the older TV browsers can run it too.
+function ssTicker(prevTrack) {
+  var box = document.querySelector('#ssCards .ss-ticker');
+  if (!box) return;
+  var track = box.querySelector('.ss-ticker-track');
+  if (!track) return;
+  if (prevTrack && prevTrack !== track && prevTrack.getAttribute('data-sig') === track.getAttribute('data-sig')
+      && prevTrack.getAttribute('data-width') === String(box.clientWidth)) {
+    box.replaceChild(prevTrack, track);
+    box.className = prevTrack.getAttribute('data-scrolling') === '1' ? 'ss-ticker scrolling' : 'ss-ticker';
+    return;
+  }
+  if (!track.getAttribute('data-orig')) track.setAttribute('data-orig', track.innerHTML);
+  track.innerHTML = track.getAttribute('data-orig');
+  box.className = 'ss-ticker';
+  track.style.animationDuration = '';
+  track.setAttribute('data-width', String(box.clientWidth));
+  track.setAttribute('data-scrolling', '0');
+  if (track.scrollWidth <= box.clientWidth + 2) return;
+  // Two copies side by side, scrolled by half: a seamless loop at about 60 px a second.
+  var half = '<span class="ss-tick-half">' + track.getAttribute('data-orig') + '</span>';
+  track.innerHTML = half + half;
+  box.className = 'ss-ticker scrolling';
+  var secs = Math.max(12, (track.scrollWidth / 2) / 60);
+  track.style.webkitAnimationDuration = secs + 's';
+  track.style.animationDuration = secs + 's';
+  track.setAttribute('data-scrolling', '1');
+}
+ssTicker(null);
+window.addEventListener('resize', function () { ssTicker(null); });
+</script>
 <script>
 window.ssMainLoaded = true;
 const SS_TV = {{ 'true' if tv else 'false' }};
@@ -8640,7 +8696,10 @@ async function ssRefresh() {
   try {
     const resp = await fetch('/api/home-cards?tv=' + (SS_TV ? '1' : '0') + (SS_PC ? '&pc=1' : ''), { cache: 'no-store' });
     if (!resp.ok) return;
-    document.getElementById('ssCards').innerHTML = await resp.text();
+    const cards = document.getElementById('ssCards');
+    const prev = cards.querySelector('.ss-ticker-track');
+    cards.innerHTML = await resp.text();
+    ssTicker(prev);
     ssApplyOpen();
   } catch (err) {
   }
@@ -12088,27 +12147,41 @@ def office_home_context(tv=False):
     else:
         crop_day = "Day %d–%d" % (min(ages), max(ages))
 
+    # Everything that needs a look, one entry each: every alarm on a shed (from the
+    # controller and from the office), then its warnings (no water, bin low, temperature,
+    # humidity), so one never hides another.
     alarms = []
+    alarms_map = active_alarms_by_shed()
     usage = usage_drop_alarms_by_shed()
-    lights = lights_alarms_by_shed()
     for s in sheds:
         shed_key = shed_name_from_number(s["shed_no"])
-        drops = usage.get(shed_key) or []
-        drop_msgs = [d["message"] for d in drops] + [l["message"] for l in lights.get(shed_key) or []]
-        if s["has_alarm"] and s["alarm"] not in drop_msgs:
-            alarms.append({"text": "%s · %s" % (s["name"], s["alarm"])})
-        elif s["kind"] == "offline" and s["status"] == "Not syncing" and s["updated"] not in ["", "--"]:
-            alarms.append({"text": "%s · not syncing since %s" % (s["name"], s["updated"])})
-        elif s["kind"] in ["alarm", "warn"] and not drops and not lights.get(shed_key):
-            alarms.append({"text": "%s · %s" % (s["name"], s["status"].lower())})
-        for l in lights.get(shed_key) or []:
-            alarms.append({"text": "%s · %s" % (s["name"], l["message"])})
-        # Water / feed drops: one line each, with a Dismiss button.
-        for d in drops:
-            alarms.append({"text": "%s · %s" % (s["name"], d["message"]), "shed_no": s["shed_no"], "kind": d["kind"]})
+        if s["kind"] == "offline":
+            if s["status"] == "Not syncing" and s["updated"] not in ["", "--"]:
+                alarms.append({"text": "%s · not syncing since %s" % (s["name"], s["updated"])})
+            continue
+        dismissable = {d["message"]: d for d in usage.get(shed_key) or []}
+        rows = list(alarms_map.get(shed_key) or []) + list(controller_alarms_for_shed(meta_map, s["shed_no"]))
+        seen = set()
+        for rec in rows:
+            msg = str(rec.get("message") or rec.get("alarm_key") or "").strip()
+            if not msg or msg in seen:
+                continue
+            seen.add(msg)
+            item = {"text": "%s · %s" % (s["name"], msg)}
+            if msg in dismissable:          # water alarms can be dismissed
+                item.update({"shed_no": s["shed_no"], "kind": dismissable[msg]["kind"]})
+            alarms.append(item)
+        if not s["live"]:
+            continue
+        for flag, text in [(s["water_edge"] == "alarm", "no water"), (s["bin_edge"] == "warn", "bin low"),
+                           (s["temp_edge"] != "ok", "check temp"), (s["rh_edge"] != "ok", "check humidity")]:
+            if flag:
+                alarms.append({"text": "%s · %s" % (s["name"], text)})
     bh = ctx.get("borehole", {}) or {}
     if bh.get("alarm_active"):
-        alarms.append({"text": "Water & Power · %s" % bh.get("alarm_msg", "")})
+        bh_msgs = [str(r.get("message") or "").strip() for r in active_borehole_alarms()] or [bh.get("alarm_msg", "")]
+        for msg in dict.fromkeys(m for m in bh_msgs if m):
+            alarms.append({"text": "Water & Power · %s" % msg})
 
     overall = ctx.get("overall", {}) or {}
     active_sheds = len([s for s in sheds if s["live"]])
