@@ -1287,6 +1287,7 @@ def start_office_background_workers():
     th.start()
     th2 = threading.Thread(target=controller_backup_worker, daemon=True)
     th2.start()
+    threading.Thread(target=office_shelly_worker, daemon=True).start()
 
 
 def backup_path_by_name(name):
@@ -4169,10 +4170,14 @@ def active_borehole_alarms():
                 result.append({"ts": now_ts, "active": True, "alarm_key": rec.get("alarm_key"), "message": rec.get("message", "")})
                 seen.add(rec.get("alarm_key"))
 
+    seen = set(r.get("alarm_key") for r in result)
+    for rec in office_supply_alarms():
+        if rec["alarm_key"] not in seen:
+            result.append({"ts": now_ts, "active": True, "alarm_key": rec["alarm_key"], "message": rec["message"]})
     # Once the supply meter is set up, a silent controller may mean the phase it is powered
     # from has gone (it can't report that itself), so the office raises it.
     power = latest_borehole_live().get("power")
-    if isinstance(power, dict) and meta.get("received_ts") and meta_age is not None and meta_age > 180:
+    if isinstance(power, dict) and power.get("source") != "office" and meta.get("received_ts") and meta_age is not None and meta_age > 180:
         phase = str(power.get("controller_phase") or "").strip()
         since = datetime.fromtimestamp(int(meta.get("received_ts"))).strftime("%H:%M")
         msg = "Controller not reporting since %s." % since
@@ -9225,6 +9230,19 @@ OFFICE_SETTINGS_HTML = """
                 </section>
 
                 <section>
+                    <h2 class="section-title">Incoming supply (Shelly 3EM)</h2>
+                    <form class="card" method="post" action="{{ url_for('office_shelly_settings_save') }}" style="display:grid; gap:10px">
+                        <div class="hint">Use this while there's no Water &amp; Power controller: the office reads the supply meter itself. Leave the address blank once a controller reads it.</div>
+                        <label class="field" for="shellyHost">Shelly address</label>
+                        <input id="shellyHost" type="text" name="shelly_host" placeholder="e.g. 192.168.1.60" value="{{ office_shelly.host }}">
+                        <label class="field" for="supplyFuse">Fuse rating per phase (A)</label>
+                        <input id="supplyFuse" type="number" name="supply_fuse_amps" min="0" step="1" value="{{ office_shelly.fuse }}">
+                        {% if office_shelly.host %}<div class="hint">Status: <b>{{ office_shelly.status }}</b></div>{% endif %}
+                        <button class="primary" type="submit">Save and test</button>
+                    </form>
+                </section>
+
+                <section>
                     <h2 class="section-title">Backups</h2>
                     <nav class="list" aria-label="Backups">
                         <a class="item" href="{{ url_for('create_office_backup_view') }}"><span>Create backup now</span><span class="chev">›</span></a>
@@ -12110,9 +12128,26 @@ def office_settings_view():
         email_settings=office_email_settings_form_state(),
         farm_health=farm_health,
         controller_backup_rows=controller_backup_rows,
+        office_shelly=office_shelly_settings_state(),
         status_msg=request.args.get("msg", ""),
         status_ok=request.args.get("ok", "1") == "1",
     )
+
+
+def office_shelly_settings_state():
+    host = office_shelly_host()
+    power = latest_borehole_live().get("power") or {}
+    status = "Not set"
+    if host:
+        try:
+            age = int(time.time()) - int(power.get("ts") or 0)
+        except Exception:
+            age = None
+        if power.get("ts") and age is not None and age <= 60 and power.get("source") == "office":
+            status = "Live, %.2f kW" % ((_num(power.get("total_w")) or 0) / 1000.0)
+        else:
+            status = "No reading" + ((": %s" % power.get("error")) if power.get("error") else "")
+    return {"host": host, "fuse": office_supply_fuse_amps(), "status": status}
 
 
 @app.route("/feed-stock")
@@ -13549,6 +13584,177 @@ def phase_chart_series(rows, hours, fuse_amps=0):
     if fuse_amps:
         series.append(("Fuse %d A" % fuse_amps, "#d64545", [float(fuse_amps)] * count, True))
     return labels, series
+
+
+# ---------------------------------------------------------------------------
+# The office can read the Shelly 3EM on the incoming supply itself (over the farm network),
+# for when there is no Water & Power controller. It fills the same supply figures, peaks and
+# minute peaks the controller would send, so the Water & Power card, page and phase chart
+# work the same either way. Leave the address blank once a controller reads the Shelly.
+# ---------------------------------------------------------------------------
+OFFICE_SHELLY_POLL_SECONDS = 5
+_office_power_lock = threading.Lock()
+
+
+def office_shelly_host():
+    host = str(load_office_config().get("shelly_host", "") or "").strip()
+    return host.replace("http://", "").replace("https://", "").strip("/")
+
+
+def office_supply_fuse_amps():
+    try:
+        return int(float(load_office_config().get("supply_fuse_amps", 100) or 0))
+    except Exception:
+        return 100
+
+
+def _shelly_get_json(host, path):
+    with urllib.request.urlopen("http://%s%s" % (host, path), timeout=4) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def read_shelly_3em(host):
+    """One reading from a Shelly 3EM: the Pro 3EM / 3EM Gen3 (/rpc/EM.GetStatus) or the
+    original 3EM (/status). Per-phase volts, amps, watts and power factor, total watts and
+    the meter's running total in kWh."""
+    try:
+        em = _shelly_get_json(host, "/rpc/EM.GetStatus?id=0")
+    except Exception:
+        em = None
+    if isinstance(em, dict) and "total_act_power" in em:
+        phases = [{"v": _num(em.get(p + "_voltage")), "a": _num(em.get(p + "_current")),
+                   "w": _num(em.get(p + "_act_power")), "pf": _num(em.get(p + "_pf"))} for p in ["a", "b", "c"]]
+        total_kwh = None
+        try:
+            wh = _num(_shelly_get_json(host, "/rpc/EMData.GetStatus?id=0").get("total_act"))
+            total_kwh = wh / 1000.0 if wh is not None else None
+        except Exception:
+            pass
+        return {"phases": phases, "total_w": _num(em.get("total_act_power")), "total_kwh": total_kwh}
+    status = _shelly_get_json(host, "/status")
+    meters = status.get("emeters") if isinstance(status, dict) else None
+    if not isinstance(meters, list) or len(meters) < 3:
+        raise ValueError("Not a Shelly 3EM")
+    phases = [{"v": _num(m.get("voltage")), "a": _num(m.get("current")), "w": _num(m.get("power")), "pf": _num(m.get("pf"))} for m in meters[:3]]
+    totals = [_num(m.get("total")) for m in meters[:3]]
+    total_w = _num(status.get("total_power"))
+    return {
+        "phases": phases,
+        "total_w": total_w if total_w is not None else sum(p["w"] or 0 for p in phases),
+        "total_kwh": (sum(totals) / 1000.0) if all(t is not None for t in totals) else None,
+    }
+
+
+def office_shelly_poll_once():
+    host = office_shelly_host()
+    if not host:
+        return
+    try:
+        reading = read_shelly_3em(host)
+        error = ""
+    except Exception as exc:
+        reading, error = None, str(exc)
+    now_ts = int(time.time())
+    finished = []
+    with _office_power_lock:
+        live = latest_borehole_live()
+        power = live.get("power") if isinstance(live.get("power"), dict) else {}
+        track = live.get("office_power_track") if isinstance(live.get("office_power_track"), dict) else {}
+        if reading is None:
+            power["error"] = error
+            power["error_ts"] = now_ts
+        else:
+            power.update({"phases": reading["phases"], "total_w": reading["total_w"], "ts": now_ts, "error": "",
+                          "fuse_amps": office_supply_fuse_amps(), "source": "office"})
+            today = datetime.now().strftime("%Y-%m-%d")
+            # Today's kWh (midnight to midnight) from the meter's running total.
+            if reading.get("total_kwh") is not None:
+                day = track.get("day") if isinstance(track.get("day"), dict) else {}
+                if day.get("date") != today:
+                    if day.get("date") and day.get("start_kwh") is not None:
+                        power["yesterday_kwh"] = round(reading["total_kwh"] - day["start_kwh"], 2)
+                    day = {"date": today, "start_kwh": reading["total_kwh"]}
+                track["day"] = day
+                power["today_kwh"] = round(reading["total_kwh"] - day["start_kwh"], 2)
+            amps = [_num(ph.get("a")) for ph in reading["phases"]][:3]
+            peak = power.get("peak_today") if isinstance(power.get("peak_today"), dict) else {}
+            if peak.get("date") != today:
+                peak = {"date": today, "a": [None, None, None], "at": [None, None, None]}
+            for i, a in enumerate(amps):
+                if a is not None and (peak["a"][i] is None or a > peak["a"][i]):
+                    peak["a"][i] = a
+                    peak["at"][i] = now_ts
+            power["peak_today"] = peak
+            # Each minute's highest and average amps per phase, for the phase chart.
+            minute = now_ts // 60
+            bucket = track.get("minute") if isinstance(track.get("minute"), dict) else {}
+            if bucket.get("m") != minute:
+                if bucket.get("m") and bucket.get("n"):
+                    finished.append({"ts": bucket["m"] * 60,
+                                     "max_a": [round(x, 2) if x is not None else None for x in bucket["max"]],
+                                     "avg_a": [round(t / bucket["n"], 2) for t in bucket["sum"]]})
+                bucket = {"m": minute, "max": [None, None, None], "sum": [0.0, 0.0, 0.0], "n": 0}
+            for i, a in enumerate(amps):
+                if a is not None:
+                    bucket["max"][i] = a if bucket["max"][i] is None else max(bucket["max"][i], a)
+                    bucket["sum"][i] += a
+            bucket["n"] += 1
+            track["minute"] = bucket
+        live["power"] = power
+        live["power_received_ts"] = now_ts
+        live["office_power_track"] = track
+        save_borehole_live(live)
+    if finished:
+        store_borehole_power_minutes(finished)
+
+
+def office_shelly_worker():
+    while True:
+        try:
+            office_shelly_poll_once()
+        except Exception:
+            pass
+        time.sleep(OFFICE_SHELLY_POLL_SECONDS)
+
+
+def office_supply_alarms():
+    """When the office reads the Shelly itself: a phase with no voltage, or the meter going quiet."""
+    if not office_shelly_host():
+        return []
+    power = latest_borehole_live().get("power") or {}
+    try:
+        age = int(time.time()) - int(power.get("ts") or 0)
+    except Exception:
+        age = None
+    if not power.get("ts") or age is None or age > 60:
+        return [{"alarm_key": "shelly_silent", "message": "Supply meter (Shelly) not responding. Check it is powered and on the network."}]
+    alarms = []
+    for i, ph in enumerate((power.get("phases") or [])[:3]):
+        v = _num(ph.get("v")) if isinstance(ph, dict) else None
+        if v is not None and v < 100:
+            alarms.append({"alarm_key": "phase_lost_l%d" % (i + 1), "message": "L%d supply lost (%d V). Check the L%d fuse." % (i + 1, round(v), i + 1)})
+    return alarms
+
+
+@app.route("/settings/shelly", methods=["POST"])
+def office_shelly_settings_save():
+    cfg = load_office_config()
+    cfg["shelly_host"] = str(request.form.get("shelly_host", "") or "").strip().replace("http://", "").replace("https://", "").strip("/")
+    try:
+        cfg["supply_fuse_amps"] = max(0, int(float(request.form.get("supply_fuse_amps", 100) or 0)))
+    except Exception:
+        pass
+    save_office_config(cfg)
+    if cfg["shelly_host"]:
+        try:
+            office_shelly_poll_once()
+            power = latest_borehole_live().get("power") or {}
+            if power.get("error"):
+                return redirect(url_for("office_settings_view", ok=0, msg="Saved, but the Shelly didn't answer: %s" % power.get("error")))
+            return redirect(url_for("office_settings_view", ok=1, msg="Shelly connected: %.2f kW now" % ((_num(power.get("total_w")) or 0) / 1000.0)))
+        except Exception as exc:
+            return redirect(url_for("office_settings_view", ok=0, msg="Saved, but the Shelly check failed: %s" % exc))
+    return redirect(url_for("office_settings_view", ok=1, msg="Supply meter switched off at the office"))
 
 
 @app.route("/api/borehole/sync", methods=["POST"])
