@@ -7369,6 +7369,11 @@ SETTINGS_HTML = """
                             </form>
                         </div>
                         <div class="row"><span class="row-label">Last nightly check</span><span style="text-align: right">{{ auto_update_last }}</span></div>
+                        <div class="row"><span class="row-label">Pico firmware</span><span style="text-align: right">{% if pico_fw.current %}Up to date{% else %}<b style="color: #c76300">Needs updating</b>{% endif %}</span></div>
+                        {% if pico_fw.last_status %}<div class="hint">Last Pico update: {{ pico_fw.last_status }}</div>{% endif %}
+                        <form method="post" action="{{ url_for('pico_deploy_view') }}" onsubmit="this.querySelector('button').disabled=true; this.querySelector('button').textContent='Updating the Pico...';">
+                            <button type="submit"{% if not pico_fw.current %} class="primary"{% endif %}>Update Pico firmware</button>
+                        </form>
                         <div class="hint">Shortly after midnight the controller checks GitHub and, if it is on a different version, installs the update and restarts. Pico firmware changes are deployed automatically.</div>
                     </div>
                 </section>
@@ -9538,12 +9543,26 @@ def controller_settings_view():
     ctx["auto_update_enabled"] = cfg.get("auto_update_enabled", False)
     auto_status = load_auto_update_status()
     ctx["auto_update_last"] = ("%s · %s" % (fmt_ts(auto_status.get("last_run_ts")), auto_status.get("result") or "--")) if auto_status.get("last_run_ts") else "Not run yet"
+    pico_status = load_pico_update_status()
+    ctx["pico_fw"] = {"current": not pico_firmware_needs_deploy(), "last_status": str(pico_status.get("status") or "")}
     ctx["msg"] = request.args.get("msg", "")
     ctx["current_mode"] = current_mode_label(cfg)
     ctx["current_mode_key"] = cfg.get("deployment_mode", "commissioning")
     ctx["next_mode_key"] = "live" if commissioning_mode_enabled(cfg) else "commissioning"
     ctx["next_mode_label"] = "Live" if commissioning_mode_enabled(cfg) else "Commissioning"
     return render_template_string(SETTINGS_HTML, **ctx)
+
+
+@app.route("/settings/pico/deploy", methods=["POST"])
+def pico_deploy_view():
+    # Copy this controller's Pico firmware onto the Pico and restart it (takes ~20 s).
+    status = deploy_pico_firmware()
+    try:
+        record_controller_event("pico_deployed" if status.get("ok") else "pico_deploy_failed",
+                                "Pico firmware update (manual)", str(status.get("status") or ""), push_to_office=True)
+    except Exception:
+        pass
+    return redirect(url_for("controller_settings_view", msg=str(status.get("status") or "Pico update finished")))
 
 
 @app.route("/settings/update/check", methods=["POST"])
