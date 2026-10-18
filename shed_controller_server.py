@@ -3244,7 +3244,8 @@ def shed_plan_layout(cfg):
     bin_left = corner.endswith("left")
     bin_top = corner.startswith("top")
     door_left = cfg.get("layout_door_end", "left") == "left"
-    front_left = cfg.get("layout_front_end", "left") == "left"
+    # The front end of the shed is always the door end.
+    front_left = door_left
 
     # The bin and shed fill the plan edge to edge. The bin sits against the end it's set
     # to; the shed takes the rest. The far end keeps just enough room for the door label
@@ -7695,12 +7696,6 @@ CONFIG_HTML = """
                     <div class="check"><span>Auto Sync On Change</span><input type="checkbox" name="sync_on_sensor_update" {% if cfg.sync_on_sensor_update %}checked{% endif %}></div>
                     <div class="group-title">Shed Layout</div>
                     <div class="sub" style="margin-bottom:10px;">How the shed plan on the overview is drawn, as seen on this screen.</div>
-                    <div class="field"><label for="layout_front_end">Front end of shed</label>
-                        <select id="layout_front_end" name="layout_front_end">
-                            <option value="left" {% if cfg.layout_front_end == 'left' %}selected{% endif %}>Left side of screen</option>
-                            <option value="right" {% if cfg.layout_front_end == 'right' %}selected{% endif %}>Right side of screen</option>
-                        </select>
-                    </div>
                     <div class="field"><label for="layout_bin_corner">Feed bin position</label>
                         <select id="layout_bin_corner" name="layout_bin_corner">
                             <option value="top-left" {% if cfg.layout_bin_corner == 'top-left' %}selected{% endif %}>Top left corner</option>
@@ -7709,7 +7704,7 @@ CONFIG_HTML = """
                             <option value="bottom-right" {% if cfg.layout_bin_corner == 'bottom-right' %}selected{% endif %}>Bottom right corner</option>
                         </select>
                     </div>
-                    <div class="field"><label for="layout_door_end">Door</label>
+                    <div class="field"><label for="layout_door_end">Door (front end of shed)</label>
                         <select id="layout_door_end" name="layout_door_end">
                             <option value="left" {% if cfg.layout_door_end == 'left' %}selected{% endif %}>Left end wall</option>
                             <option value="right" {% if cfg.layout_door_end == 'right' %}selected{% endif %}>Right end wall</option>
