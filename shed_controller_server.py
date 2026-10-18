@@ -3256,7 +3256,8 @@ def shed_plan_layout(cfg):
     bin_x = 16 if bin_left else OVERVIEW_STAGE_WIDTH - 16 - bin_size
     # Top-corner bins overhang the shed's top edge by 40px; bottom-corner bins mirror that
     # below the bottom edge, with their label above instead of below.
-    bin_y = shed_y - 40 if bin_top else shed_y + shed_h - bin_size + 40
+    # Top-corner bins sit just below the reading tiles (which span the full width).
+    bin_y = 94 if bin_top else shed_y + shed_h - bin_size + 40
     pipe_y = bin_y + 59
     pipe_x = bin_x + bin_size - 2 if bin_left else shed_right - 4
     bin_label_x = min(max(0, bin_x + bin_size // 2 - 78), OVERVIEW_STAGE_WIDTH - 156)
@@ -3276,10 +3277,11 @@ def shed_plan_layout(cfg):
         label_x = shed_right + 24
         label_align = "left"
 
+    # Temperature, humidity and water tiles span the full width of the plan.
     cards_gap = 14
-    temp_w = 200
-    rh_w = 168
-    water_w = shed_w - temp_w - rh_w - 2 * cards_gap
+    temp_w = 300
+    rh_w = 260
+    water_w = OVERVIEW_STAGE_WIDTH - temp_w - rh_w - 2 * cards_gap
 
     return {
         "front_left": front_left,
@@ -3290,9 +3292,9 @@ def shed_plan_layout(cfg):
         "bin_label_x": bin_label_x, "bin_label_y": bin_label_y,
         "door_x": door_x, "door_y": door_y, "door_h": door_h,
         "tick_x": tick_x, "label_x": label_x, "label_y": door_y + door_h // 2 - 11, "label_align": label_align,
-        "temp_x": shed_x, "temp_w": temp_w,
-        "rh_x": shed_x + temp_w + cards_gap, "rh_w": rh_w,
-        "water_x": shed_x + temp_w + rh_w + 2 * cards_gap, "water_w": water_w,
+        "temp_x": 0, "temp_w": temp_w,
+        "rh_x": temp_w + cards_gap, "rh_w": rh_w,
+        "water_x": temp_w + rh_w + 2 * cards_gap, "water_w": water_w,
         "front_label_x": shed_x + 6 if front_left else shed_right - 6 - 80,
         "rear_label_x": shed_right - 6 - 80 if front_left else shed_x + 6,
         "end_label_y": shed_y + shed_h + 8,
@@ -6692,7 +6694,7 @@ OVERVIEW_HTML = """
             .body { min-height: 0; }
             .plan-wrap { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
             .plan-stage-box { flex: 1 1 auto; min-height: 0; }
-            .panel { flex: 0 0 340px; min-width: 0; overflow-y: auto; padding: 14px 18px; gap: 8px; }
+            .panel { flex: 0 0 340px; min-width: 0; overflow: hidden; padding: 14px 18px; gap: 7px; }
             /* Compact right panel so it fits short kiosk screens without scrolling. */
             .panel .panel-title { font-size: 21px; }
             .panel .panel-chip { padding: 3px 10px; font-size: 14px; }
@@ -7050,6 +7052,31 @@ OVERVIEW_HTML = """
     }
     window.addEventListener('resize', fitStage);
     fitStage();
+
+    // The Shed conditions panel never scrolls: if its contents are taller than the space
+    // (lots of pens, both advice lines), they are scaled down just enough to fit.
+    function fitPanel() {
+        const panel = document.querySelector('.panel[aria-label="Shed conditions"]');
+        if (!panel) return;
+        const kids = Array.from(panel.children);
+        kids.forEach((el) => { el.style.zoom = ''; });
+        if (window.innerWidth <= 900) return;
+        const need = panel.scrollHeight, room = panel.clientHeight;
+        if (need > room + 1) {
+            // Start from the proportion needed, then step down until nothing overflows
+            // (the gaps between items don't shrink, so the first guess can be a touch big).
+            let ratio = Math.max(0.6, room / need);
+            kids.forEach((el) => { el.style.zoom = ratio.toFixed(3); });
+            while (ratio > 0.6 && panel.scrollHeight > panel.clientHeight + 1) {
+                ratio -= 0.01;
+                kids.forEach((el) => { el.style.zoom = ratio.toFixed(3); });
+            }
+        }
+    }
+    window.addEventListener('resize', fitPanel);
+    window.addEventListener('load', fitPanel);
+    fitPanel();
+    setInterval(fitPanel, 2000);
 
     function setText(id, value) {
         const el = document.getElementById(id);

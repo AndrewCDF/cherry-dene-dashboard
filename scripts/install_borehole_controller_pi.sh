@@ -27,7 +27,13 @@ echo "  deploy mode   : $DEPLOYMENT_MODE"
 echo "  mode pin      : $MODE_SWITCH_PIN"
 
 sudo apt update
-sudo apt install -y python3-flask python3-serial
+sudo apt install -y python3-flask python3-serial python3-pip
+
+# mpremote copies new firmware onto the Pico (Settings -> Software -> Update Pico firmware).
+# Installed for the user the controller runs as, into ~/.local/bin where the controller looks.
+sudo -u "$USER_NAME" python3 -m pip install --user --break-system-packages mpremote \
+  || sudo -u "$USER_NAME" python3 -m pip install --user mpremote \
+  || echo "Warning: could not install mpremote; Pico firmware updates will need it installing by hand." >&2
 
 if [ "$SERVICE_MODE" = "kiosk" ]; then
   sudo apt install -y chromium unclutter onboard
