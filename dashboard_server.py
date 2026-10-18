@@ -9199,6 +9199,90 @@ setTimeout(() => {
 """
 
 
+OFFICE_SUBSETTINGS_HTML = """
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>{{ title }}</title>
+    {{ office_page_head }}
+    <style>
+        .sub-wrap { max-width: 640px; }
+        .sub-form { display: grid; gap: 10px; }
+        .sub-form .hint { line-height: 1.45; }
+        .sub-form ul { margin: 4px 0 0; padding-left: 20px; }
+        .alarm-block { display: grid; gap: 8px; padding-top: 12px; border-top: 1px solid var(--track); }
+        .alarm-block.off .field, .alarm-block.off input[type=number], .alarm-block.off .hint { opacity: 0.45; }
+        .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 18px; font-weight: 600; color: var(--text); cursor: pointer; }
+        /* On / off toggle */
+        .switch { appearance: none; -webkit-appearance: none; position: relative; flex: none; width: 56px; height: 32px; margin: 0; border-radius: 999px; background: #c5d0dc; cursor: pointer; transition: background 0.15s; }
+        .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 26px; height: 26px; border-radius: 50%; background: #ffffff; box-shadow: 0 1px 3px rgba(0,0,0,0.25); transition: left 0.15s; }
+        .switch:checked { background: #2f9e3a; }
+        .switch:checked::after { left: 27px; }
+    </style>
+</head>
+<body>
+    {{ office_topbar(title) }}
+    <div class="wrap sub-wrap">
+        {% if status_msg %}<div class="msg auto-dismiss {% if not status_ok %}error{% endif %}">{{ status_msg }}</div>{% endif %}
+        {% if page == 'usage' %}
+        <section>
+            <h2 class="section-title">Water and feed alarms</h2>
+            <form class="card sub-form" method="post" action="{{ url_for('office_usage_drop_settings_save') }}">
+                <div class="hint">Each shed with birds in is checked two ways, for water and for feed:
+                    <ul>
+                        <li>today since 6am against the same hours yesterday (water from 9am, feed from noon);</li>
+                        <li>yesterday, 6am to 6am, against the average of the 3 days before (each morning).</li>
+                    </ul>
+                </div>
+                <div class="alarm-block">
+                    <label class="switch-row"><span>Drop alarm</span>
+                        <input type="checkbox" class="switch" name="usage_drop_on" value="1" data-for="usageDropPct" {% if drop[0] %}checked{% endif %}></label>
+                    <label class="field" for="usageDropPct">Alarm when it drops by more than (%)</label>
+                    <input id="usageDropPct" type="number" name="usage_drop_pct" min="1" max="95" step="1" inputmode="numeric" value="{{ drop[1] }}">
+                    <div class="hint">A water supply, meter or bypass problem; an empty bin or a stopped auger.</div>
+                </div>
+                <div class="alarm-block">
+                    <label class="switch-row"><span>Rise alarm</span>
+                        <input type="checkbox" class="switch" name="usage_rise_on" value="1" data-for="usageRisePct" {% if rise[0] %}checked{% endif %}></label>
+                    <label class="field" for="usageRisePct">Alarm when it rises by more than (%)</label>
+                    <input id="usageRisePct" type="number" name="usage_rise_pct" min="1" max="500" step="1" inputmode="numeric" value="{{ rise[1] }}">
+                    <div class="hint">A water leak; feed spilling or an auger running on. The birds' normal growth from one day to the next stays well under this.</div>
+                </div>
+                <div class="hint">A dismissed alarm comes back if the next few hours are still out.</div>
+                <button class="primary" type="submit">Save</button>
+            </form>
+        </section>
+        {% else %}
+        <section>
+            <h2 class="section-title">Incoming supply (Shelly 3EM)</h2>
+            <form class="card sub-form" method="post" action="{{ url_for('office_shelly_settings_save') }}">
+                <div class="hint">Use this while there's no Water &amp; Power controller: the office reads the supply meter itself. Leave the address blank once a controller reads it.</div>
+                <label class="field" for="shellyHost">Shelly address</label>
+                <input id="shellyHost" type="text" name="shelly_host" placeholder="e.g. 192.168.1.60" value="{{ office_shelly.host }}">
+                <label class="field" for="supplyFuse">Fuse rating per phase (A)</label>
+                <input id="supplyFuse" type="number" name="supply_fuse_amps" min="0" step="1" value="{{ office_shelly.fuse }}">
+                {% if office_shelly.host %}<div class="hint">Status: <b>{{ office_shelly.status }}</b></div>{% endif %}
+                <button class="primary" type="submit">Save and test</button>
+            </form>
+        </section>
+        {% endif %}
+    </div>
+<script>
+setTimeout(() => { document.querySelectorAll('.auto-dismiss').forEach((el) => { el.style.display = 'none'; }); }, 8000);
+// Grey out a percentage while its alarm is switched off.
+document.querySelectorAll('.switch').forEach((sw) => {
+    const block = sw.closest('.alarm-block');
+    const sync = () => block.classList.toggle('off', !sw.checked);
+    sw.addEventListener('change', sync);
+    sync();
+});
+</script>
+</body>
+</html>
+"""
+
+
 OFFICE_SETTINGS_HTML = """
 <!doctype html>
 <html lang="en">
@@ -9253,26 +9337,11 @@ OFFICE_SETTINGS_HTML = """
                 </section>
 
                 <section>
-                    <h2 class="section-title">Water and feed drop alarms</h2>
-                    <form class="card" method="post" action="{{ url_for('office_usage_drop_settings_save') }}" style="display:grid; gap:10px">
-                        <div class="hint">Raises an alarm on a shed when its water or feed drops by more than this, against the same time yesterday (checked through the day) or against the 3 days before (checked each morning). 0 switches it off.</div>
-                        <label class="field" for="usageDropPct">Alarm when it drops by more than (%)</label>
-                        <input id="usageDropPct" type="number" name="usage_drop_pct" min="0" max="95" step="1" inputmode="numeric" value="{{ usage_drop_pct }}">
-                        <button class="primary" type="submit">Save</button>
-                    </form>
-                </section>
-
-                <section>
-                    <h2 class="section-title">Incoming supply (Shelly 3EM)</h2>
-                    <form class="card" method="post" action="{{ url_for('office_shelly_settings_save') }}" style="display:grid; gap:10px">
-                        <div class="hint">Use this while there's no Water &amp; Power controller: the office reads the supply meter itself. Leave the address blank once a controller reads it.</div>
-                        <label class="field" for="shellyHost">Shelly address</label>
-                        <input id="shellyHost" type="text" name="shelly_host" placeholder="e.g. 192.168.1.60" value="{{ office_shelly.host }}">
-                        <label class="field" for="supplyFuse">Fuse rating per phase (A)</label>
-                        <input id="supplyFuse" type="number" name="supply_fuse_amps" min="0" step="1" value="{{ office_shelly.fuse }}">
-                        {% if office_shelly.host %}<div class="hint">Status: <b>{{ office_shelly.status }}</b></div>{% endif %}
-                        <button class="primary" type="submit">Save and test</button>
-                    </form>
+                    <h2 class="section-title">Alarms and meters</h2>
+                    <nav class="list" aria-label="Alarms and meters">
+                        <a class="item" href="{{ url_for('office_usage_alarms_view') }}"><span>Water and feed alarms</span><span class="item-sub">{{ usage_alarm_summary }}</span><span class="chev">›</span></a>
+                        <a class="item" href="{{ url_for('office_supply_settings_view') }}"><span>Incoming supply</span><span class="item-sub">{{ office_shelly.host or 'Not set' }}{% if office_shelly.host %} · {{ office_shelly.status }}{% endif %}</span><span class="chev">›</span></a>
+                    </nav>
                 </section>
 
                 <section>
@@ -12317,7 +12386,7 @@ def office_settings_view():
         farm_health=farm_health,
         controller_backup_rows=controller_backup_rows,
         office_shelly=office_shelly_settings_state(),
-        usage_drop_pct=usage_drop_pct(),
+        usage_alarm_summary="Drop %s · Rise %s" % tuple(("%d%%" % v) if v else "off" for v in (usage_drop_pct(), usage_rise_pct())),
         status_msg=request.args.get("msg", ""),
         status_ok=request.args.get("ok", "1") == "1",
     )
@@ -13972,21 +14041,26 @@ def office_supply_alarms():
 
 
 # ---------------------------------------------------------------------------
-# Water / feed drop alarms. Worked out at the office from each shed's hourly totals, for
-# sheds with birds in. Two checks for each of water and feed:
+# Water / feed alarms. Worked out at the office from each shed's hourly totals, for sheds
+# with birds in. Two checks for each of water and feed:
 #   * today so far (6am to the last full hour) against the same hours yesterday, so a
-#     drop shows within hours;
+#     change shows within hours;
 #   * yesterday (6am to 6am) against the average of the 3 days before it.
-# Either one dropping by more than the set percentage raises an alarm on that shed.
+# A drop of more than the drop setting raises an alarm (supply, meter or bypass problem;
+# empty bin or auger fault). A rise of more than the rise setting raises one too (a water
+# leak; feed spilling or an auger running on).
 # Dismissing a water (or feed) alarm means only readings from then on are judged: it comes
-# back once there are enough new hours and they are still down, and stays away if not.
+# back once there are enough new hours and they are still out, and stays away if not.
 # ---------------------------------------------------------------------------
 USAGE_DROP_DEFAULT_PCT = 40
+USAGE_RISE_DEFAULT_PCT = 50
 USAGE_DROP_CACHE_SECONDS = 300
 # Below these the numbers are too small to judge (very young birds, or early in the day).
 USAGE_DROP_CHECKS = {
-    "water": {"label": "Water", "unit": "L", "today_hours": 3, "today_min": 50.0, "day_min": 200.0},
-    "feed": {"label": "Feed", "unit": "kg", "today_hours": 6, "today_min": 30.0, "day_min": 100.0},
+    "water": {"label": "Water", "unit": "L", "today_hours": 3, "today_min": 50.0, "day_min": 200.0,
+              "drop_check": "supply, meter and bypass", "rise_check": "for a leak: drinker lines, header tank and pipework"},
+    "feed": {"label": "Feed", "unit": "kg", "today_hours": 6, "today_min": 30.0, "day_min": 100.0,
+             "drop_check": "bin, augers and feed lines", "rise_check": "for spilt feed or an auger running on"},
 }
 _usage_drop_cache = {"ts": 0, "pct": None, "by_shed": {}}
 USAGE_DISMISSALS_FILE = "usage_alarm_dismissals.json"
@@ -14004,14 +14078,32 @@ def dismiss_usage_alarm(shed_name, kind):
     _usage_drop_cache["ts"] = 0
 
 
-def usage_drop_pct():
+def usage_alarm_setting(kind):
+    """(switched on, percentage) for the 'drop' or 'rise' alarm."""
+    cfg = load_office_config()
+    default = USAGE_DROP_DEFAULT_PCT if kind == "drop" else USAGE_RISE_DEFAULT_PCT
     try:
-        return max(0, min(95, int(float(load_office_config().get("usage_drop_pct", USAGE_DROP_DEFAULT_PCT)))))
+        pct = int(float(cfg.get("usage_%s_pct" % kind, default)))
     except Exception:
-        return USAGE_DROP_DEFAULT_PCT
+        pct = default
+    pct = max(1, min(95 if kind == "drop" else 500, pct)) if pct > 0 else default
+    return bool(cfg.get("usage_%s_on" % kind, True)), pct
 
 
-def usage_drop_alarms_for_shed(shed_name, pct, now_ts=None):
+def usage_drop_pct():
+    """The drop percentage in use, or 0 when the drop alarm is switched off."""
+    on, pct = usage_alarm_setting("drop")
+    return pct if on else 0
+
+
+def usage_rise_pct():
+    """The rise percentage in use, or 0 when the rise alarm is switched off."""
+    on, pct = usage_alarm_setting("rise")
+    return pct if on else 0
+
+
+def usage_drop_alarms_for_shed(shed_name, pct, now_ts=None, rise_pct=0):
+    """Drop (pct) and rise (rise_pct) alarms for one shed. 0 switches that check off."""
     now_ts = int(now_ts or time.time())
     crop_id = get_active_crop_id_for_shed(shed_name)
     bucket = load_shed_entries_state().get(shed_name)
@@ -14040,40 +14132,48 @@ def usage_drop_alarms_for_shed(shed_name, pct, now_ts=None):
                 seen = True
         return out if seen else None
 
-    def day_start_n(n):
-        return int((day_start_dt - timedelta(days=n)).timestamp())
-
     def hhmm(ts):
         return datetime.fromtimestamp(ts).strftime("%H:%M")
 
+    def fmt(v):
+        return "{:,.0f}".format(v)
+
+    def judge(value, baseline):
+        """('down' or 'up', percentage), or None when within the settings."""
+        if pct > 0 and value < baseline * (1.0 - pct / 100.0):
+            return "down", round((1 - value / baseline) * 100)
+        if rise_pct > 0 and value > baseline * (1.0 + rise_pct / 100.0):
+            return "up", round((value / baseline - 1) * 100)
+        return None
+
     dismissed = load_usage_dismissals().get(shed_name) or {}
     alarms = []
-    limit = 1.0 - pct / 100.0
     for key, c in USAGE_DROP_CHECKS.items():
         unit = c["unit"]
-        fmt = lambda v: "{:,.0f}".format(v)
         # After a dismiss, only the full hours from then on count.
         try:
             from_ts = (int(dismissed.get(key) or 0) + 3599) // 3600 * 3600
         except Exception:
             from_ts = 0
-        what = "supply, meter and bypass" if key == "water" else "bin, augers and feed lines"
 
         # Today so far against the same hours yesterday.
         start = max(day_start, from_ts)
         if (full_hours_end - start) // 3600 >= c["today_hours"]:
             today = total(key, start, full_hours_end) or 0.0
             yday = total(key, start - 86400, full_hours_end - 86400)
-            if yday is not None and yday >= c["today_min"] and today < yday * limit:
+            verdict = judge(today, yday) if yday is not None and yday >= c["today_min"] else None
+            if verdict:
+                way, change = verdict
                 since = "since 6am" if start == day_start else "since %s (after it was dismissed)" % hhmm(start)
                 alarms.append({
-                    "alarm_key": "%s_drop_today" % key, "kind": key,
-                    "message": "%s down %d%% today: %s %s %s, against %s %s over the same hours yesterday. Check the %s." % (
-                        c["label"], round((1 - today / yday) * 100), fmt(today), unit, since, fmt(yday), unit, what),
+                    "alarm_key": "%s_%s_today" % (key, "drop" if way == "down" else "rise"), "kind": key,
+                    "message": "%s %s %d%% today: %s %s %s, against %s %s over the same hours yesterday. Check %s." % (
+                        c["label"], way, change, fmt(today), unit, since, fmt(yday), unit,
+                        ("the " + c["drop_check"]) if way == "down" else c["rise_check"]),
                 })
 
         # Yesterday against the same hours on the 3 days before.
-        y_start, y_end = day_start_n(1), day_start
+        y_start, y_end = int((day_start_dt - timedelta(days=1)).timestamp()), day_start
         start = max(y_start, from_ts)
         hours = (y_end - start) // 3600
         if hours >= c["today_hours"]:
@@ -14081,35 +14181,37 @@ def usage_drop_alarms_for_shed(shed_name, pct, now_ts=None):
             before = [total(key, start - n * 86400, y_end - n * 86400) for n in (1, 2, 3)]
             if yday_full is not None and all(v is not None for v in before):
                 avg = sum(before) / 3.0
-                if avg >= c["day_min"] * hours / 24.0 and yday_full < avg * limit:
+                verdict = judge(yday_full, avg) if avg >= c["day_min"] * hours / 24.0 else None
+                if verdict:
+                    way, change = verdict
                     span = "(6am to 6am)" if start == y_start else "(%s to 6am, after it was dismissed)" % hhmm(start)
                     alarms.append({
-                        "alarm_key": "%s_drop_day" % key, "kind": key,
-                        "message": "%s down %d%% yesterday: %s %s %s, against an average of %s %s over the 3 days before." % (
-                            c["label"], round((1 - yday_full / avg) * 100), fmt(yday_full), unit, span, fmt(avg), unit),
+                        "alarm_key": "%s_%s_day" % (key, "drop" if way == "down" else "rise"), "kind": key,
+                        "message": "%s %s %d%% yesterday: %s %s %s, against an average of %s %s over the 3 days before." % (
+                            c["label"], way, change, fmt(yday_full), unit, span, fmt(avg), unit),
                     })
     return alarms
 
 
 def usage_drop_alarms_by_shed():
-    """Water / feed drop alarms for every shed, worked out at most every 5 minutes."""
-    pct = usage_drop_pct()
-    if pct <= 0:
+    """Water / feed drop and rise alarms for every shed, worked out at most every 5 minutes."""
+    settings = (usage_drop_pct(), usage_rise_pct())
+    if settings == (0, 0):
         return {}
     now_ts = int(time.time())
     cache = _usage_drop_cache
-    if cache["pct"] == pct and now_ts - cache["ts"] < USAGE_DROP_CACHE_SECONDS:
+    if cache["pct"] == settings and now_ts - cache["ts"] < USAGE_DROP_CACHE_SECONDS:
         return cache["by_shed"]
     by_shed = {}
     for shed_no in SHED_NUMBERS:
         shed_name = shed_name_from_number(shed_no)
         try:
-            rows = usage_drop_alarms_for_shed(shed_name, pct, now_ts)
+            rows = usage_drop_alarms_for_shed(shed_name, settings[0], now_ts, rise_pct=settings[1])
         except Exception:
             rows = []
         if rows:
             by_shed[shed_name] = rows
-    cache.update({"ts": now_ts, "pct": pct, "by_shed": by_shed})
+    cache.update({"ts": now_ts, "pct": settings, "by_shed": by_shed})
     return by_shed
 
 
@@ -14127,18 +14229,39 @@ def usage_drop_dismiss():
     return redirect(back if back.startswith("/") and not back.startswith("//") else "/")
 
 
+@app.route("/settings/usage-alarms")
+def office_usage_alarms_view():
+    return render_template_string(
+        OFFICE_SUBSETTINGS_HTML, page="usage", title="Water and feed alarms",
+        drop=usage_alarm_setting("drop"), rise=usage_alarm_setting("rise"),
+        status_msg=request.args.get("msg", ""), status_ok=request.args.get("ok", "1") == "1",
+    )
+
+
 @app.route("/settings/usage-drop", methods=["POST"])
 def office_usage_drop_settings_save():
     cfg = load_office_config()
     try:
-        cfg["usage_drop_pct"] = max(0, min(95, int(float(request.form.get("usage_drop_pct", USAGE_DROP_DEFAULT_PCT) or 0))))
+        cfg["usage_drop_pct"] = max(1, min(95, int(float(request.form.get("usage_drop_pct", USAGE_DROP_DEFAULT_PCT)))))
+        cfg["usage_rise_pct"] = max(1, min(500, int(float(request.form.get("usage_rise_pct", USAGE_RISE_DEFAULT_PCT)))))
     except Exception:
-        return redirect(url_for("office_settings_view", ok=0, msg="Enter a percentage, e.g. 40"))
+        return redirect(url_for("office_usage_alarms_view", ok=0, msg="Enter percentages, e.g. 40 and 50"))
+    cfg["usage_drop_on"] = request.form.get("usage_drop_on") == "1"
+    cfg["usage_rise_on"] = request.form.get("usage_rise_on") == "1"
     save_office_config(cfg)
     _usage_drop_cache["ts"] = 0
-    if cfg["usage_drop_pct"] == 0:
-        return redirect(url_for("office_settings_view", ok=1, msg="Water and feed drop alarms switched off"))
-    return redirect(url_for("office_settings_view", ok=1, msg="Water and feed drop alarms set to %d%%" % cfg["usage_drop_pct"]))
+    parts = (("drops of more than %d%%" % cfg["usage_drop_pct"]) if cfg["usage_drop_on"] else "drop alarms off",
+             ("rises of more than %d%%" % cfg["usage_rise_pct"]) if cfg["usage_rise_on"] else "rise alarms off")
+    return redirect(url_for("office_usage_alarms_view", ok=1, msg="Saved: %s, %s" % parts))
+
+
+@app.route("/settings/supply")
+def office_supply_settings_view():
+    return render_template_string(
+        OFFICE_SUBSETTINGS_HTML, page="supply", title="Incoming supply",
+        office_shelly=office_shelly_settings_state(),
+        status_msg=request.args.get("msg", ""), status_ok=request.args.get("ok", "1") == "1",
+    )
 
 
 @app.route("/settings/shelly", methods=["POST"])
@@ -14155,11 +14278,11 @@ def office_shelly_settings_save():
             office_shelly_poll_once()
             power = latest_borehole_live().get("power") or {}
             if power.get("error"):
-                return redirect(url_for("office_settings_view", ok=0, msg="Saved, but the Shelly didn't answer: %s" % power.get("error")))
-            return redirect(url_for("office_settings_view", ok=1, msg="Shelly connected: %s now" % supply_text(power.get("total_w"))))
+                return redirect(url_for("office_supply_settings_view", ok=0, msg="Saved, but the Shelly didn't answer: %s" % power.get("error")))
+            return redirect(url_for("office_supply_settings_view", ok=1, msg="Shelly connected: %s now" % supply_text(power.get("total_w"))))
         except Exception as exc:
-            return redirect(url_for("office_settings_view", ok=0, msg="Saved, but the Shelly check failed: %s" % exc))
-    return redirect(url_for("office_settings_view", ok=1, msg="Supply meter switched off at the office"))
+            return redirect(url_for("office_supply_settings_view", ok=0, msg="Saved, but the Shelly check failed: %s" % exc))
+    return redirect(url_for("office_supply_settings_view", ok=1, msg="Supply meter switched off at the office"))
 
 
 @app.route("/api/borehole/sync", methods=["POST"])
