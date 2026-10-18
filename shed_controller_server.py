@@ -396,6 +396,7 @@ DEFAULT_CONFIG = {
     "auger_right_label": "Auger Right",
     "lighting_label": "Lighting",
     "climate_limits_updated_ts": None,
+    "auger_alarms": None,                # set by the office: see adopt_office_auger_alarms()
     "auto_update_enabled": False,
     "layout_front_end": "left",
     "layout_bin_corner": "top-left",
@@ -421,7 +422,8 @@ AUGER_PACKET_KEYS = {
     "auger_right": ["auger_right_on", "auger_right"],
 }
 LIGHTING_PACKET_KEYS = ["lighting_on", "lighting"]
-AUGER_OVERRUN_SECONDS = 20 * 60
+AUGER_OVERRUN_SECONDS = 30 * 60        # until the office sends its own auger alarm settings
+AUGER_IDLE_SENSOR_SECONDS = 300         # readings older than this: can't tell if an auger ran
 BACKUP_INTERVAL_SECONDS = 3600
 STALE_SENSOR_SECONDS = 30
 STALE_OFFICE_SECONDS = 60
@@ -2009,6 +2011,29 @@ def lighting_glow_class(sensors):
     return "state-green" if state else "state-warn"
 
 
+def auger_alarm_limits(cfg):
+    """(run limit seconds or None, not-run limit seconds or None), from the office's
+    Auger alarms settings. Until those arrive, running longer than 30 minutes alarms and
+    the not-run check is off."""
+    limits = cfg.get("auger_alarms")
+    if not isinstance(limits, dict):
+        return AUGER_OVERRUN_SECONDS, None
+
+    def secs(value):
+        try:
+            return int(value) * 60 if value not in [None, ""] and int(value) > 0 else None
+        except Exception:
+            return None
+    return secs(limits.get("run_max_min")), secs(limits.get("idle_max_min"))
+
+
+def fmt_minutes(seconds):
+    minutes = int(seconds) // 60
+    if minutes < 60:
+        return "%d minutes" % minutes
+    return "%dh %02dm" % (minutes // 60, minutes % 60)
+
+
 def evaluate_augers(sensors, now_ts=None):
     if now_ts is None:
         now_ts = int(time.time())
@@ -2018,6 +2043,8 @@ def evaluate_augers(sensors, now_ts=None):
     controller_alarms = []
     cfg = load_config()
     active_auger_keys = enabled_auger_keys(cfg)
+    run_limit, idle_limit = auger_alarm_limits(cfg)
+    floating = augers_look_floating(augers, active_auger_keys, cfg=cfg)
 
     i = 0
     while i < len(AUGER_DEFS):
@@ -2032,17 +2059,30 @@ def evaluate_augers(sensors, now_ts=None):
                 started_ts = now_ts
                 auger["started_ts"] = started_ts
                 changed = True
-            if now_ts - started_ts >= AUGER_OVERRUN_SECONDS:
+            if run_limit is not None and now_ts - started_ts >= run_limit:
                 overrun = True
 
         if bool(auger.get("overrun")) != overrun:
             auger["overrun"] = overrun
             changed = True
 
-        if overrun and not augers_look_floating(augers, active_auger_keys, cfg=cfg):
+        if overrun and not floating:
             controller_alarms.append({
                 "alarm_key": "%s_overrun" % key,
-                "message": "%s overrun: running longer than 20 minutes" % label,
+                "message": "%s overrun: running longer than %s" % (label, fmt_minutes(run_limit)),
+            })
+
+        # Not run for too long: only for augers in use, with fresh readings from the Pico.
+        idle_for = auger_idle_seconds(auger, sensors, now_ts) if (
+            idle_limit is not None and key in active_auger_keys and not floating) else None
+        if idle_for is not None and idle_for >= idle_limit:
+            try:
+                last = " (last ran %s)" % fmt_clock_ts(int(auger.get("last_stopped_ts")))
+            except Exception:
+                last = ""
+            controller_alarms.append({
+                "alarm_key": "%s_idle" % key,
+                "message": "%s hasn't run for %s%s" % (label, fmt_minutes(idle_for), last),
             })
         i += 1
 
@@ -2063,6 +2103,23 @@ def evaluate_augers(sensors, now_ts=None):
 
     sensors["augers"] = augers
     return changed
+
+
+def auger_idle_seconds(auger, sensors, now_ts):
+    """How long an auger has been standing since it last stopped, or None when it can't
+    be judged: it's running, has no recorded run yet, or the Pico's readings are stale."""
+    if auger.get("on"):
+        return None
+    try:
+        since = int(auger.get("last_stopped_ts"))
+    except Exception:
+        return None
+    try:
+        if now_ts - int(sensors.get("last_sensor_ts")) > AUGER_IDLE_SENSOR_SECONDS:
+            return None
+    except Exception:
+        return None
+    return max(0, now_ts - since)
 
 
 def augers_look_floating(augers, active_auger_keys, cfg=None):
@@ -2857,6 +2914,25 @@ def adopt_office_climate_limits(limits):
     return True
 
 
+def adopt_office_auger_alarms(limits):
+    # Auger alarm limits are set at the office (Settings > Alarms and meters > Auger
+    # alarms) and arrive with each sync. Only the office changes them.
+    if not isinstance(limits, dict):
+        return False
+    clean = {}
+    for key in ["run_max_min", "idle_max_min"]:
+        try:
+            clean[key] = int(limits[key]) if limits.get(key) not in [None, ""] else None
+        except Exception:
+            return False
+    cfg = load_config()
+    if cfg.get("auger_alarms") == clean:
+        return False
+    cfg["auger_alarms"] = clean
+    save_config(cfg)
+    return True
+
+
 def sync_climate_limits_to_office():
     # Send changed limits to the office straight away, without holding up the page.
     threading.Thread(target=lambda: auto_sync_if_changed(load_state()), daemon=True).start()
@@ -2895,6 +2971,7 @@ def pull_from_dashboard(state):
 
             payload = json.loads(resp.read().decode("utf-8"))
             adopt_office_climate_limits(payload.get("climate_limits"))
+            adopt_office_auger_alarms(payload.get("auger_alarms"))
             incoming = payload.get("entries", {})
             if isinstance(incoming, dict):
                 state["entries"] = {}
@@ -11195,6 +11272,7 @@ def dashboard_sync():
         return jsonify({"ok": False, "error": "Shed number mismatch"}), 400
 
     adopt_office_climate_limits(payload.get("climate_limits"))
+    adopt_office_auger_alarms(payload.get("auger_alarms"))
 
     def mutator(state):
         incoming_entries = payload.get("entries", {})

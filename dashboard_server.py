@@ -1,6 +1,7 @@
 from flask import Flask, render_template_string, abort, url_for, request, redirect, jsonify, Response, send_file
 import functools
 import json
+import math
 import os
 import re
 import socket
@@ -15,7 +16,7 @@ import urllib.request
 import uuid
 import zipfile
 from collections import deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from markupsafe import Markup, escape
 from xml.sax.saxutils import escape as xml_escape
@@ -104,7 +105,7 @@ OFFICE_PAGE_HEAD = """
         .pill.wait { background: #fff4e5; color: #9a4b00; } .pill.wait::before { background: var(--amber); }
         .pill.bad { background: #fdecec; color: #8f1f1f; } .pill.bad::before { background: var(--red); }
         label.field { display: block; font-size: 14px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; margin: 0 0 6px 2px; }
-        input[type="number"], input[type="text"], select {
+        input[type="number"], input[type="text"], input[type="time"], select {
             width: 100%; min-height: 60px; padding: 0 16px; border-radius: 12px; border: 1px solid #c5d0dc;
             background: var(--card-2); color: var(--text); font-family: inherit; font-size: 22px; font-weight: 600;
         }
@@ -3718,6 +3719,7 @@ def shed_sync_payload(shed_no):
         "entries": payload_entries,
         "pen_order": {"order": pen_order_for_shed(state, shed_name), "updated_ts": pen_bucket.get("pen_order_ts") or None, "now": int(time.time())},
         "climate_limits": climate_limits,
+        "auger_alarms": auger_alarm_payload(shed_name),
         "current_crop_id": get_active_crop_id_for_shed(shed_name),
         "sync_version": sync_version,
         "source_updated_ts": sync_version,
@@ -4120,11 +4122,13 @@ def active_alarms_by_shed():
                 result[shed] = []
             result[shed].append(rec)
 
-    # Water / feed drops are worked out here at the office, not sent by the controllers.
+    # Water alarms and the lights alarm are worked out here at the office, not sent by
+    # the controllers.
     now_ts = int(time.time())
-    for shed, rows in usage_drop_alarms_by_shed().items():
-        for rec in rows:
-            result.setdefault(shed, []).append({"ts": now_ts, "active": True, "alarm_key": rec["alarm_key"], "message": rec["message"]})
+    for source in (usage_drop_alarms_by_shed(), lights_alarms_by_shed(now_ts)):
+        for shed, rows in source.items():
+            for rec in rows:
+                result.setdefault(shed, []).append({"ts": now_ts, "active": True, "alarm_key": rec["alarm_key"], "message": rec["message"]})
 
     return result
 
@@ -7942,7 +7946,7 @@ OFFICE_CARDS_HTML = """
     {{ alarms|length }} need{% if alarms|length == 1 %}s{% endif %} a look
   </span>
   {% for a in alarms %}<span class="ss-alarm-item">{{ a.text }}{% if a.kind and (pc or not tv) %}
-    <form class="ss-dismiss" method="post" action="{{ url_for('usage_drop_dismiss') }}"><input type="hidden" name="shed_no" value="{{ a.shed_no }}"><input type="hidden" name="kind" value="{{ a.kind }}"><button type="submit" title="Dismiss. It comes back if the {{ a.kind }} is still down over the next few hours.">Dismiss</button></form>{% endif %}</span>{% endfor %}
+    <form class="ss-dismiss" method="post" action="{{ url_for('usage_drop_dismiss') }}"><input type="hidden" name="shed_no" value="{{ a.shed_no }}"><input type="hidden" name="kind" value="{{ a.kind }}"><button type="submit" title="Dismiss. It comes back if the {{ a.kind }} is still out over the next few hours.">Dismiss</button></form>{% endif %}</span>{% endfor %}
 </section>
 {% endif %}
 
@@ -9212,7 +9216,7 @@ OFFICE_SUBSETTINGS_HTML = """
         .sub-form .hint { line-height: 1.45; }
         .sub-form ul { margin: 4px 0 0; padding-left: 20px; }
         .alarm-block { display: grid; gap: 8px; padding-top: 12px; border-top: 1px solid var(--track); }
-        .alarm-block.off .field, .alarm-block.off input[type=number], .alarm-block.off .hint { opacity: 0.45; }
+        .alarm-block.off .field, .alarm-block.off input[type=number], .alarm-block.off input[type=time], .alarm-block.off .hint { opacity: 0.45; }
         .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 18px; font-weight: 600; color: var(--text); cursor: pointer; }
         /* On / off toggle */
         .switch { appearance: none; -webkit-appearance: none; position: relative; flex: none; width: 56px; height: 32px; margin: 0; border-radius: 999px; background: #c5d0dc; cursor: pointer; transition: background 0.15s; }
@@ -9227,12 +9231,12 @@ OFFICE_SUBSETTINGS_HTML = """
         {% if status_msg %}<div class="msg auto-dismiss {% if not status_ok %}error{% endif %}">{{ status_msg }}</div>{% endif %}
         {% if page == 'usage' %}
         <section>
-            <h2 class="section-title">Water and feed alarms</h2>
+            <h2 class="section-title">Water drop and rise alarms</h2>
             <form class="card sub-form" method="post" action="{{ url_for('office_usage_drop_settings_save') }}">
-                <div class="hint">Each shed with birds in is checked two ways, for water and for feed:
+                <div class="hint">Each shed's water is checked two ways while it has birds in:
                     <ul>
-                        <li>today since 6am against the same hours yesterday (water from 9am, feed from noon);</li>
-                        <li>yesterday, 6am to 6am, against the average of the 3 days before (each morning).</li>
+                        <li>each 4-hour block (6–10am, 10am–2pm, 2–6pm, 6–10pm, 10pm–2am, 2–6am) against the 4 hours before it <i>and</i> the same 4 hours yesterday, as each block ends. It has to be out against both;</li>
+                        <li>yesterday's total, 6am to 6am, against the day before (each morning). If the day before was out itself, it uses the last normal day, so getting back to normal after a problem doesn't set it off.</li>
                     </ul>
                 </div>
                 <div class="alarm-block">
@@ -9240,16 +9244,59 @@ OFFICE_SUBSETTINGS_HTML = """
                         <input type="checkbox" class="switch" name="usage_drop_on" value="1" data-for="usageDropPct" {% if drop[0] %}checked{% endif %}></label>
                     <label class="field" for="usageDropPct">Alarm when it drops by more than (%)</label>
                     <input id="usageDropPct" type="number" name="usage_drop_pct" min="1" max="95" step="1" inputmode="numeric" value="{{ drop[1] }}">
-                    <div class="hint">A water supply, meter or bypass problem; an empty bin or a stopped auger.</div>
+                    <div class="hint">A supply, meter or bypass problem.</div>
                 </div>
                 <div class="alarm-block">
                     <label class="switch-row"><span>Rise alarm</span>
                         <input type="checkbox" class="switch" name="usage_rise_on" value="1" data-for="usageRisePct" {% if rise[0] %}checked{% endif %}></label>
                     <label class="field" for="usageRisePct">Alarm when it rises by more than (%)</label>
                     <input id="usageRisePct" type="number" name="usage_rise_pct" min="1" max="500" step="1" inputmode="numeric" value="{{ rise[1] }}">
-                    <div class="hint">A water leak; feed spilling or an auger running on. The birds' normal growth from one day to the next stays well under this.</div>
+                    <div class="hint">A leak in the drinker lines, header tank or pipework. The birds' normal growth from one day to the next stays well under this.</div>
                 </div>
                 <div class="hint">A dismissed alarm comes back if the next few hours are still out.</div>
+                <button class="primary" type="submit">Save</button>
+            </form>
+        </section>
+        {% elif page == 'lights' %}
+        <section>
+            <h2 class="section-title">Lights alarm</h2>
+            <form class="card sub-form" method="post" action="{{ url_for('office_lights_alarm_save') }}">
+                <div class="hint">Alarms when a shed with birds in and lighting control still has its lights off after dark. Sunset and sunrise are worked out for the farm each day. {{ sun_today }}.</div>
+                <div class="hint">A shed whose light reading hasn't changed for 2 days is left out: its light sensor (the CT on the light circuit) isn't fitted yet or isn't working.</div>
+                <div class="alarm-block">
+                    <label class="switch-row"><span>Lights off after dark</span>
+                        <input type="checkbox" class="switch" name="on" value="1" data-for="afterSunset" {% if lights.on %}checked{% endif %}></label>
+                    <label class="field" for="afterSunset">Alarm this many minutes after sunset</label>
+                    <input id="afterSunset" type="number" name="after_sunset_min" min="0" max="600" step="1" inputmode="numeric" value="{{ lights.after_sunset_min }}">
+                    <label class="field" for="lightsUntil">Check until (leave blank for sunrise)</label>
+                    <input id="lightsUntil" type="time" name="until" value="{{ lights.until }}">
+                    <div class="hint">If the birds have a planned dark period overnight, set the time it starts so the alarm stops then.</div>
+                </div>
+                <button class="primary" type="submit">Save</button>
+            </form>
+        </section>
+        {% elif page == 'augers' %}
+        <section>
+            <h2 class="section-title">Auger alarms</h2>
+            <form class="card sub-form" method="post" action="{{ url_for('office_auger_alarms_save') }}">
+                <div class="hint">For every auger switched on in a shed's settings. The sheds raise these themselves, so they show on the shed screen as well as here.</div>
+                <div class="alarm-block">
+                    <label class="switch-row"><span>Running too long</span>
+                        <input type="checkbox" class="switch" name="run_on" value="1" data-for="runMax" {% if augers.run_on %}checked{% endif %}></label>
+                    <label class="field" for="runMax">Alarm when an auger runs for more than (minutes)</label>
+                    <input id="runMax" type="number" name="run_max_min" min="1" max="1440" step="1" inputmode="numeric" value="{{ augers.run_max_min }}">
+                    <div class="hint">A blocked line, a stuck switch, or a bin that's run empty.</div>
+                </div>
+                <div class="alarm-block">
+                    <label class="switch-row"><span>Not run</span>
+                        <input type="checkbox" class="switch" name="idle_on" value="1" data-for="idleMax" {% if augers.idle_on %}checked{% endif %}></label>
+                    <label class="field" for="idleMax">Alarm when an auger hasn't run for (minutes)</label>
+                    <input id="idleMax" type="number" name="idle_max_min" min="1" max="2880" step="1" inputmode="numeric" value="{{ augers.idle_max_min }}">
+                    <label class="field" for="idleFrom">Start checking from bird day</label>
+                    <input id="idleFrom" type="number" name="idle_from_day" min="0" max="100" step="1" inputmode="numeric" value="{{ augers.idle_from_day }}">
+                    <div class="hint">Chicks eat so little the augers can sit for hours, so this check waits until the birds reach this day (0 checks from placement). It's off in a shed with no birds.</div>
+                    <div class="hint">A tripped auger, a stopped motor, or an empty bin.</div>
+                </div>
                 <button class="primary" type="submit">Save</button>
             </form>
         </section>
@@ -9271,7 +9318,7 @@ OFFICE_SUBSETTINGS_HTML = """
 <script>
 setTimeout(() => { document.querySelectorAll('.auto-dismiss').forEach((el) => { el.style.display = 'none'; }); }, 8000);
 // Grey out a percentage while its alarm is switched off.
-document.querySelectorAll('.switch').forEach((sw) => {
+document.querySelectorAll('.switch[data-for]').forEach((sw) => {
     const block = sw.closest('.alarm-block');
     const sync = () => block.classList.toggle('off', !sw.checked);
     sw.addEventListener('change', sync);
@@ -9339,7 +9386,9 @@ OFFICE_SETTINGS_HTML = """
                 <section>
                     <h2 class="section-title">Alarms and meters</h2>
                     <nav class="list" aria-label="Alarms and meters">
-                        <a class="item" href="{{ url_for('office_usage_alarms_view') }}"><span>Water and feed alarms</span><span class="item-sub">{{ usage_alarm_summary }}</span><span class="chev">›</span></a>
+                        <a class="item" href="{{ url_for('office_usage_alarms_view') }}"><span>Water alarms</span><span class="item-sub">{{ usage_alarm_summary }}</span><span class="chev">›</span></a>
+                        <a class="item" href="{{ url_for('office_auger_alarms_view') }}"><span>Auger alarms</span><span class="item-sub">{{ auger_alarm_summary }}</span><span class="chev">›</span></a>
+                        <a class="item" href="{{ url_for('office_lights_alarm_view') }}"><span>Lights alarm</span><span class="item-sub">{{ lights_alarm_summary }}</span><span class="chev">›</span></a>
                         <a class="item" href="{{ url_for('office_supply_settings_view') }}"><span>Incoming supply</span><span class="item-sub">{{ office_shelly.host or 'Not set' }}{% if office_shelly.host %} · {{ office_shelly.status }}{% endif %}</span><span class="chev">›</span></a>
                     </nav>
                 </section>
@@ -12041,15 +12090,19 @@ def office_home_context(tv=False):
 
     alarms = []
     usage = usage_drop_alarms_by_shed()
+    lights = lights_alarms_by_shed()
     for s in sheds:
-        drops = usage.get(shed_name_from_number(s["shed_no"])) or []
-        drop_msgs = [d["message"] for d in drops]
+        shed_key = shed_name_from_number(s["shed_no"])
+        drops = usage.get(shed_key) or []
+        drop_msgs = [d["message"] for d in drops] + [l["message"] for l in lights.get(shed_key) or []]
         if s["has_alarm"] and s["alarm"] not in drop_msgs:
             alarms.append({"text": "%s · %s" % (s["name"], s["alarm"])})
         elif s["kind"] == "offline" and s["status"] == "Not syncing" and s["updated"] not in ["", "--"]:
             alarms.append({"text": "%s · not syncing since %s" % (s["name"], s["updated"])})
-        elif s["kind"] in ["alarm", "warn"] and not drops:
+        elif s["kind"] in ["alarm", "warn"] and not drops and not lights.get(shed_key):
             alarms.append({"text": "%s · %s" % (s["name"], s["status"].lower())})
+        for l in lights.get(shed_key) or []:
+            alarms.append({"text": "%s · %s" % (s["name"], l["message"])})
         # Water / feed drops: one line each, with a Dismiss button.
         for d in drops:
             alarms.append({"text": "%s · %s" % (s["name"], d["message"]), "shed_no": s["shed_no"], "kind": d["kind"]})
@@ -12386,6 +12439,10 @@ def office_settings_view():
         farm_health=farm_health,
         controller_backup_rows=controller_backup_rows,
         office_shelly=office_shelly_settings_state(),
+        lights_alarm_summary=(lambda l: ("%d min after sunset" % l["after_sunset_min"]) if l["on"] else "Off")(lights_alarm_settings()),
+        auger_alarm_summary=(lambda a: "Run %s · Not run %s" % (
+            ("%d min" % a["run_max_min"]) if a["run_on"] else "off",
+            ("%d min" % a["idle_max_min"]) if a["idle_on"] else "off"))(auger_alarm_settings()),
         usage_alarm_summary="Drop %s · Rise %s" % tuple(("%d%%" % v) if v else "off" for v in (usage_drop_pct(), usage_rise_pct())),
         status_msg=request.args.get("msg", ""),
         status_ok=request.args.get("ok", "1") == "1",
@@ -14041,26 +14098,26 @@ def office_supply_alarms():
 
 
 # ---------------------------------------------------------------------------
-# Water / feed alarms. Worked out at the office from each shed's hourly totals, for sheds
-# with birds in. Two checks for each of water and feed:
-#   * today so far (6am to the last full hour) against the same hours yesterday, so a
-#     change shows within hours;
-#   * yesterday (6am to 6am) against the average of the 3 days before it.
-# A drop of more than the drop setting raises an alarm (supply, meter or bypass problem;
-# empty bin or auger fault). A rise of more than the rise setting raises one too (a water
-# leak; feed spilling or an auger running on).
-# Dismissing a water (or feed) alarm means only readings from then on are judged: it comes
+# Water alarms. Worked out at the office from each shed's hourly totals, for sheds with
+# birds in. Two checks:
+#   * the last full 4-hour block of the farm day (6-10am, 10am-2pm, ...) against the 4
+#     hours before it and the same 4 hours yesterday, so a change shows within hours;
+#   * yesterday's total (6am to 6am) against the day before.
+# A drop of more than the drop setting raises an alarm (supply, meter or bypass problem).
+# A rise of more than the rise setting raises one too (a leak).
+# Dismissing an alarm means only readings from then on are judged: it comes
 # back once there are enough new hours and they are still out, and stays away if not.
 # ---------------------------------------------------------------------------
 USAGE_DROP_DEFAULT_PCT = 40
 USAGE_RISE_DEFAULT_PCT = 50
 USAGE_DROP_CACHE_SECONDS = 300
+USAGE_BLOCK_HOURS = 4
 # Below these the numbers are too small to judge (very young birds, or early in the day).
 USAGE_DROP_CHECKS = {
-    "water": {"label": "Water", "unit": "L", "today_hours": 3, "today_min": 50.0, "day_min": 200.0,
+    "water": {"label": "Water", "unit": "L", "today_hours": 3, "block_min": 50.0, "day_min": 200.0,
               "drop_check": "supply, meter and bypass", "rise_check": "for a leak: drinker lines, header tank and pipework"},
-    "feed": {"label": "Feed", "unit": "kg", "today_hours": 6, "today_min": 30.0, "day_min": 100.0,
-             "drop_check": "bin, augers and feed lines", "rise_check": "for spilt feed or an auger running on"},
+    # Feed isn't checked: the bins are watched, and augers trip out now and then, which
+    # would make it alarm for nothing.
 }
 _usage_drop_cache = {"ts": 0, "pct": None, "by_shed": {}}
 USAGE_DISMISSALS_FILE = "usage_alarm_dismissals.json"
@@ -14125,12 +14182,16 @@ def usage_drop_alarms_for_shed(shed_name, pct, now_ts=None, rise_pct=0):
     full_hours_end = now_ts // 3600 * 3600          # end of the last full hour
 
     def total(key, start, end):
-        out, seen = 0.0, False
+        """The amount used between start and end, or None if more than one hour of it
+        is missing (a controller offline, or before the crop began): a part-day total
+        would look like a drop."""
+        out, seen = 0.0, 0
         for epoch, r in by_hour.items():
             if start <= epoch < end and r.get(key) is not None:
                 out += float(r[key])
-                seen = True
-        return out if seen else None
+                seen += 1
+        hours = (end - start) // 3600
+        return out if seen and seen >= hours - (1 if hours >= 4 else 0) else None
 
     def hhmm(ts):
         return datetime.fromtimestamp(ts).strftime("%H:%M")
@@ -14156,40 +14217,58 @@ def usage_drop_alarms_for_shed(shed_name, pct, now_ts=None, rise_pct=0):
         except Exception:
             from_ts = 0
 
-        # Today so far against the same hours yesterday.
-        start = max(day_start, from_ts)
-        if (full_hours_end - start) // 3600 >= c["today_hours"]:
-            today = total(key, start, full_hours_end) or 0.0
-            yday = total(key, start - 86400, full_hours_end - 86400)
-            verdict = judge(today, yday) if yday is not None and yday >= c["today_min"] else None
-            if verdict:
-                way, change = verdict
-                since = "since 6am" if start == day_start else "since %s (after it was dismissed)" % hhmm(start)
-                alarms.append({
-                    "alarm_key": "%s_%s_today" % (key, "drop" if way == "down" else "rise"), "kind": key,
-                    "message": "%s %s %d%% today: %s %s %s, against %s %s over the same hours yesterday. Check %s." % (
-                        c["label"], way, change, fmt(today), unit, since, fmt(yday), unit,
-                        ("the " + c["drop_check"]) if way == "down" else c["rise_check"]),
-                })
+        # The last full 4-hour block (6-10am, 10am-2pm, 2-6pm, 6-10pm, 10pm-2am, 2-6am)
+        # against both the 4 hours before it and the same 4 hours yesterday. It has to be
+        # out against both, the same way, so the day's normal pattern (quiet nights, busy
+        # mornings) or one odd day doesn't set it off. Skipped if it began before a dismiss.
+        block = USAGE_BLOCK_HOURS * 3600
+        block_end = day_start + (full_hours_end - day_start) // block * block
+        block_start = block_end - block
+        if block_start >= from_ts:
+            used = total(key, block_start, block_end)
+            before = total(key, block_start - block, block_start)
+            yday = total(key, block_start - 86400, block_end - 86400)
+            if used is not None and before is not None and yday is not None and min(before, yday) >= c["block_min"]:
+                v_before, v_yday = judge(used, before), judge(used, yday)
+                if v_before and v_yday and v_before[0] == v_yday[0]:
+                    way, change = v_yday
+                    alarms.append({
+                        "alarm_key": "%s_%s_block" % (key, "drop" if way == "down" else "rise"), "kind": key,
+                        "message": "%s %s %d%% from %s to %s: %s %s, against %s %s at the same time yesterday and %s %s in the 4 hours before. Check %s." % (
+                            c["label"], way, change, hhmm(block_start), hhmm(block_end), fmt(used), unit,
+                            fmt(yday), unit, fmt(before), unit,
+                            ("the " + c["drop_check"]) if way == "down" else c["rise_check"]),
+                    })
 
-        # Yesterday against the same hours on the 3 days before.
+        # Yesterday's total (6am to 6am) against the day before. If the day before was out
+        # itself (a fault or a leak), it looks further back, up to a week, for the last
+        # normal day, so getting back to normal after a problem doesn't set it off.
         y_start, y_end = int((day_start_dt - timedelta(days=1)).timestamp()), day_start
         start = max(y_start, from_ts)
         hours = (y_end - start) // 3600
-        if hours >= c["today_hours"]:
-            yday_full = total(key, start, y_end)
-            before = [total(key, start - n * 86400, y_end - n * 86400) for n in (1, 2, 3)]
-            if yday_full is not None and all(v is not None for v in before):
-                avg = sum(before) / 3.0
-                verdict = judge(yday_full, avg) if avg >= c["day_min"] * hours / 24.0 else None
-                if verdict:
-                    way, change = verdict
-                    span = "(6am to 6am)" if start == y_start else "(%s to 6am, after it was dismissed)" % hhmm(start)
-                    alarms.append({
-                        "alarm_key": "%s_%s_day" % (key, "drop" if way == "down" else "rise"), "kind": key,
-                        "message": "%s %s %d%% yesterday: %s %s %s, against an average of %s %s over the 3 days before." % (
-                            c["label"], way, change, fmt(yday_full), unit, span, fmt(avg), unit),
-                    })
+        yday_full = total(key, start, y_end) if hours >= c["today_hours"] else None
+        ref, ref_n = None, None
+        if yday_full is not None:
+            for n in range(1, 8):
+                v = total(key, start - n * 86400, y_end - n * 86400)
+                if v is None:
+                    continue
+                prior = total(key, start - (n + 1) * 86400, y_end - (n + 1) * 86400)
+                if prior and judge(v, prior):
+                    continue
+                ref, ref_n = v, n
+                break
+        if ref is not None and ref >= c["day_min"] * hours / 24.0:
+            verdict = judge(yday_full, ref)
+            if verdict:
+                way, change = verdict
+                span = "(6am to 6am)" if start == y_start else "(%s to 6am, after it was dismissed)" % hhmm(start)
+                against = "the day before" if ref_n == 1 else "%s, the last normal day" % datetime.fromtimestamp(y_start - ref_n * 86400).strftime("%a %d %b")
+                alarms.append({
+                    "alarm_key": "%s_%s_day" % (key, "drop" if way == "down" else "rise"), "kind": key,
+                    "message": "%s %s %d%% yesterday: %s %s %s, against %s %s on %s." % (
+                        c["label"], way, change, fmt(yday_full), unit, span, fmt(ref), unit, against),
+                })
     return alarms
 
 
@@ -14232,7 +14311,7 @@ def usage_drop_dismiss():
 @app.route("/settings/usage-alarms")
 def office_usage_alarms_view():
     return render_template_string(
-        OFFICE_SUBSETTINGS_HTML, page="usage", title="Water and feed alarms",
+        OFFICE_SUBSETTINGS_HTML, page="usage", title="Water alarms",
         drop=usage_alarm_setting("drop"), rise=usage_alarm_setting("rise"),
         status_msg=request.args.get("msg", ""), status_ok=request.args.get("ok", "1") == "1",
     )
@@ -14253,6 +14332,220 @@ def office_usage_drop_settings_save():
     parts = (("drops of more than %d%%" % cfg["usage_drop_pct"]) if cfg["usage_drop_on"] else "drop alarms off",
              ("rises of more than %d%%" % cfg["usage_rise_pct"]) if cfg["usage_rise_on"] else "rise alarms off")
     return redirect(url_for("office_usage_alarms_view", ok=1, msg="Saved: %s, %s" % parts))
+
+
+# ---------------------------------------------------------------------------
+# Auger alarms: an auger running too long, or not running for too long. Set here for the
+# whole farm and sent to each shed controller with its sync, where the alarms are raised
+# (so they show on the shed screen and here). The not-run check can wait until the birds
+# are a few days old (chicks eat so little the augers can sit for hours).
+# ---------------------------------------------------------------------------
+AUGER_ALARM_DEFAULTS = {
+    "run_on": True, "run_max_min": 30,
+    "idle_on": True, "idle_max_min": 60, "idle_from_day": 0,
+}
+
+
+def auger_alarm_settings():
+    saved = load_office_config().get("auger_alarms")
+    out = dict(AUGER_ALARM_DEFAULTS)
+    if isinstance(saved, dict):
+        for key, default in AUGER_ALARM_DEFAULTS.items():
+            if key in saved:
+                try:
+                    out[key] = bool(saved[key]) if isinstance(default, bool) else max(0, int(saved[key]))
+                except Exception:
+                    pass
+    out["run_max_min"] = max(1, out["run_max_min"])
+    out["idle_max_min"] = max(1, out["idle_max_min"])
+    return out
+
+
+def auger_alarm_payload(shed_name):
+    """What a shed controller should check now: minutes, or None for off. The not-run
+    check is off while the shed has no birds or they're younger than the set day."""
+    cfg = auger_alarm_settings()
+    idle = cfg["idle_max_min"] if cfg["idle_on"] else None
+    if idle is not None:
+        bucket = load_shed_entries_state().get(shed_name)
+        entries = bucket.get("entries") if isinstance(bucket, dict) else None
+        crop = active_crop_record_for_shed(shed_name)
+        age = None
+        try:
+            if int(crop.get("crop_active")) == 1:
+                age = crop_age_days(crop.get("placement_epoch"))
+        except Exception:
+            age = None
+        if not isinstance(entries, dict) or not has_any_active_entry(entries) or age is None or age < cfg["idle_from_day"]:
+            idle = None
+    return {
+        "run_max_min": cfg["run_max_min"] if cfg["run_on"] else None,
+        "idle_max_min": idle,
+    }
+
+
+@app.route("/settings/augers")
+def office_auger_alarms_view():
+    return render_template_string(
+        OFFICE_SUBSETTINGS_HTML, page="augers", title="Auger alarms", augers=auger_alarm_settings(),
+        status_msg=request.args.get("msg", ""), status_ok=request.args.get("ok", "1") == "1",
+    )
+
+
+@app.route("/settings/augers", methods=["POST"])
+def office_auger_alarms_save():
+    cfg = load_office_config()
+    try:
+        saved = {
+            "run_on": request.form.get("run_on") == "1",
+            "run_max_min": max(1, min(1440, int(float(request.form.get("run_max_min"))))),
+            "idle_on": request.form.get("idle_on") == "1",
+            "idle_max_min": max(1, min(2880, int(float(request.form.get("idle_max_min"))))),
+            "idle_from_day": max(0, min(100, int(float(request.form.get("idle_from_day") or 0)))),
+        }
+    except Exception:
+        return redirect(url_for("office_auger_alarms_view", ok=0, msg="Enter whole minutes and a day number"))
+    cfg["auger_alarms"] = saved
+    save_office_config(cfg)
+    # Send the new limits to the sheds straight away rather than at their next sync.
+    for shed_no in SHED_NUMBERS:
+        if controller_url_for_shed(shed_no):
+            push_shed_state_to_controller_async(shed_no)
+    return redirect(url_for("office_auger_alarms_view", ok=1, msg="Saved and sent to the sheds"))
+
+
+# ---------------------------------------------------------------------------
+# Lights alarm: a shed with birds in and lighting control whose lights are still off a
+# set time after sunset. Sunset and sunrise are worked out here for the farm's location
+# (no internet needed). It checks until sunrise, or until a set time for sheds that
+# have a planned dark period.
+# ---------------------------------------------------------------------------
+LIGHTS_ALARM_DEFAULTS = {"on": True, "after_sunset_min": 30, "until": ""}
+LIGHTS_SENSOR_STALE_SECONDS = 2 * 86400
+
+
+def sun_times(day, lat=WEATHER_LAT, lon=WEATHER_LON):
+    """(sunrise, sunset) as epoch seconds for a date, by the standard sunrise equation
+    (within a minute or two, which is plenty here)."""
+    jd = datetime(day.year, day.month, day.day, tzinfo=timezone.utc).timestamp() / 86400 + 2440587.5
+    n = round(jd - 2451545.0 + 0.0008)
+    j_star = n - lon / 360.0
+    m = (357.5291 + 0.98560028 * j_star) % 360
+    m_rad = math.radians(m)
+    c = 1.9148 * math.sin(m_rad) + 0.02 * math.sin(2 * m_rad) + 0.0003 * math.sin(3 * m_rad)
+    lam = math.radians((m + c + 180 + 102.9372) % 360)
+    j_transit = 2451545.0 + j_star + 0.0053 * math.sin(m_rad) - 0.0069 * math.sin(2 * lam)
+    dec = math.asin(math.sin(lam) * math.sin(math.radians(23.4397)))
+    phi = math.radians(lat)
+    cos_w = (math.sin(math.radians(-0.833)) - math.sin(phi) * math.sin(dec)) / (math.cos(phi) * math.cos(dec))
+    w = math.degrees(math.acos(max(-1.0, min(1.0, cos_w))))
+    to_epoch = lambda j: int((j - 2440587.5) * 86400)
+    return to_epoch(j_transit - w / 360.0), to_epoch(j_transit + w / 360.0)
+
+
+def lights_alarm_settings():
+    saved = load_office_config().get("lights_alarm")
+    out = dict(LIGHTS_ALARM_DEFAULTS)
+    if isinstance(saved, dict):
+        out["on"] = bool(saved.get("on", True))
+        try:
+            out["after_sunset_min"] = max(0, min(600, int(saved.get("after_sunset_min", 30))))
+        except Exception:
+            pass
+        until = str(saved.get("until") or "").strip()
+        out["until"] = until if re.match(r"^\d{1,2}:\d{2}$", until) else ""
+    return out
+
+
+def lights_dark_window(now_ts=None, cfg=None):
+    """(start, end, sunset) of the dark spell we're in now, or None in daylight hours.
+    Starts the set minutes after sunset; ends at sunrise or the set 'until' time."""
+    cfg = cfg or lights_alarm_settings()
+    now_ts = int(now_ts or time.time())
+    today = datetime.fromtimestamp(now_ts).date()
+    for evening in (today - timedelta(days=1), today):
+        sunset = sun_times(evening)[1]
+        start = sunset + cfg["after_sunset_min"] * 60
+        end = sun_times(evening + timedelta(days=1))[0]
+        if cfg["until"]:
+            hh, mm = [int(x) for x in cfg["until"].split(":")]
+            until = datetime.combine(evening, datetime.min.time()).replace(hour=hh % 24, minute=mm % 60)
+            if until.timestamp() <= sunset:
+                until += timedelta(days=1)
+            end = min(end, int(until.timestamp()))
+        if start <= now_ts < end:
+            return start, end, sunset
+    return None
+
+
+def lights_alarms_by_shed(now_ts=None):
+    """{shed name: [alarm]} for sheds whose lights are off after dark."""
+    cfg = lights_alarm_settings()
+    if not cfg["on"]:
+        return {}
+    now_ts = int(now_ts or time.time())
+    window = lights_dark_window(now_ts, cfg)
+    if not window:
+        return {}
+    state = load_shed_entries_state()
+    meta_map = load_controller_meta()
+    out = {}
+    for shed_no in SHED_NUMBERS:
+        meta = meta_map.get(str(shed_no)) if isinstance(meta_map, dict) else None
+        if not isinstance(meta, dict) or not meta.get("lighting_enabled"):
+            continue
+        try:
+            if now_ts - int(meta.get("received_ts") or 0) > 300:
+                continue              # not reporting: shown as a sync problem instead
+        except Exception:
+            continue
+        if meta.get("lighting_on") is not False:
+            continue                  # on, or not known
+        # A working light sensor changes at least once a day. One that hasn't changed for
+        # 2 days isn't fitted yet (no CT on the light circuit) or isn't working, so its
+        # "off" can't be trusted.
+        try:
+            if now_ts - int(meta.get("lighting_last_changed_ts")) > LIGHTS_SENSOR_STALE_SECONDS:
+                continue
+        except Exception:
+            continue
+        shed_name = shed_name_from_number(shed_no)
+        bucket = state.get(shed_name)
+        entries = bucket.get("entries") if isinstance(bucket, dict) else None
+        if not isinstance(entries, dict) or not has_any_active_entry(entries):
+            continue
+        out[shed_name] = [{
+            "alarm_key": "lights_off_dark",
+            "message": "Lights off after dark (sunset %s). Check the lighting." % datetime.fromtimestamp(window[2]).strftime("%H:%M"),
+        }]
+    return out
+
+
+@app.route("/settings/lights")
+def office_lights_alarm_view():
+    cfg = lights_alarm_settings()
+    today = datetime.now().date()
+    rise, sset = sun_times(today)
+    return render_template_string(
+        OFFICE_SUBSETTINGS_HTML, page="lights", title="Lights alarm", lights=cfg,
+        sun_today="Today: sunrise %s, sunset %s" % (datetime.fromtimestamp(rise).strftime("%H:%M"), datetime.fromtimestamp(sset).strftime("%H:%M")),
+        status_msg=request.args.get("msg", ""), status_ok=request.args.get("ok", "1") == "1",
+    )
+
+
+@app.route("/settings/lights", methods=["POST"])
+def office_lights_alarm_save():
+    cfg = load_office_config()
+    until = str(request.form.get("until") or "").strip()
+    if until and not re.match(r"^\d{1,2}:\d{2}$", until):
+        return redirect(url_for("office_lights_alarm_view", ok=0, msg="Enter the time as HH:MM, or leave it blank for sunrise"))
+    try:
+        after = max(0, min(600, int(float(request.form.get("after_sunset_min") or 0))))
+    except Exception:
+        return redirect(url_for("office_lights_alarm_view", ok=0, msg="Enter whole minutes after sunset"))
+    cfg["lights_alarm"] = {"on": request.form.get("on") == "1", "after_sunset_min": after, "until": until}
+    save_office_config(cfg)
+    return redirect(url_for("office_lights_alarm_view", ok=1, msg="Saved"))
 
 
 @app.route("/settings/supply")
