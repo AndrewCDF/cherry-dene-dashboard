@@ -4120,6 +4120,12 @@ def active_alarms_by_shed():
                 result[shed] = []
             result[shed].append(rec)
 
+    # Water / feed drops are worked out here at the office, not sent by the controllers.
+    now_ts = int(time.time())
+    for shed, rows in usage_drop_alarms_by_shed().items():
+        for rec in rows:
+            result.setdefault(shed, []).append({"ts": now_ts, "active": True, "alarm_key": rec["alarm_key"], "message": rec["message"]})
+
     return result
 
 
@@ -7935,7 +7941,8 @@ OFFICE_CARDS_HTML = """
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#c76300" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2 20h20L12 3z"></path><path d="M12 10v4"></path><path d="M12 17h.01"></path></svg>
     {{ alarms|length }} need{% if alarms|length == 1 %}s{% endif %} a look
   </span>
-  {% for a in alarms %}<span class="ss-alarm-item">{{ a }}</span>{% endfor %}
+  {% for a in alarms %}<span class="ss-alarm-item">{{ a.text }}{% if a.kind and (pc or not tv) %}
+    <form class="ss-dismiss" method="post" action="{{ url_for('usage_drop_dismiss') }}"><input type="hidden" name="shed_no" value="{{ a.shed_no }}"><input type="hidden" name="kind" value="{{ a.kind }}"><button type="submit" title="Dismiss. It comes back if the {{ a.kind }} is still down over the next few hours.">Dismiss</button></form>{% endif %}</span>{% endfor %}
 </section>
 {% endif %}
 
@@ -8101,6 +8108,8 @@ OFFICE_HOME_HTML = """
   /* Alarm strip */
   .ss-alarms { background: #fff4e5; border: 1px solid #f3b366; border-radius: 14px; padding: 12px 16px; display: flex; align-items: center; gap: 10px 20px; flex-wrap: wrap; font-size: 16px; color: #5b3200; }
   .ss-alarms-head { display: flex; align-items: center; gap: 8px; font-weight: 700; color: #a34f00; }
+  .ss-dismiss { display: inline; margin: 0 0 0 8px; }
+  .ss-dismiss button { width: auto; min-height: 0; padding: 3px 12px; border-radius: 999px; border: 1px solid #f3b366; background: #ffffff; color: #a34f00; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
 
   /* Shed cards */
   .ss-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
@@ -9241,6 +9250,16 @@ OFFICE_SETTINGS_HTML = """
                         <a class="item" href="{{ url_for('office_events_view') }}"><span>Event log</span><span class="chev">›</span></a>
                         <a class="item" href="{{ url_for('office_versions_view') }}"><span>Versions</span><span class="chev">›</span></a>
                     </nav>
+                </section>
+
+                <section>
+                    <h2 class="section-title">Water and feed drop alarms</h2>
+                    <form class="card" method="post" action="{{ url_for('office_usage_drop_settings_save') }}" style="display:grid; gap:10px">
+                        <div class="hint">Raises an alarm on a shed when its water or feed drops by more than this, against the same time yesterday (checked through the day) or against the 3 days before (checked each morning). 0 switches it off.</div>
+                        <label class="field" for="usageDropPct">Alarm when it drops by more than (%)</label>
+                        <input id="usageDropPct" type="number" name="usage_drop_pct" min="0" max="95" step="1" inputmode="numeric" value="{{ usage_drop_pct }}">
+                        <button class="primary" type="submit">Save</button>
+                    </form>
                 </section>
 
                 <section>
@@ -11952,16 +11971,22 @@ def office_home_context(tv=False):
         crop_day = "Day %d–%d" % (min(ages), max(ages))
 
     alarms = []
+    usage = usage_drop_alarms_by_shed()
     for s in sheds:
-        if s["has_alarm"]:
-            alarms.append("%s · %s" % (s["name"], s["alarm"]))
+        drops = usage.get(shed_name_from_number(s["shed_no"])) or []
+        drop_msgs = [d["message"] for d in drops]
+        if s["has_alarm"] and s["alarm"] not in drop_msgs:
+            alarms.append({"text": "%s · %s" % (s["name"], s["alarm"])})
         elif s["kind"] == "offline" and s["status"] == "Not syncing" and s["updated"] not in ["", "--"]:
-            alarms.append("%s · not syncing since %s" % (s["name"], s["updated"]))
-        elif s["kind"] in ["alarm", "warn"]:
-            alarms.append("%s · %s" % (s["name"], s["status"].lower()))
+            alarms.append({"text": "%s · not syncing since %s" % (s["name"], s["updated"])})
+        elif s["kind"] in ["alarm", "warn"] and not drops:
+            alarms.append({"text": "%s · %s" % (s["name"], s["status"].lower())})
+        # Water / feed drops: one line each, with a Dismiss button.
+        for d in drops:
+            alarms.append({"text": "%s · %s" % (s["name"], d["message"]), "shed_no": s["shed_no"], "kind": d["kind"]})
     bh = ctx.get("borehole", {}) or {}
     if bh.get("alarm_active"):
-        alarms.append("Water & Power · %s" % bh.get("alarm_msg", ""))
+        alarms.append({"text": "Water & Power · %s" % bh.get("alarm_msg", "")})
 
     overall = ctx.get("overall", {}) or {}
     active_sheds = len([s for s in sheds if s["live"]])
@@ -12292,6 +12317,7 @@ def office_settings_view():
         farm_health=farm_health,
         controller_backup_rows=controller_backup_rows,
         office_shelly=office_shelly_settings_state(),
+        usage_drop_pct=usage_drop_pct(),
         status_msg=request.args.get("msg", ""),
         status_ok=request.args.get("ok", "1") == "1",
     )
@@ -13943,6 +13969,176 @@ def office_supply_alarms():
         if v is not None and v < 100:
             alarms.append({"alarm_key": "phase_lost_l%d" % (i + 1), "message": "L%d supply lost (%d V). Check the L%d fuse." % (i + 1, round(v), i + 1)})
     return alarms
+
+
+# ---------------------------------------------------------------------------
+# Water / feed drop alarms. Worked out at the office from each shed's hourly totals, for
+# sheds with birds in. Two checks for each of water and feed:
+#   * today so far (6am to the last full hour) against the same hours yesterday, so a
+#     drop shows within hours;
+#   * yesterday (6am to 6am) against the average of the 3 days before it.
+# Either one dropping by more than the set percentage raises an alarm on that shed.
+# Dismissing a water (or feed) alarm means only readings from then on are judged: it comes
+# back once there are enough new hours and they are still down, and stays away if not.
+# ---------------------------------------------------------------------------
+USAGE_DROP_DEFAULT_PCT = 40
+USAGE_DROP_CACHE_SECONDS = 300
+# Below these the numbers are too small to judge (very young birds, or early in the day).
+USAGE_DROP_CHECKS = {
+    "water": {"label": "Water", "unit": "L", "today_hours": 3, "today_min": 50.0, "day_min": 200.0},
+    "feed": {"label": "Feed", "unit": "kg", "today_hours": 6, "today_min": 30.0, "day_min": 100.0},
+}
+_usage_drop_cache = {"ts": 0, "pct": None, "by_shed": {}}
+USAGE_DISMISSALS_FILE = "usage_alarm_dismissals.json"
+
+
+def load_usage_dismissals():
+    data = read_json_file(os.path.join(DATA_DIR, USAGE_DISMISSALS_FILE), {})
+    return data if isinstance(data, dict) else {}
+
+
+def dismiss_usage_alarm(shed_name, kind):
+    data = load_usage_dismissals()
+    data.setdefault(shed_name, {})[kind] = int(time.time())
+    write_json_file_atomic(os.path.join(DATA_DIR, USAGE_DISMISSALS_FILE), data)
+    _usage_drop_cache["ts"] = 0
+
+
+def usage_drop_pct():
+    try:
+        return max(0, min(95, int(float(load_office_config().get("usage_drop_pct", USAGE_DROP_DEFAULT_PCT)))))
+    except Exception:
+        return USAGE_DROP_DEFAULT_PCT
+
+
+def usage_drop_alarms_for_shed(shed_name, pct, now_ts=None):
+    now_ts = int(now_ts or time.time())
+    crop_id = get_active_crop_id_for_shed(shed_name)
+    bucket = load_shed_entries_state().get(shed_name)
+    entries = bucket.get("entries") if isinstance(bucket, dict) else None
+    if crop_id is None or not isinstance(entries, dict) or not has_any_active_entry(entries):
+        return []
+    rows = get_hourly_history_for_shed(shed_name, max_points=0, crop_id=crop_id, include_manual_feed=True)
+    by_hour = {}
+    for r in rows:
+        if not r.get("out_of_crop"):
+            by_hour[int(r["epoch"])] = r
+
+    # The farm day runs 6am to 6am.
+    now_dt = datetime.fromtimestamp(now_ts)
+    day_start_dt = now_dt.replace(hour=6, minute=0, second=0, microsecond=0)
+    if now_dt < day_start_dt:
+        day_start_dt -= timedelta(days=1)
+    day_start = int(day_start_dt.timestamp())
+    full_hours_end = now_ts // 3600 * 3600          # end of the last full hour
+
+    def total(key, start, end):
+        out, seen = 0.0, False
+        for epoch, r in by_hour.items():
+            if start <= epoch < end and r.get(key) is not None:
+                out += float(r[key])
+                seen = True
+        return out if seen else None
+
+    def day_start_n(n):
+        return int((day_start_dt - timedelta(days=n)).timestamp())
+
+    def hhmm(ts):
+        return datetime.fromtimestamp(ts).strftime("%H:%M")
+
+    dismissed = load_usage_dismissals().get(shed_name) or {}
+    alarms = []
+    limit = 1.0 - pct / 100.0
+    for key, c in USAGE_DROP_CHECKS.items():
+        unit = c["unit"]
+        fmt = lambda v: "{:,.0f}".format(v)
+        # After a dismiss, only the full hours from then on count.
+        try:
+            from_ts = (int(dismissed.get(key) or 0) + 3599) // 3600 * 3600
+        except Exception:
+            from_ts = 0
+        what = "supply, meter and bypass" if key == "water" else "bin, augers and feed lines"
+
+        # Today so far against the same hours yesterday.
+        start = max(day_start, from_ts)
+        if (full_hours_end - start) // 3600 >= c["today_hours"]:
+            today = total(key, start, full_hours_end) or 0.0
+            yday = total(key, start - 86400, full_hours_end - 86400)
+            if yday is not None and yday >= c["today_min"] and today < yday * limit:
+                since = "since 6am" if start == day_start else "since %s (after it was dismissed)" % hhmm(start)
+                alarms.append({
+                    "alarm_key": "%s_drop_today" % key, "kind": key,
+                    "message": "%s down %d%% today: %s %s %s, against %s %s over the same hours yesterday. Check the %s." % (
+                        c["label"], round((1 - today / yday) * 100), fmt(today), unit, since, fmt(yday), unit, what),
+                })
+
+        # Yesterday against the same hours on the 3 days before.
+        y_start, y_end = day_start_n(1), day_start
+        start = max(y_start, from_ts)
+        hours = (y_end - start) // 3600
+        if hours >= c["today_hours"]:
+            yday_full = total(key, start, y_end)
+            before = [total(key, start - n * 86400, y_end - n * 86400) for n in (1, 2, 3)]
+            if yday_full is not None and all(v is not None for v in before):
+                avg = sum(before) / 3.0
+                if avg >= c["day_min"] * hours / 24.0 and yday_full < avg * limit:
+                    span = "(6am to 6am)" if start == y_start else "(%s to 6am, after it was dismissed)" % hhmm(start)
+                    alarms.append({
+                        "alarm_key": "%s_drop_day" % key, "kind": key,
+                        "message": "%s down %d%% yesterday: %s %s %s, against an average of %s %s over the 3 days before." % (
+                            c["label"], round((1 - yday_full / avg) * 100), fmt(yday_full), unit, span, fmt(avg), unit),
+                    })
+    return alarms
+
+
+def usage_drop_alarms_by_shed():
+    """Water / feed drop alarms for every shed, worked out at most every 5 minutes."""
+    pct = usage_drop_pct()
+    if pct <= 0:
+        return {}
+    now_ts = int(time.time())
+    cache = _usage_drop_cache
+    if cache["pct"] == pct and now_ts - cache["ts"] < USAGE_DROP_CACHE_SECONDS:
+        return cache["by_shed"]
+    by_shed = {}
+    for shed_no in SHED_NUMBERS:
+        shed_name = shed_name_from_number(shed_no)
+        try:
+            rows = usage_drop_alarms_for_shed(shed_name, pct, now_ts)
+        except Exception:
+            rows = []
+        if rows:
+            by_shed[shed_name] = rows
+    cache.update({"ts": now_ts, "pct": pct, "by_shed": by_shed})
+    return by_shed
+
+
+@app.route("/alarms/usage-drop/dismiss", methods=["POST"])
+def usage_drop_dismiss():
+    try:
+        shed_no = int(request.form.get("shed_no", ""))
+    except Exception:
+        abort(400)
+    kind = request.form.get("kind", "")
+    if shed_no not in SHED_NUMBERS or kind not in USAGE_DROP_CHECKS:
+        abort(400)
+    dismiss_usage_alarm(shed_name_from_number(shed_no), kind)
+    back = request.form.get("next", "/")
+    return redirect(back if back.startswith("/") and not back.startswith("//") else "/")
+
+
+@app.route("/settings/usage-drop", methods=["POST"])
+def office_usage_drop_settings_save():
+    cfg = load_office_config()
+    try:
+        cfg["usage_drop_pct"] = max(0, min(95, int(float(request.form.get("usage_drop_pct", USAGE_DROP_DEFAULT_PCT) or 0))))
+    except Exception:
+        return redirect(url_for("office_settings_view", ok=0, msg="Enter a percentage, e.g. 40"))
+    save_office_config(cfg)
+    _usage_drop_cache["ts"] = 0
+    if cfg["usage_drop_pct"] == 0:
+        return redirect(url_for("office_settings_view", ok=1, msg="Water and feed drop alarms switched off"))
+    return redirect(url_for("office_settings_view", ok=1, msg="Water and feed drop alarms set to %d%%" % cfg["usage_drop_pct"]))
 
 
 @app.route("/settings/shelly", methods=["POST"])
