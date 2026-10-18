@@ -3246,35 +3246,42 @@ def shed_plan_layout(cfg):
     door_left = cfg.get("layout_door_end", "left") == "left"
     front_left = cfg.get("layout_front_end", "left") == "left"
 
-    bin_margin, other_margin = 170, 72
+    # The bin and shed fill the plan edge to edge. The bin sits against the end it's set
+    # to; the shed takes the rest. The far end keeps just enough room for the door label
+    # when the door is there, otherwise only the shed's shadow.
+    bin_size = 124
+    bin_margin = bin_size + 22                     # bin plus a short feed pipe
+    other_margin = 72 if door_left != bin_left else 10
     shed_w = OVERVIEW_STAGE_WIDTH - bin_margin - other_margin
     shed_x = bin_margin if bin_left else other_margin
-    shed_y, shed_h = 106, 330
+    shed_y = 106                                   # just below the reading tiles
+    shed_h = 480 - shed_y - 30                     # down to the front / rear end labels
     shed_right = shed_x + shed_w
 
-    bin_size = 124
-    bin_x = 16 if bin_left else OVERVIEW_STAGE_WIDTH - 16 - bin_size
-    # Top-corner bins overhang the shed's top edge by 40px; bottom-corner bins mirror that
-    # below the bottom edge, with their label above instead of below.
-    # Top-corner bins sit just below the reading tiles (which span the full width).
-    bin_y = 94 if bin_top else shed_y + shed_h - bin_size + 40
+    bin_x = 0 if bin_left else OVERVIEW_STAGE_WIDTH - bin_size
+    # Top-corner bins sit just below the reading tiles; bottom-corner bins sit at the
+    # foot of the shed with their label above.
+    bin_y = 94 if bin_top else shed_y + shed_h - bin_size + 10
     pipe_y = bin_y + 59
     pipe_x = bin_x + bin_size - 2 if bin_left else shed_right - 4
     bin_label_x = min(max(0, bin_x + bin_size // 2 - 78), OVERVIEW_STAGE_WIDTH - 156)
     bin_label_y = bin_y + bin_size + 12 if bin_top else bin_y - 52
 
-    # The door is always centred on its end wall.
+    # The door is centred on its end wall, unless the bin is at that end too: then it
+    # moves along the wall away from the bin so the two labels don't collide.
     door_h = 100
     door_y = shed_y + (shed_h - door_h) // 2
+    if door_left == bin_left:
+        door_y = shed_y + shed_h - door_h - 24 if bin_top else shed_y + 24
     if door_left:
         door_x = shed_x - 2
         tick_x = shed_x - 18
-        label_x = shed_x - 24 - 126
+        label_x = max(0, shed_x - 24 - 126)
         label_align = "right"
     else:
         door_x = shed_right - 8
         tick_x = shed_right + 8
-        label_x = shed_right + 24
+        label_x = min(shed_right + 24, OVERVIEW_STAGE_WIDTH - 126)
         label_align = "left"
 
     # Temperature, humidity and water tiles span the full width of the plan.
@@ -6577,15 +6584,24 @@ OVERVIEW_HTML = """
                 repeating-linear-gradient(-80deg, rgba(150,112,44,0.22) 0px, rgba(150,112,44,0.22) 3px, transparent 3px, transparent 23px);
             box-shadow: 8px 10px 0 rgba(0,0,0,0.3);
         }
-        .shed.lights-off { filter: brightness(0.62) saturate(0.8); }
-        .pen { position: absolute; top: 0; height: 318px; display: flex; align-items: center; justify-content: center; }
+        /* Lights off dims the shed floor only, so the pen cards stay white and readable. */
+        .shed.lights-off::before { content: ""; position: absolute; inset: 0; background: rgba(20, 14, 4, 0.38); pointer-events: none; }
+        .pen { position: absolute; top: 0; height: 100%; display: flex; align-items: center; justify-content: center; z-index: 1; }
         .pen.divided { border-right: 3px dashed #5a4722; }
         .pen-card {
-            max-width: calc(100% - 16px); padding: 14px 18px; border-radius: 12px; background: rgba(255,255,255,0.95);
+            max-width: calc(100% - 14px); padding: 16px 22px; border-radius: 12px; background: #ffffff;
             display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.18);
         }
-        .pen-name { font-size: 30px; font-weight: 600; line-height: 1.05; color: var(--text); text-decoration: none; }
-        .pen-birds { font-size: 18px; color: var(--soft); }
+        .pen-name { font-size: 36px; font-weight: 600; line-height: 1.05; color: var(--text); text-decoration: none; }
+        .pen-birds { font-size: 22px; color: var(--soft); }
+        /* Narrow pens: a little smaller so the name and numbers still fit. */
+        .pen.narrow .pen-card { padding: 12px 10px; }
+        .pen.narrow .pen-name { font-size: 30px; }
+        .pen.narrow .pen-birds { font-size: 18px; }
+        .pen.tiny .pen-card { padding: 8px 4px; max-width: calc(100% - 6px); }
+        .pen.tiny .pen-name { font-size: 22px; }
+        .pen.tiny .pen-birds { font-size: 14px; }
         .pen-card { color: var(--text); text-decoration: none; }
         .pen-card:active { transform: scale(0.98); }
         .shed-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; }
@@ -6799,7 +6815,7 @@ OVERVIEW_HTML = """
 
                     <div class="abs shed {% if lighting_tile and not lighting_on %}lights-off{% endif %}" id="shedFloor" style="left: {{ layout.shed_x }}px; top: {{ layout.shed_y }}px; width: {{ layout.shed_w }}px; height: {{ layout.shed_h }}px">
                         {% for pen in pens %}
-                        <div class="pen {% if pen.divided %}divided{% endif %}" style="left: {{ pen.left }}px; width: {{ pen.width }}px">
+                        <div class="pen {% if pen.divided %}divided{% endif %}{% if pen.width < 90 %} narrow tiny{% elif pen.width < 170 %} narrow{% endif %}" style="left: {{ pen.left }}px; width: {{ pen.width }}px">
                             <a class="pen-card" href="{{ url_for('allocation_view') }}" aria-label="{{ pen.name }}, open allocation">
                                 <span class="pen-name cond">{{ pen.name }}</span>
                                 <span class="pen-birds"><span data-pen-placed="{{ pen.dest_shed }}">{{ pen.placed_text }}</span> (<span data-pen-birds="{{ pen.dest_shed }}">{{ pen.birds_text }}</span>)</span>
