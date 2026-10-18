@@ -5996,6 +5996,11 @@ def build_detail_entry_rows(current_shed_no, entries):
     return rows
 
 
+def kwh_fmt(value):
+    # kWh: one decimal for small figures, whole numbers from 100 so big days fit the tile.
+    return fmt_value(value, "f0" if (value or 0) >= 100 else "f1")
+
+
 def build_borehole_row():
     live = latest_borehole_live()
     meta = load_borehole_meta()
@@ -6073,6 +6078,7 @@ def build_borehole_row():
             power_live = int(time.time()) - int(power.get("ts") or 0) <= 120 and power.get("total_w") is not None
         except Exception:
             power_live = False
+    total_w_now = (power or {}).get("total_w") if power_live else None
     power_phases = []
     for i, name in enumerate(["L1", "L2", "L3"]):
         ph = (power.get("phases") or [])[i] if power and i < len(power.get("phases") or []) else {}
@@ -6093,16 +6099,23 @@ def build_borehole_row():
             "peak_a": fmt_value(peak_a, "f1"),
             "peak_at": datetime.fromtimestamp(peak_at).strftime("%H:%M") if peak_at else "",
             "hot": bool(fuse and amps is not None and amps >= 0.9 * fuse),
+            # Power flowing out on this phase (solar feeding back).
+            "exporting": bool(power_live and ph.get("w") is not None and ph.get("w") < -50),
         })
 
     return {
         "has_power": bool(power),
         "power_kw": fmt_value(power.get("total_w") / 1000.0, "f2") if power_live else "--",
-        # One decimal on the home tile so up to 99.9 kW fits the Supply now box.
-        "power_kw_short": fmt_value(power.get("total_w") / 1000.0, "f1") if power_live else "--",
+        # One decimal on the home tile so up to 99.9 kW fits the Supply now box. Shown as a
+        # size with "Importing" / "Exporting" rather than a minus sign.
+        "power_kw_short": fmt_value(abs(power.get("total_w")) / 1000.0, "f1") if power_live else "--",
+        "power_kw_abs": fmt_value(abs(power.get("total_w")) / 1000.0, "f2") if power_live else "--",
+        "power_direction": ("Exporting" if (total_w_now or 0) < -50 else "Importing") if power_live else "",
+        "power_export_today": kwh_fmt(power.get("today_export_kwh")) if power else "--",
+        "power_export_yesterday": kwh_fmt(power.get("yesterday_export_kwh")) if power else "--",
         # kWh: one decimal for small days, whole numbers from 100 kWh so big days fit the tile.
-        "power_today": fmt_value(power.get("today_kwh"), "f0" if (power.get("today_kwh") or 0) >= 100 else "f1") if power else "--",
-        "power_yesterday": fmt_value(power.get("yesterday_kwh"), "f0" if (power.get("yesterday_kwh") or 0) >= 100 else "f1") if power else "--",
+        "power_today": kwh_fmt(power.get("today_kwh")) if power else "--",
+        "power_yesterday": kwh_fmt(power.get("yesterday_kwh")) if power else "--",
         "power_phases": power_phases,
         "power_fuse": (power or {}).get("fuse_amps") or 0,
         "name": "Water & Power",
@@ -8009,15 +8022,15 @@ OFFICE_CARDS_HTML = """
     <div class="ss-wp-sec">
       <div class="ss-wp-supply">
         <div class="ss-tile edge-{{ ('ok' if borehole.power_kw != '--' else 'alarm') if borehole.has_power else 'none' }}">
-          <div class="ss-tile-main"><span class="ss-tile-label">{{ 'Supply now' if borehole.has_power else 'Meter not connected' }}</span><span class="ss-mid">{{ borehole.power_kw_short }} <small>kW</small></span></div>
+          <div class="ss-tile-main"><span class="ss-tile-label">{{ (borehole.power_direction or 'Supply now') if borehole.has_power else 'Meter not connected' }}</span><span class="ss-mid">{{ borehole.power_kw_short }} <small>kW</small></span></div>
         </div>
-        <div class="ss-stat"><span>Today</span><b>{{ borehole.power_today }} <small>kWh</small></b></div>
-        <div class="ss-stat"><span>Yesterday</span><b>{{ borehole.power_yesterday }} <small>kWh</small></b></div>
+        <div class="ss-stat"><span>Imported today</span><b>{{ borehole.power_today }} <small>kWh</small></b></div>
+        <div class="ss-stat"><span>Exported today</span><b>{{ borehole.power_export_today }} <small>kWh</small></b></div>
       </div>
       <div class="ss-phases">
       {% for ph in borehole.power_phases %}
       <div class="ss-phase{{ ' hot' if ph.hot else '' }}" style="border-top-color: {{ ph.colour }}">
-        <span>{{ ph.name }}</span><b>{{ ph.a }} <small>A</small></b>
+        <span>{{ ph.name }}{% if ph.exporting %} · <em class="ss-export">exporting</em>{% endif %}</span><b>{{ ph.a }} <small>A</small></b>
       </div>
       {% endfor %}
       </div>
@@ -8144,6 +8157,7 @@ OFFICE_HOME_HTML = """
   .ss-phase b { font-size: 22px; line-height: 1.1; white-space: nowrap; }
   .ss-phase b small { font-size: 13px; color: var(--muted); }
   .ss-phase.hot { background: #fdecec; border-color: var(--red); }
+  .ss-export { font-style: normal; color: #1e7d32; }
   .ss-phase.hot b { color: #c62828; }
   .ss-wp .ss-mid small, body:not(.tv) .ss-wp .ss-mid small { display: inline; font-size: 14px; color: var(--muted); font-weight: 600; }
   .ss-wp .ss-mid, body:not(.tv) .ss-wp .ss-mid { font-size: 25px; }
@@ -10252,6 +10266,7 @@ BOREHOLE_DETAIL_HTML = """
         .phase-name { font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 700; color: var(--navy); }
         .phase-amps b { font-size: 32px; font-weight: 600; color: var(--text); }
         .phase.hot { background: #fdecec; border-color: #d64545; }
+        .wp-export { color: #1e7d32; }
         .phase.hot .phase-amps b { color: #c62828; }
         .chart-card { border-radius: 14px; background: var(--card); padding: 14px 18px 10px; margin-bottom: 20px; }
         .chart-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
@@ -10289,16 +10304,16 @@ BOREHOLE_DETAIL_HTML = """
             <section class="wp-col">
                 <h2 class="section-title">Power</h2>
                 <div class="wp-tile {{ ('flow-green' if bh.power_kw != '--' else 'flow-red') if bh.has_power else '' }}">
-                    <div class="wp-label"><span>Incoming supply</span><span>{% if not bh.has_power %}Meter not connected{% else %}{{ 'Live' if bh.power_kw != '--' else 'No reading' }}{% if bh.power_fuse %} · {{ bh.power_fuse }} A fuse{% endif %}{% endif %}</span></div>
-                    <div class="wp-big cond">{{ bh.power_kw }} <small>kW</small></div>
+                    <div class="wp-label"><span>Incoming supply{% if bh.power_direction %} · <b class="{{ 'wp-export' if bh.power_direction == 'Exporting' else '' }}">{{ bh.power_direction }}</b>{% endif %}</span><span>{% if not bh.has_power %}Meter not connected{% else %}{{ 'Live' if bh.power_kw != '--' else 'No reading' }}{% if bh.power_fuse %} · {{ bh.power_fuse }} A fuse{% endif %}{% endif %}</span></div>
+                    <div class="wp-big cond">{{ bh.power_kw_abs }} <small>kW</small></div>
                     <div class="wp-rows">
-                        <div class="wp-row"><span>Today since midnight</span><b class="cond">{{ bh.power_today }} <small>kWh</small></b></div>
-                        <div class="wp-row"><span>Yesterday</span><b class="cond">{{ bh.power_yesterday }} <small>kWh</small></b></div>
+                        <div class="wp-row"><span>Today since midnight</span><b class="cond">{{ bh.power_today }} <small>kWh in</small> · {{ bh.power_export_today }} <small>kWh out</small></b></div>
+                        <div class="wp-row"><span>Yesterday</span><b class="cond">{{ bh.power_yesterday }} <small>kWh in</small> · {{ bh.power_export_yesterday }} <small>kWh out</small></b></div>
                     </div>
                     <div class="phase-grid">
                         {% for ph in bh.power_phases %}
                         <div class="phase {{ 'hot' if ph.hot else '' }}" style="border-top: 5px solid {{ ph.colour }}">
-                            <div class="phase-name">{{ ph.name }}</div>
+                            <div class="phase-name">{{ ph.name }}{% if ph.exporting %} · <span class="wp-export">exporting</span>{% endif %}</div>
                             <div class="phase-amps"><b class="cond">{{ ph.a }}</b> A</div>
                             <div>{{ ph.v }} V · {{ ph.kw }} kW</div>
                             <div>Peak <b>{{ ph.peak_a }}</b> A {{ ph.peak_at }}</div>
@@ -11826,6 +11841,10 @@ def office_home_context(tv=False):
         "has_power": bh.get("has_power", False),
         "power_kw": bh.get("power_kw", "--"),
         "power_kw_short": bh.get("power_kw_short", "--"),
+        "power_kw_abs": bh.get("power_kw_abs", "--"),
+        "power_direction": bh.get("power_direction", ""),
+        "power_export_today": bh.get("power_export_today", "--"),
+        "power_export_yesterday": bh.get("power_export_yesterday", "--"),
         "power_today": bh.get("power_today", "--"),
         "power_yesterday": bh.get("power_yesterday", "--"),
         "power_phases": bh.get("power_phases", []),
@@ -12134,6 +12153,11 @@ def office_settings_view():
     )
 
 
+def supply_text(total_w):
+    kw = (_num(total_w) or 0) / 1000.0
+    return "%s %.2f kW" % ("exporting" if kw < -0.05 else "importing", abs(kw))
+
+
 def office_shelly_settings_state():
     host = office_shelly_host()
     power = latest_borehole_live().get("power") or {}
@@ -12144,7 +12168,7 @@ def office_shelly_settings_state():
         except Exception:
             age = None
         if power.get("ts") and age is not None and age <= 60 and power.get("source") == "office":
-            status = "Live, %.2f kW" % ((_num(power.get("total_w")) or 0) / 1000.0)
+            status = "Live, %s" % supply_text(power.get("total_w"))
         else:
             status = "No reading" + ((": %s" % power.get("error")) if power.get("error") else "")
     return {"host": host, "fuse": office_supply_fuse_amps(), "status": status}
@@ -13624,24 +13648,28 @@ def read_shelly_3em(host):
     if isinstance(em, dict) and "total_act_power" in em:
         phases = [{"v": _num(em.get(p + "_voltage")), "a": _num(em.get(p + "_current")),
                    "w": _num(em.get(p + "_act_power")), "pf": _num(em.get(p + "_pf"))} for p in ["a", "b", "c"]]
-        total_kwh = None
+        total_kwh = export_kwh = None
         try:
-            wh = _num(_shelly_get_json(host, "/rpc/EMData.GetStatus?id=0").get("total_act"))
+            data = _shelly_get_json(host, "/rpc/EMData.GetStatus?id=0")
+            wh, ret_wh = _num(data.get("total_act")), _num(data.get("total_act_ret"))
             total_kwh = wh / 1000.0 if wh is not None else None
+            export_kwh = ret_wh / 1000.0 if ret_wh is not None else None
         except Exception:
             pass
-        return {"phases": phases, "total_w": _num(em.get("total_act_power")), "total_kwh": total_kwh}
+        return {"phases": phases, "total_w": _num(em.get("total_act_power")), "total_kwh": total_kwh, "export_kwh": export_kwh}
     status = _shelly_get_json(host, "/status")
     meters = status.get("emeters") if isinstance(status, dict) else None
     if not isinstance(meters, list) or len(meters) < 3:
         raise ValueError("Not a Shelly 3EM")
     phases = [{"v": _num(m.get("voltage")), "a": _num(m.get("current")), "w": _num(m.get("power")), "pf": _num(m.get("pf"))} for m in meters[:3]]
     totals = [_num(m.get("total")) for m in meters[:3]]
+    returned = [_num(m.get("total_returned")) for m in meters[:3]]
     total_w = _num(status.get("total_power"))
     return {
         "phases": phases,
         "total_w": total_w if total_w is not None else sum(p["w"] or 0 for p in phases),
         "total_kwh": (sum(totals) / 1000.0) if all(t is not None for t in totals) else None,
+        "export_kwh": (sum(returned) / 1000.0) if all(t is not None for t in returned) else None,
     }
 
 
@@ -13668,14 +13696,21 @@ def office_shelly_poll_once():
                           "fuse_amps": office_supply_fuse_amps(), "source": "office"})
             today = datetime.now().strftime("%Y-%m-%d")
             # Today's kWh (midnight to midnight) from the meter's running total.
+            # Imported and exported (solar) kWh are counted separately by the meter.
             if reading.get("total_kwh") is not None:
                 day = track.get("day") if isinstance(track.get("day"), dict) else {}
                 if day.get("date") != today:
                     if day.get("date") and day.get("start_kwh") is not None:
                         power["yesterday_kwh"] = round(reading["total_kwh"] - day["start_kwh"], 2)
-                    day = {"date": today, "start_kwh": reading["total_kwh"]}
+                        if day.get("start_export_kwh") is not None and reading.get("export_kwh") is not None:
+                            power["yesterday_export_kwh"] = round(reading["export_kwh"] - day["start_export_kwh"], 2)
+                    day = {"date": today, "start_kwh": reading["total_kwh"], "start_export_kwh": reading.get("export_kwh")}
+                if day.get("start_export_kwh") is None and reading.get("export_kwh") is not None:
+                    day["start_export_kwh"] = reading["export_kwh"]
                 track["day"] = day
                 power["today_kwh"] = round(reading["total_kwh"] - day["start_kwh"], 2)
+                if reading.get("export_kwh") is not None:
+                    power["today_export_kwh"] = round(reading["export_kwh"] - day["start_export_kwh"], 2)
             amps = [_num(ph.get("a")) for ph in reading["phases"]][:3]
             peak = power.get("peak_today") if isinstance(power.get("peak_today"), dict) else {}
             if peak.get("date") != today:
@@ -13751,7 +13786,7 @@ def office_shelly_settings_save():
             power = latest_borehole_live().get("power") or {}
             if power.get("error"):
                 return redirect(url_for("office_settings_view", ok=0, msg="Saved, but the Shelly didn't answer: %s" % power.get("error")))
-            return redirect(url_for("office_settings_view", ok=1, msg="Shelly connected: %.2f kW now" % ((_num(power.get("total_w")) or 0) / 1000.0)))
+            return redirect(url_for("office_settings_view", ok=1, msg="Shelly connected: %s now" % supply_text(power.get("total_w"))))
         except Exception as exc:
             return redirect(url_for("office_settings_view", ok=0, msg="Saved, but the Shelly check failed: %s" % exc))
     return redirect(url_for("office_settings_view", ok=1, msg="Supply meter switched off at the office"))
