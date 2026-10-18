@@ -10326,7 +10326,7 @@ BOREHOLE_DETAIL_HTML = """
                     <div class="chart-head">
                         <h2 class="section-title" style="margin: 0">Phase load</h2>
                         <div style="display: flex; gap: 6px">
-                            {% for h in [6, 24, 168] %}<a class="pill {{ 'on' if h == phase_hours else '' }}" href="{{ url_for('borehole_detail', hours=h) }}" style="text-decoration: none">{{ '7 days' if h == 168 else (h|string ~ ' h') }}</a>{% endfor %}
+                            {% for h in [1, 6, 24, 168] %}<a class="pill {{ 'on' if h == phase_hours else '' }}" href="{{ url_for('borehole_detail', hours=h) }}" style="text-decoration: none">{{ '7 days' if h == 168 else (h|string ~ ' h') }}</a>{% endfor %}
                         </div>
                     </div>
                     <div class="hint" style="margin-bottom: 6px">Highest amps on each phase{% if phase_hours <= 6 %} each minute{% elif phase_hours <= 24 %} in each 5 minutes{% else %} in each half hour{% endif %}.{% if bh.power_fuse %} Red dashed line is the {{ bh.power_fuse }} A fuse.{% endif %}</div>
@@ -13928,7 +13928,7 @@ def borehole_detail():
         phase_hours = int(request.args.get("hours", 24))
     except Exception:
         phase_hours = 24
-    phase_hours = phase_hours if phase_hours in [6, 24, 168] else 24
+    phase_hours = phase_hours if phase_hours in [1, 6, 24, 168] else 24
     labels, series = phase_chart_series(read_all_json_lines(BOREHOLE_POWER_MINUTES_FILE), phase_hours, bh.get("power_fuse") or 0)
     phase_chart = line_chart_svg(labels, series, unit=" A", height=340)
     return render_template_string(BOREHOLE_DETAIL_HTML, bh=bh, bar_epochs=bar_epochs, water_values=water_values,

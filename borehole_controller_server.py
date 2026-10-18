@@ -1554,7 +1554,7 @@ POWER_HISTORY_HTML = """
   <div class="top">
     <a href="{{ url_for('index') }}">← Back</a>
     <h1>Phase load</h1>
-    {% for h in [6, 24, 168] %}<a class="{{ 'on' if h == hours else '' }}" href="{{ url_for('power_history_view', hours=h) }}">{{ '7 days' if h == 168 else (h|string ~ ' hours') }}</a>{% endfor %}
+    {% for h in [1, 6, 24, 168] %}<a class="{{ 'on' if h == hours else '' }}" href="{{ url_for('power_history_view', hours=h) }}">{{ '7 days' if h == 168 else ('1 hour' if h == 1 else h|string ~ ' hours') }}</a>{% endfor %}
   </div>
   <div class="card">
     <div class="peaks">
@@ -1575,7 +1575,7 @@ def power_history_view():
         hours = int(request.args.get("hours", 24))
     except Exception:
         hours = 24
-    hours = hours if hours in [6, 24, 168] else 24
+    hours = hours if hours in [1, 6, 24, 168] else 24
     cfg = load_config()
     summary = power_summary(load_state(), cfg) or {"phases": [], "fuse_amps": 0}
     rows = read_all_json_lines(POWER_MINUTES_FILE)
