@@ -3267,12 +3267,14 @@ def shed_plan_layout(cfg):
     bin_label_x = min(max(0, bin_x + bin_size // 2 - 78), OVERVIEW_STAGE_WIDTH - 156)
     bin_label_y = bin_y + bin_size + 12 if bin_top else bin_y - 52
 
-    # The door is centred on its end wall, unless the bin is at that end too: then it
-    # moves along the wall away from the bin so the two labels don't collide.
+    # The door is always centred on its end wall. Its label sits beside the middle of it,
+    # unless the bin is at that end too: then the label moves just past the door, away
+    # from the bin, so it doesn't collide with the bin's label.
     door_h = 100
     door_y = shed_y + (shed_h - door_h) // 2
+    door_label_y = door_y + door_h // 2 - 11
     if door_left == bin_left:
-        door_y = shed_y + shed_h - door_h - 24 if bin_top else shed_y + 24
+        door_label_y = door_y + door_h + 6 if bin_top else door_y - 25
     if door_left:
         door_x = shed_x - 2
         tick_x = shed_x - 18
@@ -3298,7 +3300,7 @@ def shed_plan_layout(cfg):
         "pipe_x": pipe_x, "pipe_y": pipe_y,
         "bin_label_x": bin_label_x, "bin_label_y": bin_label_y,
         "door_x": door_x, "door_y": door_y, "door_h": door_h,
-        "tick_x": tick_x, "label_x": label_x, "label_y": door_y + door_h // 2 - 11, "label_align": label_align,
+        "tick_x": tick_x, "label_x": label_x, "label_y": door_label_y, "label_align": label_align,
         "temp_x": 0, "temp_w": temp_w,
         "rh_x": temp_w + cards_gap, "rh_w": rh_w,
         "water_x": temp_w + rh_w + 2 * cards_gap, "water_w": water_w,
