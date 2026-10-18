@@ -10279,14 +10279,14 @@ BOREHOLE_DETAIL_HTML = """
     {{ office_topbar('Water & Power') }}
     <div class="wrap">
         {% if request.args.get('msg') %}<div class="msg auto-dismiss {% if request.args.get('ok') == '0' %}error{% endif %}">{{ request.args.get('msg') }}</div>{% endif %}
-        {% if bh.alarm %}<div class="msg error">{{ bh.alarm }}</div>{% endif %}
+        <div data-live="alarm">{% if bh.alarm %}<div class="msg error">{{ bh.alarm }}</div>{% endif %}</div>
         <div class="wp-split">
             <section class="wp-col">
                 <h2 class="section-title">Water</h2>
-                <div class="wp-tile {{ water.glow }}">
-                    <div class="wp-label"><span>Flow now</span><span><span class="pill {{ 'bad' if bh.kind == 'alarm' else ('on' if bh.kind == 'ok' else '') }}">{{ bh.status }}</span> · Updated {{ bh.updated }}</span></div>
-                    <div class="wp-big cond">{{ water.lpm }} <small>L/min</small></div>
-                    <div class="wp-rows">
+                <div class="wp-tile {{ water.glow }}" data-live-class="water">
+                    <div class="wp-label" data-live="wlabel"><span>Flow now</span><span><span class="pill {{ 'bad' if bh.kind == 'alarm' else ('on' if bh.kind == 'ok' else '') }}">{{ bh.status }}</span> · Updated {{ bh.updated }}</span></div>
+                    <div class="wp-big cond" data-live="wbig">{{ water.lpm }} <small>L/min</small></div>
+                    <div class="wp-rows" data-live="wrows">
                         <div class="wp-row"><span>Today since 6am</span><b class="cond">{{ water.today }} <small>L</small></b></div>
                         <div class="wp-row"><span>Yesterday 6am to 6am</span><b class="cond">{{ water.yesterday }} <small>L</small></b></div>
                         <div class="wp-row"><span>Last 7 days</span><b class="cond">{{ water.week }} <small>L</small></b></div>
@@ -10303,7 +10303,7 @@ BOREHOLE_DETAIL_HTML = """
             {# Power always shows; "--" until the supply meter (Shelly) reports. #}
             <section class="wp-col">
                 <h2 class="section-title">Power</h2>
-                <div class="wp-tile {{ ('flow-green' if bh.power_kw != '--' else 'flow-red') if bh.has_power else '' }}">
+                <div class="wp-tile {{ ('flow-green' if bh.power_kw != '--' else 'flow-red') if bh.has_power else '' }}" data-live="power">
                     <div class="wp-label"><span>Incoming supply{% if bh.power_direction %} · <b class="{{ 'wp-export' if bh.power_direction == 'Exporting' else '' }}">{{ bh.power_direction }}</b>{% endif %}</span><span>{% if not bh.has_power %}Meter not connected{% else %}{{ 'Live' if bh.power_kw != '--' else 'No reading' }}{% if bh.power_fuse %} · {{ bh.power_fuse }} A fuse{% endif %}{% endif %}</span></div>
                     <div class="wp-big cond">{{ bh.power_kw_abs }} <small>kW</small></div>
                     <div class="wp-rows">
@@ -10330,7 +10330,7 @@ BOREHOLE_DETAIL_HTML = """
                         </div>
                     </div>
                     <div class="hint" style="margin-bottom: 6px">Highest amps on each phase{% if phase_hours <= 6 %} each minute{% elif phase_hours <= 24 %} in each 5 minutes{% else %} in each half hour{% endif %}.{% if bh.power_fuse %} Red dashed line is the {{ bh.power_fuse }} A fuse.{% endif %}</div>
-                    {{ phase_chart }}
+                    <div data-live="phasechart">{{ phase_chart }}</div>
                 </section>
             </section>
         </div>
@@ -10343,6 +10343,29 @@ ssDayBars(document.getElementById('waterBars'), {
     title: 'Water', label: 'Water', unit: 'L', color: '#5fd0d8', subtitle: 'Last 45 days.',
     epochs: {{ bar_epochs|tojson }}, values: {{ water_values|tojson }}
 });
+// Live readings: every 5 seconds fetch this page again and swap in the parts marked
+// data-live, leaving the threshold box and the water bars alone (so typing isn't lost).
+(function () {
+    async function refreshLive() {
+        if (document.hidden) return;
+        try {
+            const resp = await fetch(window.location.href, { cache: 'no-store' });
+            if (!resp.ok) return;
+            const doc = new DOMParser().parseFromString(await resp.text(), 'text/html');
+            document.querySelectorAll('[data-live]').forEach((el) => {
+                const fresh = doc.querySelector('[data-live="' + el.dataset.live + '"]');
+                if (fresh) el.replaceWith(document.importNode(fresh, true));
+            });
+            document.querySelectorAll('[data-live-class]').forEach((el) => {
+                const fresh = doc.querySelector('[data-live-class="' + el.dataset.liveClass + '"]');
+                if (fresh) el.className = fresh.className;
+            });
+        } catch (err) {
+        }
+    }
+    setInterval(refreshLive, 5000);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshLive(); });
+})();
 </script>
 </body>
 </html>
@@ -13925,10 +13948,10 @@ def borehole_detail():
     rows = get_borehole_hourly_history(max_points=24 * 45)
     bar_epochs, water_values = hourly_bar_series(rows, "water")
     try:
-        phase_hours = int(request.args.get("hours", 24))
+        phase_hours = int(request.args.get("hours", 6))
     except Exception:
-        phase_hours = 24
-    phase_hours = phase_hours if phase_hours in [1, 6, 24, 168] else 24
+        phase_hours = 6
+    phase_hours = phase_hours if phase_hours in [1, 6, 24, 168] else 6
     labels, series = phase_chart_series(read_all_json_lines(BOREHOLE_POWER_MINUTES_FILE), phase_hours, bh.get("power_fuse") or 0)
     phase_chart = line_chart_svg(labels, series, unit=" A", height=340)
     return render_template_string(BOREHOLE_DETAIL_HTML, bh=bh, bar_epochs=bar_epochs, water_values=water_values,
