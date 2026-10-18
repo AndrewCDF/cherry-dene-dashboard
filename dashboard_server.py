@@ -10235,6 +10235,8 @@ BOREHOLE_DETAIL_HTML = """
     <title>Water &amp; Power</title>
     {{ office_page_head }}
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.2.0/dist/chartjs-plugin-zoom.min.js"></script>
     {{ day_bars_head|safe }}
     <style>
         /* Laid out like the Water & Power controller: water left, power right. */
@@ -10272,6 +10274,14 @@ BOREHOLE_DETAIL_HTML = """
         .chart-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
         .line-chart { display: block; width: 100%; height: auto; }
         .chart-empty { padding: 30px 0; text-align: center; color: var(--muted); }
+        /* Phase chart: scroll / pinch to zoom, drag to move about, Full screen to make it big. */
+        .phase-tools { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+        .phase-tools button { width: auto; min-height: 36px; padding: 0 12px; font-size: 15px; }
+        .phase-canvas { position: relative; height: 340px; touch-action: none; cursor: grab; }
+        .phase-canvas:active { cursor: grabbing; }
+        .chart-card.full { position: fixed; inset: 0; z-index: 1000; margin: 0; border-radius: 0; display: flex; flex-direction: column; padding: 16px 20px; }
+        .chart-card.full .phase-canvas { flex: 1; height: auto; min-height: 0; }
+        body.chart-full { overflow: hidden; }
         @media (max-width: 860px) { .wp-split { grid-template-columns: 1fr; } .wp-big { font-size: 56px; } }
     </style>
 </head>
@@ -10322,15 +10332,23 @@ BOREHOLE_DETAIL_HTML = """
                     </div>
                     {% if not bh.has_power %}<div class="hint">Set the Shelly 3EM address in the Water &amp; Power controller's Settings → Config and the supply readings and phase chart fill in.</div>{% endif %}
                 </div>
-                <section class="chart-card wp-chart">
+                <section class="chart-card wp-chart" id="phaseCard">
                     <div class="chart-head">
                         <h2 class="section-title" style="margin: 0">Phase load</h2>
                         <div style="display: flex; gap: 6px">
                             {% for h in [1, 6, 24, 168] %}<a class="pill {{ 'on' if h == phase_hours else '' }}" href="{{ url_for('borehole_detail', hours=h) }}" style="text-decoration: none">{{ '7 days' if h == 168 else (h|string ~ ' h') }}</a>{% endfor %}
                         </div>
                     </div>
-                    <div class="hint" style="margin-bottom: 6px">Highest amps on each phase{% if phase_hours <= 6 %} each minute{% elif phase_hours <= 24 %} in each 5 minutes{% else %} in each half hour{% endif %}.{% if bh.power_fuse %} Red dashed line is the {{ bh.power_fuse }} A fuse.{% endif %}</div>
-                    <div data-live="phasechart">{{ phase_chart }}</div>
+                    <div class="chart-head">
+                        <div class="hint" style="margin: 0">Highest amps on each phase{% if phase_hours <= 6 %} each minute{% elif phase_hours <= 24 %} in each 5 minutes{% else %} in each half hour{% endif %}.{% if bh.power_fuse %} Red dashed line is the {{ bh.power_fuse }} A fuse.{% endif %} Scroll or pinch to zoom, drag to move.</div>
+                        <div class="phase-tools">
+                            <button type="button" id="phaseZoomIn" aria-label="Zoom in">+</button>
+                            <button type="button" id="phaseZoomOut" aria-label="Zoom out">&minus;</button>
+                            <button type="button" id="phaseReset">Reset</button>
+                            <button type="button" id="phaseFull">Full screen</button>
+                        </div>
+                    </div>
+                    <div class="phase-canvas"><canvas id="phaseCanvas"></canvas></div>
                 </section>
             </section>
         </div>
@@ -10365,6 +10383,109 @@ ssDayBars(document.getElementById('waterBars'), {
     }
     setInterval(refreshLive, 5000);
     document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshLive(); });
+})();
+
+// Phase chart: zoom with the mouse wheel, a pinch or the + / - buttons, drag to move
+// about, Full screen to fill the screen. New readings drop in every 5 seconds without
+// losing the zoom.
+(function () {
+    const initial = {{ phase_chart|tojson }};
+    const canvas = document.getElementById('phaseCanvas');
+    if (!canvas || typeof Chart === 'undefined') return;
+    const longRange = initial.hours > 24;
+    const pad = (n) => (n < 10 ? '0' : '') + n;
+    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    function timeLabel(ms, withDay) {
+        const d = new Date(ms);
+        return (withDay ? days[d.getDay()] + ' ' : '') + pad(d.getHours()) + ':' + pad(d.getMinutes());
+    }
+    function datasets(data) {
+        return data.series.map((s) => ({
+            label: s.name,
+            data: data.times.map((t, i) => ({ x: t, y: s.values[i] })),
+            borderColor: s.colour, backgroundColor: s.colour,
+            borderWidth: s.dashed ? 2 : 2.5, borderDash: s.dashed ? [8, 6] : [],
+            pointRadius: 0, pointHoverRadius: 4, spanGaps: false, tension: 0,
+        }));
+    }
+    // Time labels on round minutes / hours, about 6 to 8 across, however far you zoom.
+    const STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 180, 360, 720, 1440];
+    function roundTimeTicks(scale) {
+        const range = (scale.max - scale.min) / 60000;
+        const stepMin = STEPS.find((m) => range / m <= 8) || 1440;
+        const step = stepMin * 60000;
+        const offset = new Date(scale.min).getTimezoneOffset() * 60000;   // line up with local time
+        const ticks = [];
+        for (let t = Math.ceil((scale.min - offset) / step) * step + offset; t <= scale.max; t += step) ticks.push({ value: t });
+        scale.ticks = ticks;
+    }
+    const xMin = initial.times[0], xMax = initial.times[initial.times.length - 1];
+    let zoomed = false;   // once you zoom or move, new readings stop moving the view
+    const chart = new Chart(canvas, {
+        type: 'line',
+        data: { datasets: datasets(initial) },
+        options: {
+            responsive: true, maintainAspectRatio: false, animation: false, parsing: false, normalized: true,
+            interaction: { mode: 'index', intersect: false },
+            scales: {
+                x: { type: 'linear', min: xMin, max: xMax, afterBuildTicks: roundTimeTicks,
+                     ticks: { maxRotation: 0, autoSkip: false, callback: (v) => timeLabel(v, longRange) } },
+                // 0 to 120 A, so the 100 A fuse line sits near the top (it goes higher only if a phase does).
+                y: { beginAtZero: true, suggestedMax: 120, ticks: { stepSize: 10 }, title: { display: true, text: 'Amps' } },
+            },
+            plugins: {
+                legend: { position: 'top', labels: { boxWidth: 18 } },
+                tooltip: { callbacks: {
+                    title: (items) => items.length ? timeLabel(items[0].parsed.x, true) : '',
+                    label: (item) => item.dataset.label + ': ' + (item.parsed.y == null ? '--' : item.parsed.y.toFixed(1) + ' A'),
+                } },
+                zoom: {
+                    // Zoom and move along the time only; amps always run from 0 to the top.
+                    limits: { x: { min: xMin, max: xMax, minRange: 5 * 60 * 1000 } },
+                    pan: { enabled: true, mode: 'x', onPanComplete: () => { zoomed = true; } },
+                    zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'x', onZoomComplete: () => { zoomed = true; } },
+                },
+            },
+        },
+    });
+    document.getElementById('phaseZoomIn').addEventListener('click', () => { chart.zoom(1.4); zoomed = true; });
+    document.getElementById('phaseZoomOut').addEventListener('click', () => { chart.zoom(1 / 1.4); zoomed = true; });
+    document.getElementById('phaseReset').addEventListener('click', () => { chart.resetZoom(); zoomed = false; refreshPhase(); });
+    const card = document.getElementById('phaseCard');
+    const fullBtn = document.getElementById('phaseFull');
+    function setFull(on) {
+        card.classList.toggle('full', on);
+        document.body.classList.toggle('chart-full', on);
+        fullBtn.textContent = on ? 'Close' : 'Full screen';
+        chart.resize();
+    }
+    fullBtn.addEventListener('click', () => setFull(!card.classList.contains('full')));
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && card.classList.contains('full')) setFull(false); });
+
+    async function refreshPhase() {
+        if (document.hidden) return;
+        try {
+            const resp = await fetch('{{ url_for("borehole_phase_chart_api") }}?hours=' + initial.hours, { cache: 'no-store' });
+            if (!resp.ok) return;
+            const data = await resp.json();
+            const fresh = datasets(data);
+            fresh.forEach((ds, i) => {
+                if (chart.data.datasets[i]) chart.data.datasets[i].data = ds.data;
+                else chart.data.datasets.push(ds);
+            });
+            // You can always move up to the newest minute. Unzoomed, the chart follows it;
+            // zoomed in, it stays where you put it.
+            const newest = data.times[data.times.length - 1];
+            chart.options.plugins.zoom.limits.x.max = newest;
+            if (!zoomed) {
+                chart.options.scales.x.min = data.times[0];
+                chart.options.scales.x.max = newest;
+            }
+            chart.update('none');
+        } catch (err) {
+        }
+    }
+    setInterval(refreshPhase, 5000);
 })();
 </script>
 </body>
@@ -13633,6 +13754,36 @@ def phase_chart_series(rows, hours, fuse_amps=0):
     return labels, series
 
 
+def phase_chart_data(hours, fuse_amps=0):
+    """The phase chart as JSON for the zoomable chart on the Water & Power page: slot start
+    times (epoch ms) and each phase's highest amps, plus the fuse line."""
+    now = int(time.time())
+    slot = 60 if hours <= 6 else (300 if hours <= 24 else 1800)
+    start = (now - hours * 3600) // slot * slot
+    count = (now - start) // slot + 1
+    labels, series = phase_chart_series(read_all_json_lines(BOREHOLE_POWER_MINUTES_FILE), hours, fuse_amps)
+    return {
+        "hours": hours,
+        "times": [(start + i * slot) * 1000 for i in range(count)],
+        "series": [{"name": item[0], "colour": item[1], "values": item[2], "dashed": len(item) > 3 and bool(item[3])}
+                   for item in series],
+    }
+
+
+def requested_phase_hours():
+    try:
+        hours = int(request.args.get("hours", 6))
+    except Exception:
+        hours = 6
+    return hours if hours in [1, 6, 24, 168] else 6
+
+
+@app.route("/api/borehole/phase-chart")
+def borehole_phase_chart_api():
+    bh = office_home_context(tv=False).get("borehole", {})
+    return jsonify(phase_chart_data(requested_phase_hours(), bh.get("power_fuse") or 0))
+
+
 # ---------------------------------------------------------------------------
 # The office can read the Shelly 3EM on the incoming supply itself (over the farm network),
 # for when there is no Water & Power controller. It fills the same supply figures, peaks and
@@ -13947,13 +14098,8 @@ def borehole_detail():
     bh = office_home_context(tv=False).get("borehole", {})
     rows = get_borehole_hourly_history(max_points=24 * 45)
     bar_epochs, water_values = hourly_bar_series(rows, "water")
-    try:
-        phase_hours = int(request.args.get("hours", 6))
-    except Exception:
-        phase_hours = 6
-    phase_hours = phase_hours if phase_hours in [1, 6, 24, 168] else 6
-    labels, series = phase_chart_series(read_all_json_lines(BOREHOLE_POWER_MINUTES_FILE), phase_hours, bh.get("power_fuse") or 0)
-    phase_chart = line_chart_svg(labels, series, unit=" A", height=340)
+    phase_hours = requested_phase_hours()
+    phase_chart = phase_chart_data(phase_hours, bh.get("power_fuse") or 0)
     return render_template_string(BOREHOLE_DETAIL_HTML, bh=bh, bar_epochs=bar_epochs, water_values=water_values,
                                   phase_hours=phase_hours, phase_chart=phase_chart, water=borehole_water_panel(bh))
 
