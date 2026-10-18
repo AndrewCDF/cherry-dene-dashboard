@@ -3252,7 +3252,7 @@ def shed_plan_layout(cfg):
     # when the door is there, otherwise only the shed's shadow.
     bin_size = 124
     bin_margin = bin_size + 22                     # bin plus a short feed pipe
-    other_margin = 72 if door_left != bin_left else 10
+    other_margin = 46 if door_left != bin_left else 10
     shed_w = OVERVIEW_STAGE_WIDTH - bin_margin - other_margin
     shed_x = bin_margin if bin_left else other_margin
     shed_y = 106                                   # just below the reading tiles
@@ -3262,30 +3262,26 @@ def shed_plan_layout(cfg):
     bin_x = 0 if bin_left else OVERVIEW_STAGE_WIDTH - bin_size
     # Top-corner bins sit just below the reading tiles; bottom-corner bins sit at the
     # foot of the shed with their label above.
-    bin_y = 94 if bin_top else shed_y + shed_h - bin_size + 10
+    # Both are kept clear of the door label, which sits level with the middle of the shed.
+    bin_y = 90 if bin_top else 480 - bin_size
     pipe_y = bin_y + 59
     pipe_x = bin_x + bin_size - 2 if bin_left else shed_right - 4
-    bin_label_x = min(max(0, bin_x + bin_size // 2 - 78), OVERVIEW_STAGE_WIDTH - 156)
-    bin_label_y = bin_y + bin_size + 12 if bin_top else bin_y - 52
+    bin_label_x = bin_x                            # same width as the bin, so it's centred under it
+    bin_label_y = bin_y + bin_size + 8 if bin_top else bin_y - 52
 
-    # The door is always centred on its end wall. Its label sits beside the middle of it,
-    # unless the bin is at that end too: then the label moves just past the door, away
-    # from the bin, so it doesn't collide with the bin's label.
+    # The door is always centred on its end wall, with its label level with the middle of it.
     door_h = 100
     door_y = shed_y + (shed_h - door_h) // 2
-    door_label_y = door_y + door_h // 2 - 11
-    if door_left == bin_left:
-        door_label_y = door_y + door_h + 6 if bin_top else door_y - 25
+    # The "Door" label is written vertically, running the length of the door just
+    # outside its ticks.
     if door_left:
         door_x = shed_x - 2
         tick_x = shed_x - 18
-        label_x = max(0, shed_x - 24 - 126)
-        label_align = "right"
+        label_x = tick_x - 22
     else:
         door_x = shed_right - 8
         tick_x = shed_right + 8
-        label_x = min(shed_right + 24, OVERVIEW_STAGE_WIDTH - 126)
-        label_align = "left"
+        label_x = tick_x + 12
 
     # Temperature, humidity and water tiles span the full width of the plan.
     cards_gap = 14
@@ -3301,7 +3297,7 @@ def shed_plan_layout(cfg):
         "pipe_x": pipe_x, "pipe_y": pipe_y,
         "bin_label_x": bin_label_x, "bin_label_y": bin_label_y,
         "door_x": door_x, "door_y": door_y, "door_h": door_h,
-        "tick_x": tick_x, "label_x": label_x, "label_y": door_label_y, "label_align": label_align,
+        "tick_x": tick_x, "label_x": label_x,
         "temp_x": 0, "temp_w": temp_w,
         "rh_x": temp_w + cards_gap, "rh_w": rh_w,
         "water_x": temp_w + rh_w + 2 * cards_gap, "water_w": water_w,
@@ -6572,7 +6568,7 @@ OVERVIEW_HTML = """
         .bin-kg-unit { font-size: 14px; font-weight: 500; margin-left: 2px; }
         .bin-pct { font-size: 17px; font-weight: 600; color: var(--soft); }
         .bin-label-sub { font-size: 14px; color: var(--muted); }
-        .bin-label { width: 156px; text-align: center; }
+        .bin-label { width: 124px; text-align: center; }
         .bin-label-name { font-size: 16px; font-weight: 600; }
         .bin-label-kg { font-size: 22px; font-weight: 600; }
         .feed-pipe { width: 36px; height: 6px; background: var(--feed); }
@@ -6643,7 +6639,8 @@ OVERVIEW_HTML = """
 
         .door { width: 10px; background: repeating-linear-gradient(45deg, var(--amber) 0px, var(--amber) 8px, var(--page) 8px, var(--page) 16px); }
         .door-tick { background: var(--text); }
-        .door-label { width: 126px; }
+        /* Reads bottom to top, centred along the door. */
+        .door-label { width: 20px; display: flex; align-items: center; justify-content: center; writing-mode: vertical-rl; transform: rotate(180deg); font-size: 16px; font-weight: 600; letter-spacing: 1px; }
         .end-label { top: 528px; font-size: 14px; color: var(--muted); }
 
         .panel {
@@ -6842,9 +6839,7 @@ OVERVIEW_HTML = """
                     <div class="abs door-tick" style="left: {{ layout.tick_x }}px; top: {{ layout.door_y }}px; width: 10px; height: 2px"></div>
                     <div class="abs door-tick" style="left: {{ layout.tick_x }}px; top: {{ layout.door_y + layout.door_h - 2 }}px; width: 10px; height: 2px"></div>
                     <div class="abs door-tick" style="left: {{ layout.tick_x + 4 }}px; top: {{ layout.door_y }}px; width: 2px; height: {{ layout.door_h }}px"></div>
-                    <div class="abs door-label" style="left: {{ layout.label_x }}px; top: {{ layout.label_y }}px; text-align: {{ layout.label_align }}">
-                        <div style="font-size: 16px; font-weight: 600">Door</div>
-                    </div>
+                    <div class="abs door-label" style="left: {{ layout.label_x }}px; top: {{ layout.door_y }}px; height: {{ layout.door_h }}px">Door</div>
                     <div class="abs end-label" style="left: {{ layout.front_label_x }}px; top: {{ layout.end_label_y }}px; width: 80px; text-align: {{ 'left' if layout.front_left else 'right' }}">Front end</div>
                     <div class="abs end-label" style="left: {{ layout.rear_label_x }}px; top: {{ layout.end_label_y }}px; width: 80px; text-align: {{ 'right' if layout.front_left else 'left' }}">Rear end</div>
                 </div>
