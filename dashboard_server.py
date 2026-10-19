@@ -13891,7 +13891,8 @@ def shed_sync_post(shed_no):
         save_controller_meta_for_shed(shed_no, incoming_controller_meta)
         save_live_snapshot_for_shed(shed_no, incoming_controller_meta)
         update_shed_hourly_metrics_from_meta(shed_no, incoming_controller_meta)
-        log_event("controller", "controller_meta", "Controller telemetry updated", shed_no=shed_no)
+        # Not logged: telemetry arrives every second or so and would bury the real events
+        # (Pico restarts, sync failures, updates) in the Event log.
 
     return jsonify({
         "ok": True,

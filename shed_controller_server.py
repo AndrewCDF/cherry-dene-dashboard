@@ -1440,8 +1440,68 @@ def maybe_auto_backup(state):
         state["last_backup_status"] = "Backup failed: %s" % exc
 
 
+CONTROLLER_EVENTS_KEEP = 5000               # events kept in the log file
+CONTROLLER_EVENTS_TRIM_BYTES = 2 * 1024 * 1024
+_controller_events_appended = 0
+_controller_events_lock = threading.Lock()
+
+
+def read_ndjson_tail_lines(path, count):
+    """The last `count` lines of a file, read from the end, so a big file costs no more
+    than a small one."""
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        pos = f.tell()
+        data = b""
+        while pos > 0 and data.count(b"\n") <= count:
+            step = min(65536, pos)
+            pos -= step
+            f.seek(pos)
+            data = f.read(step) + data
+    lines = [line for line in data.split(b"\n") if line.strip()]
+    return [line.decode("utf-8", "replace") for line in lines[-count:]]
+
+
+def trim_controller_events(path):
+    """Keep the log to its newest CONTROLLER_EVENTS_KEEP events once it gets big."""
+    try:
+        if os.path.getsize(path) <= CONTROLLER_EVENTS_TRIM_BYTES:
+            return
+        keep = read_ndjson_tail_lines(path, CONTROLLER_EVENTS_KEEP)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            f.write("\n".join(keep) + "\n")
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
 def append_controller_event(payload):
-    append_ndjson(os.path.join(DATA_DIR, "controller_events.ndjson"), payload)
+    global _controller_events_appended
+    path = os.path.join(DATA_DIR, "controller_events.ndjson")
+    with _controller_events_lock:
+        append_ndjson(path, payload)
+        # Check the size on the first event after a start, then every 200.
+        if _controller_events_appended % 200 == 0:
+            trim_controller_events(path)
+        _controller_events_appended += 1
+
+
+_office_sync_failing = {"since": None}
+
+
+def note_office_sync(ok, message="", detail=""):
+    """Syncing with the office happens every few seconds, so only changes go in the event
+    log: the first failure, and when it works again. (Logging every sync filled the log
+    with millions of lines and made the Event log page hang.)"""
+    failing = _office_sync_failing["since"]
+    if not ok and failing is None:
+        _office_sync_failing["since"] = int(time.time())
+        record_controller_event("office_sync_failed", message or "Office sync failed", detail)
+    elif ok and failing is not None:
+        _office_sync_failing["since"] = None
+        record_controller_event("office_sync_restored", "Office sync working again",
+                                "Was failing since %s" % datetime.fromtimestamp(failing).strftime("%d %b %H:%M:%S"))
 
 
 def get_controller_events(limit=200):
@@ -1450,18 +1510,17 @@ def get_controller_events(limit=200):
         return []
     rows = []
     try:
-        with open(path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rows.append(json.loads(line))
-                except Exception:
-                    pass
+        # Only the newest lines are needed: the log is written in time order.
+        for line in read_ndjson_tail_lines(path, limit * 2):
+            try:
+                rows.append(json.loads(line))
+            except Exception:
+                pass
     except Exception:
         return []
-    rows.sort(key=lambda r: int(r.get("ts", 0)), reverse=True)
+    # Newest first; events in the same second stay in the order they were logged.
+    order = {id(r): i for i, r in enumerate(rows)}
+    rows.sort(key=lambda r: (int(r.get("ts", 0) or 0), order[id(r)]), reverse=True)
     rows = rows[:limit]
     i = 0
     while i < len(rows):
@@ -2996,7 +3055,7 @@ def pull_from_dashboard(state):
             state["last_dashboard_contact_ts"] = int(time.time())
             state["last_dashboard_status"] = "Office Reachable"
             save_state(state)
-            record_controller_event("office_pull", "Pulled latest office state", "Sync version %s" % state.get("last_seen_office_sync_version", 0))
+            note_office_sync(True)
             return True, state["last_sync_status"]
     except urllib.error.URLError as exc:
         state["last_sync_ts"] = int(time.time())
@@ -3004,7 +3063,7 @@ def pull_from_dashboard(state):
         state["last_dashboard_contact_ts"] = int(time.time())
         state["last_dashboard_status"] = "Office Unreachable"
         save_state(state)
-        record_controller_event("office_pull_failed", "Office pull failed", str(exc), push_to_office=False)
+        note_office_sync(False, "Office pull failed", str(exc))
         return False, state["last_sync_status"]
     except Exception as exc:
         state["last_sync_ts"] = int(time.time())
@@ -3012,7 +3071,7 @@ def pull_from_dashboard(state):
         state["last_dashboard_contact_ts"] = int(time.time())
         state["last_dashboard_status"] = "Office Unreachable"
         save_state(state)
-        record_controller_event("office_pull_failed", "Office pull failed", str(exc), push_to_office=False)
+        note_office_sync(False, "Office pull failed", str(exc))
         return False, state["last_sync_status"]
 
 
@@ -3086,7 +3145,7 @@ def push_to_dashboard(state, pull_back=True):
                 state["last_auto_sync_signature"] = signature
             save_state(state)
             if ok:
-                record_controller_event("office_push", "Pushed controller state", "State version %s" % state.get("state_version", 0))
+                note_office_sync(True)
     except urllib.error.URLError as exc:
         state["last_sync_ts"] = int(time.time())
         state["last_sync_status"] = "Push failed: %s" % exc
@@ -3095,7 +3154,7 @@ def push_to_dashboard(state, pull_back=True):
         state["last_dashboard_contact_ts"] = int(time.time())
         state["last_dashboard_status"] = "Office Unreachable"
         save_state(state)
-        record_controller_event("office_push_failed", "Office push failed", str(exc), push_to_office=False)
+        note_office_sync(False, "Office push failed", str(exc))
         return False, state["last_sync_status"]
     except Exception as exc:
         state["last_sync_ts"] = int(time.time())
@@ -3105,7 +3164,7 @@ def push_to_dashboard(state, pull_back=True):
         state["last_dashboard_contact_ts"] = int(time.time())
         state["last_dashboard_status"] = "Office Unreachable"
         save_state(state)
-        record_controller_event("office_push_failed", "Office push failed", str(exc), push_to_office=False)
+        note_office_sync(False, "Office push failed", str(exc))
         return False, state["last_sync_status"]
 
     if ok and pull_back:
@@ -11343,7 +11402,7 @@ def dashboard_sync():
         state["last_sync_status"] = "Dashboard push received"
 
     mutate_state(mutator)
-    record_controller_event("office_push_received", "Office pushed state to controller", "Sync version %s" % (payload.get("sync_version") or 0))
+    note_office_sync(True)
     return jsonify({"ok": True, "shed_no": cfg["shed_no"]})
 
 
