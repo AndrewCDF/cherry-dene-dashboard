@@ -3,6 +3,7 @@ from markupsafe import Markup, escape
 import hashlib
 import json
 import os
+import queue
 import shutil
 import socket
 import subprocess
@@ -1401,7 +1402,6 @@ def create_backup_zip(label="auto"):
     files = [
         os.path.join(DATA_DIR, "controller_config.json"),
         os.path.join(DATA_DIR, "controller_state.json"),
-        os.path.join(DATA_DIR, "sensor_live.ndjson"),
         os.path.join(DATA_DIR, "auger_runs.ndjson"),
         os.path.join(DATA_DIR, "alarm_history.ndjson"),
         os.path.join(DATA_DIR, "feed_calibration_history.json"),
@@ -1419,25 +1419,32 @@ def create_backup_zip(label="auto"):
     return path
 
 
-def maybe_auto_backup(state):
-    now_ts = int(time.time())
-    last_backup_ts = state.get("last_backup_ts")
+def auto_backup_due(state):
     try:
-        if last_backup_ts not in [None, ""] and (now_ts - int(last_backup_ts)) < BACKUP_INTERVAL_SECONDS:
-            return
+        last_backup_ts = state.get("last_backup_ts")
+        return last_backup_ts in [None, ""] or (int(time.time()) - int(last_backup_ts)) >= BACKUP_INTERVAL_SECONDS
     except Exception:
-        pass
+        return True
 
+
+def run_auto_backup():
+    """Make the hourly backup (call without holding the state lock). Returns the state
+    fields to record."""
+    now_ts = int(time.time())
     try:
         path = create_backup_zip("auto")
-        state["last_backup_ts"] = now_ts
         if "suspect" in os.path.basename(path):
-            state["last_backup_status"] = "Backup failed check, older backups kept: %s" % os.path.basename(path)
+            status = "Backup failed check, older backups kept: %s" % os.path.basename(path)
         else:
-            state["last_backup_status"] = "Backup OK: %s" % os.path.basename(path)
+            status = "Backup OK: %s" % os.path.basename(path)
     except Exception as exc:
-        state["last_backup_ts"] = now_ts
-        state["last_backup_status"] = "Backup failed: %s" % exc
+        status = "Backup failed: %s" % exc
+    return {"last_backup_ts": now_ts, "last_backup_status": status}
+
+
+def maybe_auto_backup(state):
+    if auto_backup_due(state):
+        state.update(run_auto_backup())
 
 
 CONTROLLER_EVENTS_KEEP = 5000               # events kept in the log file
@@ -1474,6 +1481,28 @@ def trim_controller_events(path):
         os.replace(tmp, path)
     except Exception:
         pass
+
+
+SENSOR_LIVE_TRIM_BYTES = 8 * 1024 * 1024
+SENSOR_LIVE_KEEP = 20000                    # about 5 hours of readings
+_sensor_live_appended = 0
+
+
+def log_raw_sensor_packet(payload):
+    global _sensor_live_appended
+    path = os.path.join(DATA_DIR, "sensor_live.ndjson")
+    append_ndjson(path, payload)
+    if _sensor_live_appended % 500 == 0:
+        try:
+            if os.path.getsize(path) > SENSOR_LIVE_TRIM_BYTES:
+                keep = read_ndjson_tail_lines(path, SENSOR_LIVE_KEEP)
+                tmp = path + ".tmp"
+                with open(tmp, "w") as f:
+                    f.write("\n".join(keep) + "\n")
+                os.replace(tmp, path)
+        except Exception:
+            pass
+    _sensor_live_appended += 1
 
 
 def append_controller_event(payload):
@@ -5086,11 +5115,14 @@ def apply_sensor_packet(state, packet):
     sensors["raw"] = packet
     sensors["device_status"] = str(packet.get("status", sensors.get("device_status", "Pico connected")))
     try:
-        append_ndjson(os.path.join(DATA_DIR, "sensor_live.ndjson"), {
-            "ts": now_ts,
-            "shed_no": load_config()["shed_no"],
-            "packet": packet,
-        })
+        # Raw readings, for looking back at recent packets only: the Pico's progress
+        # checkpoints aren't kept, and the file is trimmed to its newest part.
+        if packet_kind != "checkpoint":
+            log_raw_sensor_packet({
+                "ts": now_ts,
+                "shed_no": load_config()["shed_no"],
+                "packet": packet,
+            })
         state["last_log_ts"] = now_ts
         state["last_log_status"] = "Log OK"
     except Exception as exc:
@@ -5255,19 +5287,11 @@ def serial_reader_loop():
                 if not line:
                     continue
 
-                try:
-                    packet = json.loads(line)
-                except Exception:
-                    mutate_state(lambda state: _record_raw_serial_line(state, line))
-                    continue
-
-                if not isinstance(packet, dict):
-                    mutate_state(lambda state: _record_raw_serial_line(state, line))
-                    continue
-                packet["_serial_port"] = port
-                state = mutate_state(lambda s: apply_sensor_packet(s, packet))
-                if packet.get("packet_kind") != "checkpoint" and load_config().get("sync_on_sensor_update"):
-                    auto_sync_if_changed(state, pull_back=False)
+                # Hand the line over and go straight back to reading. Saving it and
+                # syncing with the office happen on another thread, so a slow save, a
+                # backup or a slow office can never stop the USB being read (if it
+                # isn't, the Pico stalls sending and its watchdog restarts it).
+                queue_serial_line(port, line)
         except Exception as exc:
             serial_error_update(
                 "Pico serial loop error: %s" % exc,
@@ -5302,12 +5326,63 @@ def _record_raw_serial_line(state, line):
     reconcile_alarm_history(state)
 
 
+SERIAL_LINES = queue.Queue(maxsize=600)
+SERIAL_WORKER = None
+
+
+def queue_serial_line(port, line):
+    try:
+        SERIAL_LINES.put_nowait((port, line))
+    except queue.Full:
+        # Far behind: drop the oldest line rather than stop reading.
+        try:
+            SERIAL_LINES.get_nowait()
+            SERIAL_LINES.put_nowait((port, line))
+        except Exception:
+            pass
+
+
+def process_serial_line(port, line):
+    try:
+        packet = json.loads(line)
+    except Exception:
+        packet = None
+    if not isinstance(packet, dict):
+        mutate_state(lambda state: _record_raw_serial_line(state, line))
+        return
+    # When catching up after a pause, skip the Pico's progress checkpoints.
+    if packet.get("packet_kind") == "checkpoint" and SERIAL_LINES.qsize() > 3:
+        return
+    packet["_serial_port"] = port
+    state = mutate_state(lambda s: apply_sensor_packet(s, packet))
+    if packet.get("packet_kind") != "checkpoint" and load_config().get("sync_on_sensor_update"):
+        auto_sync_if_changed(state, pull_back=False)
+
+
+def serial_packet_worker():
+    while not SERIAL_STOP.is_set():
+        try:
+            port, line = SERIAL_LINES.get(timeout=1.0)
+        except queue.Empty:
+            continue
+        try:
+            process_serial_line(port, line)
+        except Exception as exc:
+            try:
+                serial_reader_status_update("Serial packet handling failed", port=port, error=str(exc))
+            except Exception:
+                pass
+
+
 def start_serial_thread():
-    global SERIAL_THREAD
+    global SERIAL_THREAD, SERIAL_WORKER
     if SERIAL_THREAD is not None and SERIAL_THREAD.is_alive():
         return
 
     SERIAL_STOP.clear()
+    if SERIAL_WORKER is None or not SERIAL_WORKER.is_alive():
+        SERIAL_WORKER = threading.Thread(target=serial_packet_worker, daemon=True)
+        SERIAL_WORKER.start()
     SERIAL_THREAD = threading.Thread(target=serial_reader_loop, daemon=True)
     SERIAL_THREAD.start()
 
@@ -5316,9 +5391,13 @@ def auger_monitor_loop():
     while not SERIAL_STOP.is_set():
         def mutator(s):
             evaluate_augers(s.get("sensors", default_sensor_state()))
-            maybe_auto_backup(s)
             reconcile_alarm_history(s)
         state = mutate_state(mutator)
+        # The hourly backup zips files, which takes a while on a Pi: it's made outside
+        # the state lock so the Pico's readings keep being taken in meanwhile.
+        if auto_backup_due(state):
+            done = run_auto_backup()
+            mutate_state(lambda s: s.update(done))
         if pico_post_update_recovery_due(state):
             attempt_ts = int(time.time())
             mutate_state(lambda s: s.update({
