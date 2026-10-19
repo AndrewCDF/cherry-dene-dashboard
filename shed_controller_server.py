@@ -4440,6 +4440,25 @@ def update_water_from_pulses(sensors, now_ts):
     except Exception:
         return
 
+    # The Pico counts pulses from its own start, so its count goes back to 0 when it
+    # restarts. Carry the earlier count forward so the running total (and the hourly
+    # water the office records from it) never goes backwards and nothing is lost.
+    try:
+        pico_prev = int(sensors.get("flow_pico_prev_pulses"))
+    except Exception:
+        pico_prev = None
+    try:
+        offset = int(sensors.get("flow_pulse_offset") or 0)
+    except Exception:
+        offset = 0
+    if pico_prev is not None and total_pulses < pico_prev:
+        offset += pico_prev
+        sensors["flow_pico_restarts"] = int(sensors.get("flow_pico_restarts") or 0) + 1
+        sensors["flow_pico_last_restart_ts"] = int(now_ts)
+    sensors["flow_pico_prev_pulses"] = total_pulses
+    sensors["flow_pulse_offset"] = offset
+    total_pulses += offset
+
     cfg = load_config()
     try:
         pulses_per_litre = float(cfg.get("water_pulses_per_litre", 450.0))
@@ -4898,7 +4917,34 @@ def apply_sensor_packet(state, packet):
 
     if packet.get("boot_count") not in [None, ""]:
         try:
-            sensors["pico_boot_count"] = int(packet.get("boot_count"))
+            new_boot = int(packet.get("boot_count"))
+        except Exception:
+            new_boot = None
+        # A new boot count means the Pico restarted. Log when, why, and how long it had
+        # been running, here and at the office, so restarts can be traced (e.g. matched
+        # against augers or lights switching).
+        try:
+            old_boot = int(sensors.get("pico_boot_count"))
+        except Exception:
+            old_boot = None
+        if new_boot is not None and old_boot is not None and new_boot != old_boot:
+            cause = str(packet.get("reset_cause") or "unknown")
+            ran = sensors.get("pico_uptime_s")
+            last_ts = sensors.get("last_sensor_ts")
+            detail = "Reset cause: %s. Boot %d (was %d)." % (cause, new_boot, old_boot)
+            try:
+                detail += " It had been running %s; last reading before it at %s." % (
+                    fmt_minutes(int(ran)) if int(ran) >= 60 else "%d seconds" % int(ran),
+                    datetime.fromtimestamp(int(last_ts)).strftime("%H:%M:%S"))
+            except Exception:
+                pass
+            threading.Thread(target=record_controller_event, daemon=True, args=(
+                "pico_restart", "Pico restarted (%s)" % cause.replace("_", " "), detail, True)).start()
+        if new_boot is not None:
+            sensors["pico_boot_count"] = new_boot
+    if packet.get("uptime_s") not in [None, ""]:
+        try:
+            sensors["pico_uptime_s"] = int(packet.get("uptime_s"))
         except Exception:
             pass
     if "reset_cause" in packet:

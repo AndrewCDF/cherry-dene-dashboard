@@ -2219,11 +2219,26 @@ def update_shed_hourly_metrics_from_meta(shed_no, meta):
             start_total_litres = float(row.get("start_total_litres"))
         except Exception:
             start_total_litres = water_total_litres
+        try:
+            carried = float(row.get("water_carried_litres") or 0.0)
+        except Exception:
+            carried = 0.0
+        try:
+            last_total = float(row.get("water_total_litres"))
+        except Exception:
+            last_total = None
+        # The controller's running total went backwards (its Pico restarted, or an older
+        # controller): keep what this hour had already counted and carry on from the new
+        # total, rather than losing it.
+        if last_total is not None and water_total_litres < last_total:
+            carried += max(0.0, last_total - start_total_litres)
+            start_total_litres = water_total_litres
         if water_total_litres < start_total_litres:
             start_total_litres = water_total_litres
         row["start_total_litres"] = start_total_litres
         row["water_total_litres"] = water_total_litres
-        row["water_hour_liters"] = round(max(0.0, water_total_litres - start_total_litres), 3)
+        row["water_carried_litres"] = round(carried, 3)
+        row["water_hour_liters"] = round(carried + max(0.0, water_total_litres - start_total_litres), 3)
         row["ts"] = int(time.time())
         row["source"] = "controller_sync"
         row["out_of_crop"] = False
