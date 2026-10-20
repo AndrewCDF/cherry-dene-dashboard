@@ -8052,7 +8052,7 @@ OFFICE_CARDS_HTML = """
         <div class="ss-tile edge-{{ ('ok' if borehole.power_kw != '--' else 'alarm') if borehole.has_power else 'none' }}">
           <div class="ss-tile-main"><span class="ss-tile-label">{{ (borehole.power_direction or 'Supply now') if borehole.has_power else 'Meter not connected' }}</span><span class="ss-mid">{{ borehole.power_kw_short }} <small>kW</small></span></div>
         </div>
-        <div class="ss-stat"><span>Imported today</span><b>{{ borehole.power_today }} <small>kWh</small></b></div>
+        <div class="ss-stat"><span>Imported today</span><b>{{ borehole.power_today }} <small>kWh</small></b>{% if borehole.cost_today %}<i class="ss-cost">{{ borehole.cost_today }} so far</i>{% endif %}</div>
         <div class="ss-stat"><span>Exported today</span><b>{{ borehole.power_export_today }} <small>kWh</small></b></div>
       </div>
       <div class="ss-phases">
@@ -8140,10 +8140,7 @@ OFFICE_HOME_HTML = """
   .ss-ticker.scrolling { -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 24px, #000 calc(100% - 24px), transparent 100%); mask-image: linear-gradient(90deg, transparent 0, #000 24px, #000 calc(100% - 24px), transparent 100%); }
   .ss-ticker.scrolling .ss-tick-half { padding-right: 60px; }
   .ss-ticker.scrolling .ss-tick-half .ss-alarm-item:first-child::before { content: none; }
-  .ss-ticker.scrolling .ss-ticker-track { -webkit-animation: ss-tick 30s linear infinite; animation: ss-tick 30s linear infinite; }
-  .ss-ticker.scrolling:hover .ss-ticker-track { -webkit-animation-play-state: paused; animation-play-state: paused; }
-  @-webkit-keyframes ss-tick { from { -webkit-transform: translateX(0); } to { -webkit-transform: translateX(-50%); } }
-  @keyframes ss-tick { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+  .ss-ticker.scrolling .ss-ticker-track { will-change: transform; }
   .ss-dismiss { display: inline; margin: 0 0 0 8px; }
   .ss-dismiss button { width: auto; min-height: 0; padding: 3px 12px; border-radius: 999px; border: 1px solid #f3b366; background: #ffffff; color: #a34f00; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
 
@@ -8196,6 +8193,8 @@ OFFICE_HOME_HTML = """
   /* The 7-day box is wider so a seven-figure total (1,234,567 L) fits. */
   .ss-stats.ss-stats-3, body.tv .ss-grid .ss-stats.ss-stats-3, body:not(.tv) .ss-stats.ss-stats-3 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.3fr); }
   .ss-wp .ss-stat b small { font-size: 0.7em; color: var(--muted); }
+  .ss-wp .ss-cost { font-style: normal; font-size: 12px; font-weight: 600; color: var(--muted); white-space: nowrap; }
+  body.tv .ss-grid .ss-wp .ss-cost { font-size: 14px; }
   .ss-phases { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
   .ss-phase { display: flex; flex-direction: column; min-width: 0; border: 2px solid #c9d4df; border-top-width: 5px; border-radius: 8px; background: var(--soft-bg); padding: 3px 8px; }
   .ss-phase span { font-size: 12px; font-weight: 700; color: var(--muted); }
@@ -8596,9 +8595,8 @@ if (window.fully && !/[?&]tv=0/.test(window.location.search)) { window.location.
       req.onload = function () {
         var cards = document.getElementById('ssCards');
         if (req.status === 200 && cards) {
-          var prev = cards.querySelector('.ss-ticker-track');
           cards.innerHTML = req.responseText;
-          ssTicker(prev);
+          ssTicker();
         }
       };
       req.send();
@@ -8608,38 +8606,56 @@ if (window.fully && !/[?&]tv=0/.test(window.location.search)) { window.location.
 </script>
 {% endif %}
 <script>
-// "Needs a look" ticker. Called after every refresh with the track that was showing, so
-// an unchanged list keeps scrolling smoothly instead of jumping back to the start.
-// Plain ES5 so the older TV browsers can run it too.
-function ssTicker(prevTrack) {
+// "Needs a look" ticker. Called after every refresh. The scroll position lives here,
+// not in the page, so new or reworded alarms are swapped in without jumping back to
+// the start: it carries on from where it was, all the way round. Moved by a timer about
+// 30 times a second (60 px a second); paused while the mouse is over it. Plain ES5 for
+// older TV browsers.
+var ssTick = { pos: 0, half: 0, last: 0, paused: false, running: false };
+function ssTicker() {
   var box = document.querySelector('#ssCards .ss-ticker');
-  if (!box) return;
+  if (!box) { ssTick.half = 0; return; }
   var track = box.querySelector('.ss-ticker-track');
   if (!track) return;
-  if (prevTrack && prevTrack !== track && prevTrack.getAttribute('data-sig') === track.getAttribute('data-sig')
-      && prevTrack.getAttribute('data-width') === String(box.clientWidth)) {
-    box.replaceChild(prevTrack, track);
-    box.className = prevTrack.getAttribute('data-scrolling') === '1' ? 'ss-ticker scrolling' : 'ss-ticker';
-    return;
-  }
   if (!track.getAttribute('data-orig')) track.setAttribute('data-orig', track.innerHTML);
-  track.innerHTML = track.getAttribute('data-orig');
+  var orig = track.getAttribute('data-orig');
+  track.innerHTML = orig;
   box.className = 'ss-ticker';
-  track.style.animationDuration = '';
-  track.setAttribute('data-width', String(box.clientWidth));
-  track.setAttribute('data-scrolling', '0');
-  if (track.scrollWidth <= box.clientWidth + 2) return;
-  // Two copies side by side, scrolled by half: a seamless loop at about 60 px a second.
-  var half = '<span class="ss-tick-half">' + track.getAttribute('data-orig') + '</span>';
+  track.style.transform = track.style.webkitTransform = '';
+  if (track.scrollWidth <= box.clientWidth + 2) { ssTick.half = 0; return; }
+  // Two copies side by side: when the first has gone by, the position wraps seamlessly.
+  var half = '<span class="ss-tick-half">' + orig + '</span>';
   track.innerHTML = half + half;
   box.className = 'ss-ticker scrolling';
-  var secs = Math.max(12, (track.scrollWidth / 2) / 60);
-  track.style.webkitAnimationDuration = secs + 's';
-  track.style.animationDuration = secs + 's';
-  track.setAttribute('data-scrolling', '1');
+  ssTick.half = track.scrollWidth / 2;
+  if (ssTick.pos >= ssTick.half) ssTick.pos = ssTick.pos % ssTick.half;
+  ssTickApply(track);
+  if (!ssTick.running) { ssTick.running = true; ssTick.last = 0; setInterval(ssTickFrame, 33); }
 }
-ssTicker(null);
-window.addEventListener('resize', function () { ssTicker(null); });
+function ssTickApply(track) {
+  var t = 'translateX(' + (-ssTick.pos).toFixed(1) + 'px)';
+  track.style.transform = t;
+  track.style.webkitTransform = t;
+}
+function ssTickFrame() {
+  var nowMs = new Date().getTime();
+  var track = document.querySelector('#ssCards .ss-ticker.scrolling .ss-ticker-track');
+  if (track && ssTick.half > 0) {
+    if (ssTick.last && !ssTick.paused) {
+      ssTick.pos += Math.min(0.1, (nowMs - ssTick.last) / 1000) * 60;
+      if (ssTick.pos >= ssTick.half) ssTick.pos -= ssTick.half;
+    }
+    ssTickApply(track);
+  }
+  ssTick.last = nowMs;
+}
+document.addEventListener('mouseover', function (e) {
+  var el = e.target;
+  while (el && el !== document) { if (el.className && String(el.className).indexOf('ss-ticker') === 0) { ssTick.paused = true; return; } el = el.parentNode; }
+  ssTick.paused = false;
+});
+ssTicker();
+window.addEventListener('resize', function () { ssTicker(); });
 </script>
 <script>
 window.ssMainLoaded = true;
@@ -8712,9 +8728,8 @@ async function ssRefresh() {
     const resp = await fetch('/api/home-cards?tv=' + (SS_TV ? '1' : '0') + (SS_PC ? '&pc=1' : ''), { cache: 'no-store' });
     if (!resp.ok) return;
     const cards = document.getElementById('ssCards');
-    const prev = cards.querySelector('.ss-ticker-track');
     cards.innerHTML = await resp.text();
-    ssTicker(prev);
+    ssTicker();
     ssApplyOpen();
   } catch (err) {
   }
@@ -9290,6 +9305,7 @@ OFFICE_SUBSETTINGS_HTML = """
         .sub-form .hint { line-height: 1.45; }
         .sub-form ul { margin: 4px 0 0; padding-left: 20px; }
         .alarm-block { display: grid; gap: 8px; padding-top: 12px; border-top: 1px solid var(--track); }
+        .sub-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
         .alarm-block.off .field, .alarm-block.off input[type=number], .alarm-block.off input[type=time], .alarm-block.off .hint { opacity: 0.45; }
         .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 18px; font-weight: 600; color: var(--text); cursor: pointer; }
         /* On / off toggle */
@@ -9328,6 +9344,42 @@ OFFICE_SUBSETTINGS_HTML = """
                     <div class="hint">A leak in the drinker lines, header tank or pipework. The birds' normal growth from one day to the next stays well under this.</div>
                 </div>
                 <div class="hint">A dismissed alarm comes back if the next few hours are still out.</div>
+                <button class="primary" type="submit">Save</button>
+            </form>
+        </section>
+        {% elif page == 'electricity' %}
+        <section>
+            <h2 class="section-title">Electricity prices</h2>
+            <form class="card sub-form" method="post" action="{{ url_for('office_electricity_save') }}">
+                <div class="hint">From your electricity bill, in pence. The Water &amp; Power page and tile then show what each day cost (midnight to midnight). Leave a box at 0 if it doesn't apply.</div>
+                <div class="alarm-block">
+                    <label class="field" for="unitP">Unit rate (p per kWh)</label>
+                    <input id="unitP" type="number" name="unit_p" min="0" step="0.001" inputmode="decimal" value="{{ rates.unit_p }}">
+                    <div class="hint">The day rate, if you're on day / night prices.</div>
+                </div>
+                <div class="alarm-block">
+                    <label class="field" for="nightP">Night rate (p per kWh)</label>
+                    <input id="nightP" type="number" name="night_p" min="0" step="0.001" inputmode="decimal" value="{{ rates.night_p }}">
+                    <div class="sub-pair">
+                        <div><label class="field" for="nightFrom">Night from</label><input id="nightFrom" type="time" name="night_from" value="{{ rates.night_from }}"></div>
+                        <div><label class="field" for="nightTo">Until</label><input id="nightTo" type="time" name="night_to" value="{{ rates.night_to }}"></div>
+                    </div>
+                    <div class="hint">Only if you have a cheaper night rate. Use the clock times on your bill (Economy 7 times often move with British Summer Time).</div>
+                </div>
+                <div class="alarm-block">
+                    <label class="field" for="standingP">Standing charge (p per day)</label>
+                    <input id="standingP" type="number" name="standing_p" min="0" step="0.001" inputmode="decimal" value="{{ rates.standing_p }}">
+                </div>
+                <div class="alarm-block">
+                    <label class="field" for="exportP">Export rate (p per kWh)</label>
+                    <input id="exportP" type="number" name="export_p" min="0" step="0.001" inputmode="decimal" value="{{ rates.export_p }}">
+                    <div class="hint">What you're paid for solar sent back to the grid (Smart Export Guarantee). It's taken off the day's cost.</div>
+                </div>
+                <div class="alarm-block">
+                    <label class="field" for="vatPct">VAT (%)</label>
+                    <input id="vatPct" type="number" name="vat_pct" min="0" max="100" step="0.1" inputmode="decimal" value="{{ rates.vat_pct }}">
+                    <div class="hint">Added to the units and standing charge. 0 if your prices already include it, or if you reclaim it.</div>
+                </div>
                 <button class="primary" type="submit">Save</button>
             </form>
         </section>
@@ -9463,6 +9515,7 @@ OFFICE_SETTINGS_HTML = """
                         <a class="item" href="{{ url_for('office_usage_alarms_view') }}"><span>Water alarms</span><span class="item-sub">{{ usage_alarm_summary }}</span><span class="chev">›</span></a>
                         <a class="item" href="{{ url_for('office_auger_alarms_view') }}"><span>Auger alarms</span><span class="item-sub">{{ auger_alarm_summary }}</span><span class="chev">›</span></a>
                         <a class="item" href="{{ url_for('office_lights_alarm_view') }}"><span>Lights alarm</span><span class="item-sub">{{ lights_alarm_summary }}</span><span class="chev">›</span></a>
+                        <a class="item" href="{{ url_for('office_electricity_view') }}"><span>Electricity prices</span><span class="item-sub">{{ electricity_summary }}</span><span class="chev">›</span></a>
                         <a class="item" href="{{ url_for('office_supply_settings_view') }}"><span>Incoming supply</span><span class="item-sub">{{ office_shelly.host or 'Not set' }}{% if office_shelly.host %} · {{ office_shelly.status }}{% endif %}</span><span class="chev">›</span></a>
                     </nav>
                 </section>
@@ -10487,6 +10540,21 @@ BOREHOLE_DETAIL_HTML = """
         .chart-empty { padding: 30px 0; text-align: center; color: var(--muted); }
         /* Phase chart: scroll / pinch to zoom, drag to move about, Full screen to make it big. */
         .phase-tools { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+        /* Time range: one segmented control. */
+        .phase-range { display: inline-flex; padding: 3px; gap: 2px; border-radius: 10px; background: var(--card-2); border: 1px solid var(--rule); }
+        .phase-range button { width: auto; min-height: 34px; padding: 0 12px; border: 0; border-radius: 8px; background: transparent; font-size: 15px; font-weight: 600; color: var(--muted); }
+        .phase-range button.on { background: var(--card); color: var(--navy); box-shadow: 0 1px 3px rgba(0,0,0,0.15); }
+        .phase-range.busy { opacity: 0.6; }
+        /* Legend: each phase's colour, name and latest amps; the fuse line. */
+        .phase-legend { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; margin: 4px 0 8px; font-size: 15px; color: var(--soft); }
+        .phase-legend .key { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+        .phase-legend .swatch { width: 18px; height: 3px; border-radius: 2px; }
+        .phase-legend .swatch.dash { height: 0; border-top: 2px dashed #d64545; background: none; }
+        .phase-legend b { color: var(--text); font-weight: 600; }
+        .cost-table { width: 100%; border-collapse: collapse; font-size: 15px; }
+        .cost-table th, .cost-table td { padding: 7px 8px; text-align: right; border-top: 1px solid var(--track); }
+        .cost-table th { border-top: 0; font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+        .cost-table th:first-child, .cost-table td:first-child { text-align: left; }
         .phase-tools button { width: auto; min-height: 36px; padding: 0 12px; font-size: 15px; }
         .phase-canvas { position: relative; height: 340px; touch-action: none; cursor: grab; }
         .phase-canvas:active { cursor: grabbing; }
@@ -10530,6 +10598,10 @@ BOREHOLE_DETAIL_HTML = """
                     <div class="wp-rows">
                         <div class="wp-row"><span>Today since midnight</span><b class="cond">{{ bh.power_today }} <small>kWh in</small> · {{ bh.power_export_today }} <small>kWh out</small></b></div>
                         <div class="wp-row"><span>Yesterday</span><b class="cond">{{ bh.power_yesterday }} <small>kWh in</small> · {{ bh.power_export_yesterday }} <small>kWh out</small></b></div>
+                        {% if bh.cost_set %}
+                        <div class="wp-row" title="{{ bh.cost_today_detail }}"><span>Cost today so far</span><b class="cond">{{ bh.cost_today or '--' }}</b></div>
+                        <div class="wp-row" title="{{ bh.cost_yesterday_detail }}"><span>Cost yesterday</span><b class="cond">{{ bh.cost_yesterday or '--' }}</b></div>
+                        {% endif %}
                     </div>
                     <div class="phase-grid">
                         {% for ph in bh.power_phases %}
@@ -10546,12 +10618,13 @@ BOREHOLE_DETAIL_HTML = """
                 <section class="chart-card wp-chart" id="phaseCard">
                     <div class="chart-head">
                         <h2 class="section-title" style="margin: 0">Phase load</h2>
-                        <div style="display: flex; gap: 6px">
-                            {% for h in [1, 6, 24, 168] %}<a class="pill {{ 'on' if h == phase_hours else '' }}" href="{{ url_for('borehole_detail', hours=h) }}" style="text-decoration: none">{{ '7 days' if h == 168 else (h|string ~ ' h') }}</a>{% endfor %}
+                        <div class="phase-range" role="group" aria-label="Time range">
+                            {% for h in [1, 6, 24, 168] %}<button type="button" class="{{ 'on' if h == phase_hours else '' }}" data-hours="{{ h }}" aria-pressed="{{ 'true' if h == phase_hours else 'false' }}">{{ '7 days' if h == 168 else (h|string ~ ' h') }}</button>{% endfor %}
                         </div>
                     </div>
+                    <div class="phase-legend" id="phaseLegend" aria-live="off"></div>
                     <div class="chart-head">
-                        <div class="hint" style="margin: 0">Highest amps on each phase{% if phase_hours <= 6 %} each minute{% elif phase_hours <= 24 %} in each 5 minutes{% else %} in each half hour{% endif %}.{% if bh.power_fuse %} Red dashed line is the {{ bh.power_fuse }} A fuse.{% endif %} Scroll or pinch to zoom, drag to move.</div>
+                        <div class="hint" id="phaseHint" style="margin: 0"></div>
                         <div class="phase-tools">
                             <button type="button" id="phaseZoomIn" aria-label="Zoom in">+</button>
                             <button type="button" id="phaseZoomOut" aria-label="Zoom out">&minus;</button>
@@ -10561,6 +10634,20 @@ BOREHOLE_DETAIL_HTML = """
                     </div>
                     <div class="phase-canvas"><canvas id="phaseCanvas"></canvas></div>
                 </section>
+                {% if bh.cost_set %}
+                <section class="chart-card wp-chart" data-live="costdays">
+                    <div class="chart-head"><h2 class="section-title" style="margin: 0">Electricity by day</h2>
+                        <a class="hint" href="{{ url_for('office_electricity_view') }}">Prices</a></div>
+                    {% if bh.cost_days %}
+                    <table class="cost-table">
+                        <thead><tr><th>Day</th><th>In kWh</th>{% if bh.cost_days[0].night %}<th>Night kWh</th>{% endif %}<th>Out kWh</th><th>Cost</th></tr></thead>
+                        <tbody>{% for d in bh.cost_days %}<tr><td>{{ d.label }}</td><td>{{ d.import }}</td>{% if d.night %}<td>{{ d.night }}</td>{% endif %}<td>{{ d.export }}</td><td><b>{{ d.cost }}</b></td></tr>{% endfor %}</tbody>
+                    </table>
+                    {% else %}
+                    <div class="hint">Each day is added here at midnight, starting tonight.</div>
+                    {% endif %}
+                </section>
+                {% endif %}
             </section>
         </div>
 
@@ -10574,9 +10661,12 @@ ssDayBars(document.getElementById('waterBars'), {
 });
 // Live readings: every 5 seconds fetch this page again and swap in the parts marked
 // data-live, leaving the threshold box and the water bars alone (so typing isn't lost).
+// Only one request at a time: a slow answer is never piled on top of.
 (function () {
+    let busy = false;
     async function refreshLive() {
-        if (document.hidden) return;
+        if (document.hidden || busy) return;
+        busy = true;
         try {
             const resp = await fetch(window.location.href, { cache: 'no-store' });
             if (!resp.ok) return;
@@ -10590,78 +10680,219 @@ ssDayBars(document.getElementById('waterBars'), {
                 if (fresh) el.className = fresh.className;
             });
         } catch (err) {
+        } finally {
+            busy = false;
         }
     }
     setInterval(refreshLive, 5000);
     document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshLive(); });
 })();
 
-// Phase chart: zoom with the mouse wheel, a pinch or the + / - buttons, drag to move
-// about, Full screen to fill the screen. New readings drop in every 5 seconds without
-// losing the zoom.
+// Phase chart. The range buttons switch in place (no page reload); zoom with the mouse
+// wheel, a pinch or + / -, drag to move along, Full screen to fill the screen. New
+// readings drop in every 5 seconds without losing the zoom.
 (function () {
-    const initial = {{ phase_chart|tojson }};
+    let current = {{ phase_chart|tojson }};
+    const fuse = {{ (bh.power_fuse or 0)|tojson }};
+    const apiUrl = '{{ url_for("borehole_phase_chart_api") }}';
     const canvas = document.getElementById('phaseCanvas');
     if (!canvas || typeof Chart === 'undefined') return;
-    const longRange = initial.hours > 24;
     const pad = (n) => (n < 10 ? '0' : '') + n;
     const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     function timeLabel(ms, withDay) {
         const d = new Date(ms);
         return (withDay ? days[d.getDay()] + ' ' : '') + pad(d.getHours()) + ':' + pad(d.getMinutes());
     }
+    const phases = (data) => data.series.filter((s) => !s.dashed);
+    function latest(values) {
+        for (let i = values.length - 1; i >= 0; i--) if (values[i] != null) return values[i];
+        return null;
+    }
     function datasets(data) {
         return data.series.map((s) => ({
-            label: s.name,
+            label: s.name, isFuse: !!s.dashed,
             data: data.times.map((t, i) => ({ x: t, y: s.values[i] })),
             borderColor: s.colour, backgroundColor: s.colour,
-            borderWidth: s.dashed ? 2 : 2.5, borderDash: s.dashed ? [8, 6] : [],
-            pointRadius: 0, pointHoverRadius: 4, spanGaps: false, tension: 0,
+            borderWidth: s.dashed ? 1.5 : 2, borderDash: s.dashed ? [6, 5] : [],
+            pointRadius: 0, pointHoverRadius: s.dashed ? 0 : 5, pointHoverBorderWidth: 2, pointHoverBorderColor: '#ffffff',
+            spanGaps: false, tension: 0,
         }));
+    }
+    function hintFor(hours) {
+        const per = hours <= 6 ? 'each minute' : (hours <= 24 ? 'in each 5 minutes' : 'in each half hour');
+        return 'Highest amps on each phase ' + per + '. Scroll or pinch to zoom, drag to move.';
+    }
+    function drawLegend(data) {
+        const box = document.getElementById('phaseLegend');
+        const parts = phases(data).map((s) => {
+            const v = latest(s.values);
+            return '<span class="key"><span class="swatch" style="background:' + s.colour + '"></span>' + s.name +
+                ' <b>' + (v == null ? '--' : v.toFixed(1) + ' A') + '</b></span>';
+        });
+        if (fuse) parts.push('<span class="key"><span class="swatch dash"></span>' + fuse + ' A fuse</span>');
+        box.innerHTML = parts.join('');
     }
     // Time labels on round minutes / hours, about 6 to 8 across, however far you zoom.
     const STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 180, 360, 720, 1440];
     function roundTimeTicks(scale) {
         const range = (scale.max - scale.min) / 60000;
-        const stepMin = STEPS.find((m) => range / m <= 8) || 1440;
+        const stepMin = STEPS.find((m) => range / m <= 7) || 1440;
         const step = stepMin * 60000;
         const offset = new Date(scale.min).getTimezoneOffset() * 60000;   // line up with local time
         const ticks = [];
         for (let t = Math.ceil((scale.min - offset) / step) * step + offset; t <= scale.max; t += step) ticks.push({ value: t });
         scale.ticks = ticks;
     }
-    const xMin = initial.times[0], xMax = initial.times[initial.times.length - 1];
+    // A thin vertical line where you're pointing, so all three phases read off one time.
+    const crosshair = {
+        id: 'crosshair',
+        afterDatasetsDraw(chart) {
+            const active = chart.tooltip && chart.tooltip.getActiveElements();
+            if (!active || !active.length) return;
+            const x = active[0].element.x, area = chart.chartArea, ctx = chart.ctx;
+            ctx.save();
+            ctx.strokeStyle = 'rgba(13,43,74,0.35)'; ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.moveTo(x, area.top); ctx.lineTo(x, area.bottom); ctx.stroke();
+            ctx.restore();
+        },
+    };
+    // Names at the right-hand end of each line, and the fuse line labelled on itself.
+    const endLabels = {
+        id: 'endLabels',
+        afterDatasetsDraw(chart) {
+            const ctx = chart.ctx, area = chart.chartArea;
+            ctx.save();
+            ctx.font = '600 13px Barlow, Helvetica, sans-serif';
+            ctx.textBaseline = 'middle';
+            const placed = [];
+            chart.data.datasets.forEach((ds, i) => {
+                const meta = chart.getDatasetMeta(i);
+                if (meta.hidden) return;
+                if (ds.isFuse) {
+                    const y = chart.scales.y.getPixelForValue(fuse);
+                    ctx.fillStyle = '#b23a3a'; ctx.textAlign = 'right';
+                    ctx.fillText(fuse + ' A fuse', area.right - 4, y - 9);
+                    return;
+                }
+                let pt = null;
+                for (let k = meta.data.length - 1; k >= 0; k--) {
+                    const el = meta.data[k];
+                    if (!el.skip && el.x <= area.right + 0.5 && el.x >= area.left) { pt = el; break; }
+                }
+                if (!pt) return;
+                let y = Math.min(Math.max(pt.y, area.top + 7), area.bottom - 7);
+                placed.forEach((py) => { if (Math.abs(py - y) < 14) y = py + (y >= py ? 14 : -14); });
+                placed.push(y);
+                ctx.fillStyle = '#31475e'; ctx.textAlign = 'left';
+                ctx.fillText(ds.label, area.right + 6, y);
+            });
+            ctx.restore();
+        },
+    };
     let zoomed = false;   // once you zoom or move, new readings stop moving the view
     const chart = new Chart(canvas, {
         type: 'line',
-        data: { datasets: datasets(initial) },
+        data: { datasets: datasets(current) },
+        plugins: [crosshair, endLabels],
         options: {
             responsive: true, maintainAspectRatio: false, animation: false, parsing: false, normalized: true,
+            layout: { padding: { right: 30, top: 4 } },
             interaction: { mode: 'index', intersect: false },
             scales: {
-                x: { type: 'linear', min: xMin, max: xMax, afterBuildTicks: roundTimeTicks,
-                     ticks: { maxRotation: 0, autoSkip: false, callback: (v) => timeLabel(v, longRange) } },
-                // 0 to 120 A, so the 100 A fuse line sits near the top (it goes higher only if a phase does).
-                y: { beginAtZero: true, suggestedMax: 120, ticks: { stepSize: 10 }, title: { display: true, text: 'Amps' } },
+                x: { type: 'linear', min: current.times[0], max: current.times[current.times.length - 1], afterBuildTicks: roundTimeTicks,
+                     grid: { display: false }, border: { color: '#c5d0dc' },
+                     ticks: { maxRotation: 0, autoSkip: false, color: '#4a6078', callback: (v) => timeLabel(v, current.hours > 24) } },
+                // 0 to 120 A, so the fuse line sits near the top (it goes higher only if a phase does).
+                y: { beginAtZero: true, suggestedMax: 120, ticks: { stepSize: 20, color: '#4a6078', callback: (v) => v + ' A' },
+                     grid: { color: '#edf1f5' }, border: { display: false } },
             },
             plugins: {
-                legend: { position: 'top', labels: { boxWidth: 18 } },
-                tooltip: { callbacks: {
-                    title: (items) => items.length ? timeLabel(items[0].parsed.x, true) : '',
-                    label: (item) => item.dataset.label + ': ' + (item.parsed.y == null ? '--' : item.parsed.y.toFixed(1) + ' A'),
-                } },
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: '#ffffff', titleColor: '#0d2b4a', bodyColor: '#0d2b4a', footerColor: '#4a6078',
+                    borderColor: '#c5d0dc', borderWidth: 1, padding: 10, boxPadding: 4, usePointStyle: true,
+                    filter: (item) => !item.dataset.isFuse,
+                    callbacks: {
+                        title: (items) => items.length ? timeLabel(items[0].parsed.x, true) : '',
+                        label: (item) => ' ' + item.dataset.label + '  ' + (item.parsed.y == null ? '--' : item.parsed.y.toFixed(1) + ' A'),
+                        labelColor: (item) => ({ borderColor: item.dataset.borderColor, backgroundColor: item.dataset.borderColor }),
+                        footer: (items) => {
+                            const vals = items.map((i) => i.parsed.y).filter((v) => v != null);
+                            return vals.length ? 'Highest ' + Math.max.apply(null, vals).toFixed(1) + ' A' : '';
+                        },
+                    },
+                },
                 zoom: {
                     // Zoom and move along the time only; amps always run from 0 to the top.
-                    limits: { x: { min: xMin, max: xMax, minRange: 5 * 60 * 1000 } },
+                    limits: { x: { min: current.times[0], max: current.times[current.times.length - 1], minRange: 5 * 60 * 1000 } },
                     pan: { enabled: true, mode: 'x', onPanComplete: () => { zoomed = true; } },
                     zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'x', onZoomComplete: () => { zoomed = true; } },
                 },
             },
         },
     });
+
+    function show(data, keepView) {
+        current = data;
+        const fresh = datasets(data);
+        fresh.forEach((ds, i) => {
+            if (chart.data.datasets[i]) chart.data.datasets[i].data = ds.data;
+            else chart.data.datasets.push(ds);
+        });
+        const first = data.times[0], newest = data.times[data.times.length - 1];
+        chart.options.plugins.zoom.limits.x.min = first;
+        chart.options.plugins.zoom.limits.x.max = newest;
+        if (!keepView) {
+            chart.options.scales.x.min = first;
+            chart.options.scales.x.max = newest;
+        }
+        chart.update('none');
+        drawLegend(data);
+        document.getElementById('phaseHint').textContent = hintFor(data.hours);
+    }
+
+    let busy = false;
+    async function load(hours, keepView) {
+        if (busy) return false;
+        busy = true;
+        try {
+            const resp = await fetch(apiUrl + '?hours=' + hours, { cache: 'no-store' });
+            if (!resp.ok) return false;
+            show(await resp.json(), keepView);
+            return true;
+        } catch (err) {
+            return false;
+        } finally {
+            busy = false;
+        }
+    }
+
+    // Range buttons: fetch just the chart's data and redraw, no page reload.
+    const range = document.querySelector('.phase-range');
+    range.addEventListener('click', async (e) => {
+        const btn = e.target.closest('button[data-hours]');
+        if (!btn || btn.classList.contains('on')) return;
+        const hours = parseInt(btn.dataset.hours, 10);
+        range.classList.add('busy');
+        busy = false;   // a range change goes ahead of any live refresh
+        if (await load(hours, false)) {
+            if (zoomed) { chart.resetZoom('none'); zoomed = false; show(current, false); }
+            range.querySelectorAll('button').forEach((b) => {
+                const on = b === btn;
+                b.classList.toggle('on', on);
+                b.setAttribute('aria-pressed', on ? 'true' : 'false');
+            });
+            // Keep the choice if the page is reloaded (and for the live refresh above).
+            const url = new URL(window.location.href);
+            url.searchParams.set('hours', hours);
+            history.replaceState(null, '', url);
+        }
+        range.classList.remove('busy');
+    });
+
     document.getElementById('phaseZoomIn').addEventListener('click', () => { chart.zoom(1.4); zoomed = true; });
     document.getElementById('phaseZoomOut').addEventListener('click', () => { chart.zoom(1 / 1.4); zoomed = true; });
-    document.getElementById('phaseReset').addEventListener('click', () => { chart.resetZoom(); zoomed = false; refreshPhase(); });
+    document.getElementById('phaseReset').addEventListener('click', () => { chart.resetZoom('none'); zoomed = false; show(current, false); });
     const card = document.getElementById('phaseCard');
     const fullBtn = document.getElementById('phaseFull');
     function setFull(on) {
@@ -10673,30 +10904,10 @@ ssDayBars(document.getElementById('waterBars'), {
     fullBtn.addEventListener('click', () => setFull(!card.classList.contains('full')));
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && card.classList.contains('full')) setFull(false); });
 
-    async function refreshPhase() {
-        if (document.hidden) return;
-        try {
-            const resp = await fetch('{{ url_for("borehole_phase_chart_api") }}?hours=' + initial.hours, { cache: 'no-store' });
-            if (!resp.ok) return;
-            const data = await resp.json();
-            const fresh = datasets(data);
-            fresh.forEach((ds, i) => {
-                if (chart.data.datasets[i]) chart.data.datasets[i].data = ds.data;
-                else chart.data.datasets.push(ds);
-            });
-            // You can always move up to the newest minute. Unzoomed, the chart follows it;
-            // zoomed in, it stays where you put it.
-            const newest = data.times[data.times.length - 1];
-            chart.options.plugins.zoom.limits.x.max = newest;
-            if (!zoomed) {
-                chart.options.scales.x.min = data.times[0];
-                chart.options.scales.x.max = newest;
-            }
-            chart.update('none');
-        } catch (err) {
-        }
-    }
-    setInterval(refreshPhase, 5000);
+    drawLegend(current);
+    document.getElementById('phaseHint').textContent = hintFor(current.hours);
+    // New readings: unzoomed, the chart follows the newest minute; zoomed in, it stays put.
+    setInterval(() => { if (!document.hidden) load(current.hours, zoomed); }, 5000);
 })();
 </script>
 </body>
@@ -12140,6 +12351,42 @@ def office_home_shed(row, meta, split=""):
     }
 
 
+def borehole_view(bh):
+    """The Water & Power figures as the home tile and the Water & Power page show them,
+    from build_borehole_row() alone, so the page doesn't have to build every shed."""
+    borehole = {
+        "status": "Alarm" if bh.get("alarm_active") else ("Online" if bh.get("tile_state") == "online" else "Not syncing"),
+        "kind": "alarm" if bh.get("alarm_active") else ("ok" if bh.get("tile_state") == "online" else "offline"),
+        "water": bh.get("water_lpm", "--"),
+        "daily": bh.get("daily_water", "--"),
+        "weekly": bh.get("weekly_water", "--"),
+        "updated": bh.get("updated", "--"),
+        "alarm": bh.get("alarm_msg", ""),
+        "has_power": bh.get("has_power", False),
+        "power_kw": bh.get("power_kw", "--"),
+        "power_kw_short": bh.get("power_kw_short", "--"),
+        "power_kw_abs": bh.get("power_kw_abs", "--"),
+        "power_direction": bh.get("power_direction", ""),
+        "power_export_today": bh.get("power_export_today", "--"),
+        "power_export_yesterday": bh.get("power_export_yesterday", "--"),
+        "power_today": bh.get("power_today", "--"),
+        "power_yesterday": bh.get("power_yesterday", "--"),
+        "power_phases": bh.get("power_phases", []),
+        "power_fuse": bh.get("power_fuse", 0),
+    }
+    borehole.update(power_cost_figures((latest_borehole_live() or {}).get("power")))
+    # Live flow glows against the office's low-flow setting; 6am-to-6am totals.
+    water_panel = borehole_water_panel(borehole)
+    borehole.update({
+        "water_edge": "ok" if water_panel["glow"] == "flow-green" else "alarm",
+        "water_today": water_panel["today"],
+        "water_yesterday": water_panel["yesterday"],
+        "water_week": water_panel["week"],
+    })
+
+    return borehole
+
+
 def office_home_context(tv=False):
     ctx = build_dashboard_context()
     meta_map = load_controller_meta()
@@ -12209,34 +12456,7 @@ def office_home_context(tv=False):
         {"label": "Need a look", "value": str(len(alarms)), "sub": "Alarms and warnings", "tone": "amber" if alarms else "navy"},
     ]
 
-    borehole = {
-        "status": "Alarm" if bh.get("alarm_active") else ("Online" if bh.get("tile_state") == "online" else "Not syncing"),
-        "kind": "alarm" if bh.get("alarm_active") else ("ok" if bh.get("tile_state") == "online" else "offline"),
-        "water": bh.get("water_lpm", "--"),
-        "daily": bh.get("daily_water", "--"),
-        "weekly": bh.get("weekly_water", "--"),
-        "updated": bh.get("updated", "--"),
-        "alarm": bh.get("alarm_msg", ""),
-        "has_power": bh.get("has_power", False),
-        "power_kw": bh.get("power_kw", "--"),
-        "power_kw_short": bh.get("power_kw_short", "--"),
-        "power_kw_abs": bh.get("power_kw_abs", "--"),
-        "power_direction": bh.get("power_direction", ""),
-        "power_export_today": bh.get("power_export_today", "--"),
-        "power_export_yesterday": bh.get("power_export_yesterday", "--"),
-        "power_today": bh.get("power_today", "--"),
-        "power_yesterday": bh.get("power_yesterday", "--"),
-        "power_phases": bh.get("power_phases", []),
-        "power_fuse": bh.get("power_fuse", 0),
-    }
-    # Live flow glows against the office's low-flow setting; 6am-to-6am totals.
-    water_panel = borehole_water_panel(borehole)
-    borehole.update({
-        "water_edge": "ok" if water_panel["glow"] == "flow-green" else "alarm",
-        "water_today": water_panel["today"],
-        "water_yesterday": water_panel["yesterday"],
-        "water_week": water_panel["week"],
-    })
+    borehole = borehole_view(bh)
 
     farm_name = farm_identity()[0]
     if farm_name in ["", "Farm"]:
@@ -12527,6 +12747,7 @@ def office_settings_view():
         farm_health=farm_health,
         controller_backup_rows=controller_backup_rows,
         office_shelly=office_shelly_settings_state(),
+        electricity_summary=(lambda r: ("%gp a unit" % r["unit_p"]) + (" · night %gp" % r["night_p"] if r["night_p"] else "") if r["unit_p"] else "Not set")(electricity_rates()),
         lights_alarm_summary=(lambda l: ("%d min after sunset" % l["after_sunset_min"]) if l["on"] else "Off")(lights_alarm_settings()),
         auger_alarm_summary=(lambda a: "Run %s · Not run %s" % (
             ("%d min" % a["run_max_min"]) if a["run_on"] else "off",
@@ -14021,7 +14242,7 @@ def requested_phase_hours():
 
 @app.route("/api/borehole/phase-chart")
 def borehole_phase_chart_api():
-    bh = office_home_context(tv=False).get("borehole", {})
+    bh = borehole_view(build_borehole_row())
     return jsonify(phase_chart_data(requested_phase_hours(), bh.get("power_fuse") or 0))
 
 
@@ -14154,6 +14375,11 @@ def office_shelly_poll_once():
         live["power_received_ts"] = now_ts
         live["office_power_track"] = track
         save_borehole_live(live)
+        if reading is not None:
+            try:
+                update_power_costs(power, now_ts)
+            except Exception:
+                pass
     if finished:
         store_borehole_power_minutes(finished)
 
@@ -14637,6 +14863,194 @@ def office_lights_alarm_save():
     return redirect(url_for("office_lights_alarm_view", ok=1, msg="Saved"))
 
 
+# ---------------------------------------------------------------------------
+# Electricity prices: unit rate (and an optional cheaper night rate), standing charge,
+# export (solar) rate and VAT, so the Water & Power page and tile can show what each day
+# cost. The meter only gives running kWh totals, so night-rate kWh are counted here as
+# readings arrive; anything not counted at night is charged at the day rate. Each finished
+# day is kept (with the prices it was charged at) for the daily table.
+# ---------------------------------------------------------------------------
+ELECTRICITY_DEFAULTS = {"unit_p": 0.0, "night_p": 0.0, "night_from": "00:00", "night_to": "07:00",
+                        "standing_p": 0.0, "export_p": 0.0, "vat_pct": 0.0}
+POWER_COST_TRACK_FILE = "power_cost_track.json"
+POWER_DAYS_FILE = "power_days.ndjson"
+_power_cost_lock = threading.Lock()
+
+
+def electricity_rates():
+    saved = load_office_config().get("electricity")
+    out = dict(ELECTRICITY_DEFAULTS)
+    if isinstance(saved, dict):
+        for key, default in ELECTRICITY_DEFAULTS.items():
+            if key in saved:
+                if isinstance(default, float):
+                    try:
+                        out[key] = max(0.0, float(saved[key]))
+                    except Exception:
+                        pass
+                elif re.match(r"^\d{1,2}:\d{2}$", str(saved[key] or "")):
+                    out[key] = str(saved[key])
+    return out
+
+
+def electricity_rates_set(rates=None):
+    return (rates or electricity_rates())["unit_p"] > 0
+
+
+def _minutes_of(hhmm):
+    hh, mm = [int(x) for x in hhmm.split(":")]
+    return (hh % 24) * 60 + mm % 60
+
+
+def is_night_rate_time(ts, rates):
+    if rates["night_p"] <= 0:
+        return False
+    now = datetime.fromtimestamp(ts)
+    m = now.hour * 60 + now.minute
+    start, end = _minutes_of(rates["night_from"]), _minutes_of(rates["night_to"])
+    if start == end:
+        return False
+    return start <= m < end if start < end else (m >= start or m < end)
+
+
+def electricity_cost(import_kwh, export_kwh, night_kwh, rates):
+    """Pounds for one day: import (day and night units) and standing charge, with VAT,
+    less the export credit. None when no unit rate is set or there's no import figure."""
+    if not electricity_rates_set(rates) or import_kwh is None:
+        return None
+    night = min(max(0.0, night_kwh or 0.0), import_kwh) if rates["night_p"] > 0 else 0.0
+    day = max(0.0, import_kwh - night)
+    vat = 1.0 + rates["vat_pct"] / 100.0
+    energy = (day * rates["unit_p"] + night * rates["night_p"]) * vat / 100.0
+    standing = rates["standing_p"] * vat / 100.0
+    export = (export_kwh or 0.0) * rates["export_p"] / 100.0
+    return {"import": round(energy, 2), "standing": round(standing, 2), "export": round(export, 2),
+            "net": round(energy + standing - export, 2), "night_kwh": round(night, 2), "day_kwh": round(day, 2)}
+
+
+def load_power_cost_track():
+    data = read_json_file(os.path.join(DATA_DIR, POWER_COST_TRACK_FILE), {})
+    return data if isinstance(data, dict) else {}
+
+
+def update_power_costs(power, now_ts=None):
+    """Called with each new supply reading: counts night-rate kWh, and when the day
+    changes keeps yesterday's totals and cost."""
+    import_kwh = _num((power or {}).get("today_kwh"))
+    if import_kwh is None:
+        return
+    export_kwh = _num(power.get("today_export_kwh"))
+    now_ts = int(now_ts or time.time())
+    today = datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d")
+    rates = electricity_rates()
+    with _power_cost_lock:
+        track = load_power_cost_track()
+        if track.get("date") != today:
+            if track.get("date") and track.get("last_import") is not None:
+                row = {"date": track["date"], "import_kwh": round(float(track["last_import"]), 2),
+                       "export_kwh": round(float(track.get("last_export") or 0.0), 2),
+                       "night_kwh": round(float(track.get("night_kwh") or 0.0), 2)}
+                cost = electricity_cost(row["import_kwh"], row["export_kwh"], row["night_kwh"], rates)
+                if cost:
+                    row["cost"] = cost
+                    row["rates"] = rates
+                append_named_json_line(POWER_DAYS_FILE, row)
+            track = {"date": today, "night_kwh": 0.0, "last_import": import_kwh, "last_export": export_kwh}
+        else:
+            last = _num(track.get("last_import"))
+            step = import_kwh - last if last is not None else 0.0
+            if 0 < step < 1000 and is_night_rate_time(now_ts, rates):
+                track["night_kwh"] = round(float(track.get("night_kwh") or 0.0) + step, 4)
+            track["last_import"] = import_kwh
+            track["last_export"] = export_kwh
+        write_json_file_atomic(os.path.join(DATA_DIR, POWER_COST_TRACK_FILE), track)
+
+
+def power_days(limit=7):
+    rows = [r for r in read_recent_json_lines(POWER_DAYS_FILE, limit=limit * 3) if isinstance(r, dict) and r.get("date")]
+    latest = {}
+    for r in rows:
+        latest[r["date"]] = r
+    return [latest[k] for k in sorted(latest)][-limit:]
+
+
+def money(value):
+    if value is None:
+        return "--"
+    return ("-£%.2f" % -value) if value < 0 else ("£%.2f" % value)
+
+
+def power_cost_figures(power):
+    """Today's and yesterday's cost for the Water & Power page and tile."""
+    rates = electricity_rates()
+    out = {"cost_set": electricity_rates_set(rates), "cost_today": "", "cost_yesterday": "",
+           "cost_today_detail": "", "cost_yesterday_detail": "", "cost_days": []}
+    if not out["cost_set"]:
+        return out
+    power = power or {}
+    track = load_power_cost_track()
+    today = datetime.now().strftime("%Y-%m-%d")
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    night_today = float(track.get("night_kwh") or 0.0) if track.get("date") == today else 0.0
+
+    def detail(c):
+        bits = ["%s units" % money(c["import"]), "%s standing" % money(c["standing"])]
+        if c["export"]:
+            bits.append("%s export" % money(-c["export"]))
+        return " · ".join(bits)
+    c = electricity_cost(_num(power.get("today_kwh")), _num(power.get("today_export_kwh")), night_today, rates)
+    if c:
+        out["cost_today"], out["cost_today_detail"] = money(c["net"]), detail(c)
+    days = power_days(8)
+    row = next((r for r in days if r["date"] == yesterday), None)
+    if row and row.get("cost"):
+        c = row["cost"]
+    else:
+        c = electricity_cost(_num(power.get("yesterday_kwh")), _num(power.get("yesterday_export_kwh")), 0.0, rates)
+    if c:
+        out["cost_yesterday"], out["cost_yesterday_detail"] = money(c["net"]), detail(c)
+    for r in reversed(days):
+        if r["date"] == today:
+            continue
+        c = r.get("cost") or electricity_cost(r.get("import_kwh"), r.get("export_kwh"), r.get("night_kwh"), rates)
+        out["cost_days"].append({
+            "label": datetime.strptime(r["date"], "%Y-%m-%d").strftime("%a %d %b"),
+            "import": "%.1f" % float(r.get("import_kwh") or 0), "export": "%.1f" % float(r.get("export_kwh") or 0),
+            "night": "%.1f" % float(r.get("night_kwh") or 0) if rates["night_p"] > 0 else "",
+            "cost": money(c["net"]) if c else "--",
+        })
+    out["cost_days"] = out["cost_days"][:7]
+    return out
+
+
+@app.route("/settings/electricity")
+def office_electricity_view():
+    return render_template_string(
+        OFFICE_SUBSETTINGS_HTML, page="electricity", title="Electricity prices", rates=electricity_rates(),
+        status_msg=request.args.get("msg", ""), status_ok=request.args.get("ok", "1") == "1",
+    )
+
+
+@app.route("/settings/electricity", methods=["POST"])
+def office_electricity_save():
+    cfg = load_office_config()
+    out = {}
+    try:
+        for key in ["unit_p", "night_p", "standing_p", "export_p", "vat_pct"]:
+            raw = str(request.form.get(key, "") or "").strip()
+            out[key] = max(0.0, min(1000.0, float(raw))) if raw else 0.0
+    except Exception:
+        return redirect(url_for("office_electricity_view", ok=0, msg="Enter prices as numbers, in pence (e.g. 24.5)"))
+    for key in ["night_from", "night_to"]:
+        raw = str(request.form.get(key, "") or "").strip()
+        if raw and not re.match(r"^\d{1,2}:\d{2}$", raw):
+            return redirect(url_for("office_electricity_view", ok=0, msg="Enter the night times as HH:MM"))
+        out[key] = raw or ELECTRICITY_DEFAULTS[key]
+    cfg["electricity"] = out
+    save_office_config(cfg)
+    return redirect(url_for("office_electricity_view", ok=1, msg="Saved"))
+
+
 @app.route("/settings/supply")
 def office_supply_settings_view():
     return render_template_string(
@@ -14703,6 +15117,10 @@ def borehole_sync_api_post():
         merged_live["power"] = power
         merged_live["power_received_ts"] = int(time.time())
         save_borehole_live(merged_live)
+        try:
+            update_power_costs(power)
+        except Exception:
+            pass
 
     hourly = payload.get("hourly")
     if isinstance(hourly, dict):
@@ -14796,7 +15214,7 @@ def shed_current_crop_daily_api(shed_no):
 
 @app.route("/borehole")
 def borehole_detail():
-    bh = office_home_context(tv=False).get("borehole", {})
+    bh = borehole_view(build_borehole_row())
     rows = get_borehole_hourly_history(max_points=24 * 45)
     bar_epochs, water_values = hourly_bar_series(rows, "water")
     phase_hours = requested_phase_hours()
