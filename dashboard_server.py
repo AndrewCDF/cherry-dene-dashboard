@@ -7946,11 +7946,11 @@ setInterval(pollNotifications, 8000);
 OFFICE_CARDS_HTML = """
 <section aria-label="Farm summary" class="ss-summary">
   {% for m in summary %}
-  <div class="ss-sum">
-    <div class="ss-sum-label">{{ m.label }}</div>
+  {% if m.href and (pc or not tv) %}<a class="ss-sum ss-sum-link" href="{{ m.href }}">{% else %}<div class="ss-sum">{% endif %}
+    <div class="ss-sum-label">{{ m.label }}{% if m.href and (pc or not tv) %} <span class="ss-sum-go" aria-hidden="true">›</span>{% endif %}</div>
     <div class="ss-sum-value tone-{{ m.tone }}">{{ m.value }}</div>
     <div class="ss-sum-sub">{{ m.sub }}</div>
-  </div>
+  {% if m.href and (pc or not tv) %}</a>{% else %}</div>{% endif %}
   {% endfor %}
 </section>
 
@@ -7958,7 +7958,7 @@ OFFICE_CARDS_HTML = """
 <section aria-label="Needs a look" class="ss-alarms">
   <span class="ss-alarms-head">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#c76300" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2 20h20L12 3z"></path><path d="M12 10v4"></path><path d="M12 17h.01"></path></svg>
-    {{ alarms|length }} need{% if alarms|length == 1 %}s{% endif %} a look
+    {% if pc or not tv %}<a href="/alarms" style="color: inherit">{{ alarms|length }} need{% if alarms|length == 1 %}s{% endif %} a look ›</a>{% else %}{{ alarms|length }} need{% if alarms|length == 1 %}s{% endif %} a look{% endif %}
   </span>
   {# One line. When they don't all fit, ssTicker() scrolls them across like a ticker. #}
   <div class="ss-ticker"><div class="ss-ticker-track" data-sig="{{ alarms|map(attribute='text')|join(' | ') }}">
@@ -8122,6 +8122,9 @@ OFFICE_HOME_HTML = """
   /* Summary, alarm bar and shed tiles spaced evenly (the TV sets its own below). */
   body:not(.tv) #ssCards { display: flex; flex-direction: column; gap: 16px; }
   .ss-summary { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
+  a.ss-sum-link { color: inherit; text-decoration: none; cursor: pointer; }
+  a.ss-sum-link:hover { box-shadow: 0 0 0 2px #f3b366; }
+  .ss-sum-go { float: right; font-size: 18px; line-height: 1; color: var(--muted); }
   .ss-sum { background: #ffffff; border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 4px; }
   .ss-sum-label { font-size: 13px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
   .ss-sum-value { font-size: 28px; font-weight: 700; }
@@ -9286,6 +9289,108 @@ setTimeout(() => {
         el.style.display = 'none';
     });
 }, 10000);
+</script>
+</body>
+</html>
+"""
+
+
+OFFICE_ALARMS_HTML = """
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Need a look</title>
+    {{ office_page_head }}
+    <style>
+        .al-wrap { max-width: 900px; }
+        .al-list { border-radius: 14px; background: var(--card); overflow: hidden; }
+        .al-item { display: flex; align-items: center; gap: 14px; padding: 12px 16px; border-top: 1px solid var(--track); }
+        .al-item:first-child { border-top: 0; }
+        .al-dot { flex: none; width: 12px; height: 12px; border-radius: 50%; background: var(--amber); }
+        .al-item.alarm .al-dot { background: var(--red); }
+        .al-text { flex: 1; min-width: 0; }
+        .al-source { font-size: 14px; font-weight: 700; color: var(--navy); text-decoration: none; }
+        .al-msg { font-size: 17px; color: var(--text); overflow-wrap: anywhere; }
+        .al-item form { margin: 0; flex: none; }
+        .al-item button { width: auto; min-height: 44px; padding: 0 18px; font-size: 16px; }
+        .al-empty { padding: 22px 18px; font-size: 17px; color: var(--muted); }
+        .al-dismissed .al-item { opacity: 0.7; }
+        .al-dismissed .al-dot { background: var(--track) !important; }
+    </style>
+</head>
+<body>
+    {{ office_topbar('Need a look') }}
+    <div class="wrap al-wrap" id="alPage">
+        <section>
+            <h2 class="section-title">{{ alarms|length }} need{% if alarms|length == 1 %}s{% endif %} a look</h2>
+            <div class="al-list">
+                {% for a in alarms %}
+                <div class="al-item {{ a.level or 'warn' }}">
+                    <span class="al-dot" aria-hidden="true"></span>
+                    <div class="al-text">
+                        {% if a.href %}<a class="al-source" href="{{ a.href }}">{{ a.source }} ›</a>{% else %}<span class="al-source">{{ a.source }}</span>{% endif %}
+                        <div class="al-msg">{{ a.message }}</div>
+                    </div>
+                    {% if a.kind %}
+                    <form method="post" action="{{ url_for('usage_drop_dismiss') }}" title="Comes back if the {{ a.kind }} is still out over the next few hours">
+                        <input type="hidden" name="shed_no" value="{{ a.shed_no }}"><input type="hidden" name="kind" value="{{ a.kind }}"><input type="hidden" name="next" value="/alarms">
+                        <button type="submit">Dismiss</button>
+                    </form>
+                    {% else %}
+                    <form method="post" action="{{ url_for('office_alarm_dismiss') }}" title="Hidden until it clears; if it comes back it shows again">
+                        <input type="hidden" name="id" value="{{ a.id }}"><input type="hidden" name="next" value="/alarms">
+                        <button type="submit">Dismiss</button>
+                    </form>
+                    {% endif %}
+                </div>
+                {% else %}
+                <div class="al-empty">Nothing needs a look right now.</div>
+                {% endfor %}
+            </div>
+            <div class="hint" style="margin: 8px 4px 0">Dismissing hides an item from the list, the count and the ticker until it clears. If it comes back later it shows again. Water alarms come back if the water is still out over the next few hours.</div>
+        </section>
+        {% if dismissed %}
+        <section class="al-dismissed">
+            <h2 class="section-title">Dismissed, still active ({{ dismissed|length }})</h2>
+            <div class="al-list">
+                {% for a in dismissed %}
+                <div class="al-item">
+                    <span class="al-dot" aria-hidden="true"></span>
+                    <div class="al-text">
+                        {% if a.href %}<a class="al-source" href="{{ a.href }}">{{ a.source }} ›</a>{% else %}<span class="al-source">{{ a.source }}</span>{% endif %}
+                        <div class="al-msg">{{ a.message }}</div>
+                    </div>
+                    <form method="post" action="{{ url_for('office_alarm_restore') }}">
+                        <input type="hidden" name="id" value="{{ a.id }}"><input type="hidden" name="next" value="/alarms">
+                        <button type="submit">Show again</button>
+                    </form>
+                </div>
+                {% endfor %}
+            </div>
+        </section>
+        {% endif %}
+    </div>
+<script>
+// Keep the list current: every 10 seconds swap in the latest (not while a button is being pressed).
+(function () {
+    let busy = false;
+    setInterval(async () => {
+        if (document.hidden || busy) return;
+        busy = true;
+        try {
+            const resp = await fetch(window.location.pathname, { cache: 'no-store' });
+            if (resp.ok) {
+                const doc = new DOMParser().parseFromString(await resp.text(), 'text/html');
+                const fresh = doc.getElementById('alPage');
+                if (fresh) document.getElementById('alPage').replaceWith(fresh);
+            }
+        } catch (err) {
+        } finally {
+            busy = false;
+        }
+    }, 10000);
+})();
 </script>
 </body>
 </html>
@@ -12412,14 +12517,22 @@ def office_home_context(tv=False):
     # Everything that needs a look, one entry each: every alarm on a shed (from the
     # controller and from the office), then its warnings (no water, bin low, temperature,
     # humidity), so one never hides another.
+    # Each has an id (where it's from and what kind), so it can be dismissed.
     alarms = []
     alarms_map = active_alarms_by_shed()
     usage = usage_drop_alarms_by_shed()
+
+    def add(source, msg, alarm_id, href=None, **extra):
+        item = {"text": "%s · %s" % (source, msg), "source": source, "message": msg, "id": alarm_id, "href": href}
+        item.update(extra)
+        alarms.append(item)
     for s in sheds:
         shed_key = shed_name_from_number(s["shed_no"])
+        href = "/shed/%d" % s["shed_no"]
+        prefix = "shed%d:" % s["shed_no"]
         if s["kind"] == "offline":
             if s["status"] == "Not syncing" and s["updated"] not in ["", "--"]:
-                alarms.append({"text": "%s · not syncing since %s" % (s["name"], s["updated"])})
+                add(s["name"], "not syncing since %s" % s["updated"], prefix + "not_syncing", href, level="warn")
             continue
         dismissable = {d["message"]: d for d in usage.get(shed_key) or []}
         rows = list(alarms_map.get(shed_key) or []) + list(controller_alarms_for_shed(meta_map, s["shed_no"]))
@@ -12429,21 +12542,31 @@ def office_home_context(tv=False):
             if not msg or msg in seen:
                 continue
             seen.add(msg)
-            item = {"text": "%s · %s" % (s["name"], msg)}
-            if msg in dismissable:          # water alarms can be dismissed
-                item.update({"shed_no": s["shed_no"], "kind": dismissable[msg]["kind"]})
-            alarms.append(item)
+            extra = {"level": "alarm"}
+            if msg in dismissable:          # water alarms: dismissed the water way (see usage_drop_dismiss)
+                extra.update({"shed_no": s["shed_no"], "kind": dismissable[msg]["kind"]})
+            add(s["name"], msg, prefix + str(rec.get("alarm_key") or msg), href, **extra)
         if not s["live"]:
             continue
-        for flag, text in [(s["water_edge"] == "alarm", "no water"), (s["bin_edge"] == "warn", "bin low"),
-                           (s["temp_edge"] != "ok", "check temp"), (s["rh_edge"] != "ok", "check humidity")]:
+        for flag, text, key in [(s["water_edge"] == "alarm", "no water", "no_water"), (s["bin_edge"] == "warn", "bin low", "bin_low"),
+                                (s["temp_edge"] != "ok", "check temp", "check_temp"), (s["rh_edge"] != "ok", "check humidity", "check_humidity")]:
             if flag:
-                alarms.append({"text": "%s · %s" % (s["name"], text)})
+                add(s["name"], text, prefix + key, href, level="warn")
     bh = ctx.get("borehole", {}) or {}
     if bh.get("alarm_active"):
-        bh_msgs = [str(r.get("message") or "").strip() for r in active_borehole_alarms()] or [bh.get("alarm_msg", "")]
-        for msg in dict.fromkeys(m for m in bh_msgs if m):
-            alarms.append({"text": "Water & Power · %s" % msg})
+        bh_rows = [(str(r.get("alarm_key") or ""), str(r.get("message") or "").strip()) for r in active_borehole_alarms()]
+        bh_rows = bh_rows or [("", str(bh.get("alarm_msg", "")))]
+        seen = set()
+        for key, msg in bh_rows:
+            if msg and msg not in seen:
+                seen.add(msg)
+                add("Water & Power", msg, "wp:" + (key or msg), "/borehole", level="alarm")
+
+    # Dismissed ones are left out of the count and the ticker (they're listed on the alarms
+    # page). A dismissal lasts until that alarm clears, so if it comes back it shows again.
+    dismissed_map = sync_alarm_dismissals([a["id"] for a in alarms])
+    alarms_dismissed = [a for a in alarms if a["id"] in dismissed_map and not a.get("kind")]
+    alarms = [a for a in alarms if a not in alarms_dismissed]
 
     overall = ctx.get("overall", {}) or {}
     active_sheds = len([s for s in sheds if s["live"]])
@@ -12453,7 +12576,7 @@ def office_home_context(tv=False):
         {"label": "Water this crop", "value": _with_unit(overall.get("water"), "L"), "sub": "Crop to date", "tone": "blue"},
         {"label": "Feed this crop", "value": _with_unit(overall.get("feed"), "kg"), "sub": "Crop to date", "tone": "green"},
         {"label": "Mortality", "value": overall.get("mortality_display", "--"), "sub": "This crop", "tone": "navy"},
-        {"label": "Need a look", "value": str(len(alarms)), "sub": "Alarms and warnings", "tone": "amber" if alarms else "navy"},
+        {"label": "Need a look", "value": str(len(alarms)), "sub": "Alarms and warnings", "tone": "amber" if alarms else "navy", "href": "/alarms"},
     ]
 
     borehole = borehole_view(bh)
@@ -12468,6 +12591,7 @@ def office_home_context(tv=False):
         "header_active": ctx.get("header_class") == "active",
         "summary": summary,
         "alarms": alarms,
+        "alarms_dismissed": alarms_dismissed,
         "sheds": sheds,
         "borehole": borehole,
     }
@@ -14607,6 +14731,60 @@ def usage_drop_alarms_by_shed():
             by_shed[shed_name] = rows
     cache.update({"ts": now_ts, "pct": settings, "by_shed": by_shed})
     return by_shed
+
+
+ALARM_DISMISSALS_FILE = "alarm_dismissals.json"
+_alarm_dismiss_lock = threading.Lock()
+
+
+def load_alarm_dismissals():
+    data = read_json_file(os.path.join(DATA_DIR, ALARM_DISMISSALS_FILE), {})
+    return data if isinstance(data, dict) else {}
+
+
+def sync_alarm_dismissals(active_ids):
+    """The dismissals still in force: one whose alarm has cleared is forgotten, so the
+    alarm shows again if it comes back."""
+    with _alarm_dismiss_lock:
+        data = load_alarm_dismissals()
+        active = set(active_ids)
+        keep = {k: v for k, v in data.items() if k in active}
+        if keep != data:
+            write_json_file_atomic(os.path.join(DATA_DIR, ALARM_DISMISSALS_FILE), keep)
+        return keep
+
+
+def safe_back(target, default="/alarms"):
+    target = str(target or "")
+    return target if target.startswith("/") and not target.startswith("//") else default
+
+
+@app.route("/alarms")
+def office_alarms_view():
+    ctx = office_home_context(tv=False)
+    return render_template_string(OFFICE_ALARMS_HTML, alarms=ctx["alarms"], dismissed=ctx["alarms_dismissed"],
+                                  status_msg=request.args.get("msg", ""))
+
+
+@app.route("/alarms/dismiss", methods=["POST"])
+def office_alarm_dismiss():
+    alarm_id = str(request.form.get("id", "") or "").strip()
+    if alarm_id:
+        with _alarm_dismiss_lock:
+            data = load_alarm_dismissals()
+            data[alarm_id] = {"ts": int(time.time())}
+            write_json_file_atomic(os.path.join(DATA_DIR, ALARM_DISMISSALS_FILE), data)
+    return redirect(safe_back(request.form.get("next")))
+
+
+@app.route("/alarms/restore", methods=["POST"])
+def office_alarm_restore():
+    alarm_id = str(request.form.get("id", "") or "").strip()
+    with _alarm_dismiss_lock:
+        data = load_alarm_dismissals()
+        if data.pop(alarm_id, None) is not None:
+            write_json_file_atomic(os.path.join(DATA_DIR, ALARM_DISMISSALS_FILE), data)
+    return redirect(safe_back(request.form.get("next")))
 
 
 @app.route("/alarms/usage-drop/dismiss", methods=["POST"])
