@@ -7991,25 +7991,26 @@ OFFICE_CARDS_HTML = """
     {% if tv and pc %}</a>{% elif tv %}</div>{% else %}</button>{% endif %}
 
     {% if s.live or s.readings or tv %}
-    {# Readings show whenever the controller reports; out of crop they're shown plain
-       (no green / amber / red edges), since nothing is being judged or recorded. #}
+    {# Readings show whenever the controller reports. Out of crop the tiles go amber
+       (nothing is being judged against targets or recorded); no readings: plain. #}
     {% set roff = not s.readings %}
     {% set plain = not s.live %}
+    {% set quiet = 'none' if roff else 'warn' %}
     <div class="ss-tiles">
-      <div class="ss-tile edge-{{ 'none' if plain else s.temp_edge }}">
+      <div class="ss-tile edge-{{ quiet if plain else s.temp_edge }}">
         <div class="ss-tile-main"><span class="ss-tile-label">Temp °C</span><span class="ss-big">{{ '--' if roff else s.temp }}</span></div>
         <div class="ss-hilo"><span>H <b>{{ '--' if roff else s.temp_hi }}</b></span><span>L <b>{{ '--' if roff else s.temp_lo }}</b></span></div>
       </div>
-      <div class="ss-tile edge-{{ 'none' if plain else s.rh_edge }}">
+      <div class="ss-tile edge-{{ quiet if plain else s.rh_edge }}">
         <div class="ss-tile-main"><span class="ss-tile-label">Humidity %</span><span class="ss-big">{{ '--' if roff else s.rh }}</span></div>
         <div class="ss-hilo"><span>H <b>{{ '--' if roff else s.rh_hi }}</b></span><span>L <b>{{ '--' if roff else s.rh_lo }}</b></span></div>
       </div>
-      <div class="ss-tile edge-{{ 'none' if plain else s.water_edge }}"{% if not roff and not plain %} data-water-tile="{{ s.shed_no }}"{% endif %}>
+      <div class="ss-tile edge-{{ quiet if plain else s.water_edge }}"{% if not roff and not plain %} data-water-tile="{{ s.shed_no }}"{% endif %}>
         <div class="ss-tile-main"><span class="ss-tile-label">Water now</span><span class="ss-mid">{% if roff %}--{% else %}<span data-water="{{ s.shed_no }}">{{ s.water }}</span> <small>L/min</small>{% endif %}</span></div>
       </div>
-      <div class="ss-tile edge-{{ 'none' if plain else s.bin_edge }} ss-tile-bin">
+      <div class="ss-tile edge-{{ quiet if plain else s.bin_edge }} ss-tile-bin">
         <div class="ss-tile-main"><span class="ss-tile-label">Feed bin{% if s.bin_pct is not none and not roff %} · {{ s.bin_pct }}%{% endif %}</span><span class="ss-mid">{% if roff %}--{% else %}{{ s.bin }} <small>kg</small>{% endif %}</span></div>
-        <div class="ss-bar">{% if s.bin_pct is not none and not roff %}<div class="ss-bar-fill edge-{{ 'none' if plain else s.bin_edge }}" style="width: {{ s.bin_pct }}%"></div>{% endif %}</div>
+        <div class="ss-bar">{% if s.bin_pct is not none and not roff %}<div class="ss-bar-fill edge-{{ 'warn' if plain else s.bin_edge }}" style="width: {{ s.bin_pct }}%"></div>{% endif %}</div>
       </div>
     </div>
     {% if s.readings and not s.live %}
@@ -8160,13 +8161,13 @@ OFFICE_HOME_HTML = """
   .ss-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
   .ss-card { background: #ffffff; border-radius: 16px; border: 1px solid var(--line); padding: 16px; display: flex; flex-direction: column; gap: 12px; box-shadow: inset 0 4px 0 var(--accent, var(--green)); min-width: 0; }
   .ss-card.kind-ok { --accent: var(--green); } .ss-card.kind-warn { --accent: var(--amber); } .ss-card.kind-alarm { --accent: var(--red); }
-  .ss-card.kind-offline, .ss-card.kind-empty { --accent: var(--grey); } .ss-card.kind-water { --accent: var(--blue); }
+  .ss-card.kind-offline { --accent: var(--grey); } .ss-card.kind-empty { --accent: var(--amber); } .ss-card.kind-water { --accent: var(--blue); }
   .ss-card-head { all: unset; display: flex; flex-direction: column; gap: 4px; cursor: default; }
   .ss-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .ss-name { font-size: 26px; font-weight: 700; color: var(--navy); white-space: nowrap; }
   .ss-status { margin-left: auto; padding: 4px 10px; border-radius: 999px; font-size: 13px; font-weight: 700; white-space: nowrap; }
   .ss-status.kind-ok { background: #e3f4e1; color: #1e6b16; } .ss-status.kind-warn { background: #fff0dc; color: #9a4b00; }
-  .ss-status.kind-alarm { background: #fdecec; color: #8f1f1f; } .ss-status.kind-offline, .ss-status.kind-empty { background: #eceff3; color: var(--muted); }
+  .ss-status.kind-alarm { background: #fdecec; color: #8f1f1f; } .ss-status.kind-offline { background: #eceff3; color: var(--muted); } .ss-status.kind-empty { background: #fff0dc; color: #9a4b00; }
   .ss-chevron { display: none; font-size: 22px; color: var(--muted); width: 18px; text-align: center; }
   .ss-pill { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 700; white-space: nowrap; flex-shrink: 0; }
   .ss-pill.sync-ok { background: #e3f4e1; color: #1e6b16; } .ss-pill.sync-bad { background: #fdecec; color: #8f1f1f; }
@@ -8369,7 +8370,7 @@ OFFICE_HOME_HTML = """
   body.tv .ss-tile.edge-none { border-color: #a3b3c4; }
   body.tv .ss-dot.dot-none { background: var(--grey); }
   body.tv .ss-card.kind-offline .ss-big, body.tv .ss-card.kind-offline .ss-mid,
-  body.tv .ss-card.kind-empty .ss-big, body.tv .ss-card.kind-empty .ss-mid { color: var(--grey); }
+  body.tv .ss-card.kind-offline .ss-big, body.tv .ss-card.kind-offline .ss-mid { color: var(--grey); }
   body.tv .ss-card-note { border-radius: 8px; padding: 5px 8px; background: #eceff3; color: var(--muted); font-size: 13px; font-weight: 600; }
   /* TV readability: a bigger header with the date beside the farm name, and larger,
      darker small print in the cards (they have the room). */
@@ -8476,7 +8477,7 @@ OFFICE_HOME_HTML = """
   body.tv .ss-alarms { padding: 6px 16px; }
   body.tv .ss-idle:not(.ss-idle-note) { font-size: 22px; }
   body.tv .ss-card.kind-offline .ss-big, body.tv .ss-card.kind-offline .ss-mid,
-  body.tv .ss-card.kind-empty .ss-big, body.tv .ss-card.kind-empty .ss-mid { color: #6b7d90; }
+  body.tv .ss-card.kind-offline .ss-big, body.tv .ss-card.kind-offline .ss-mid { color: #6b7d90; }
 </style>
 </head>
 <body class="{{ 'tv' if tv else '' }}{{ ' tv-pc' if pc else '' }}">
@@ -8957,7 +8958,7 @@ OFFICE_HOME_HTML = add_css_var_fallbacks(OFFICE_HOME_HTML.replace("</style>\n</h
   /* Card top colour for browsers without CSS variables (same as the --accent rules). */
   body.tv .ss-card.kind-ok { box-shadow: inset 0 6px 0 #2f9e3a; } body.tv .ss-card.kind-warn { box-shadow: inset 0 6px 0 #f08a12; }
   body.tv .ss-card.kind-alarm { box-shadow: inset 0 6px 0 #d64545; } body.tv .ss-card.kind-water { box-shadow: inset 0 6px 0 #1676b8; }
-  body.tv .ss-card.kind-offline, body.tv .ss-card.kind-empty { box-shadow: inset 0 6px 0 #9aa8b6; }
+  body.tv .ss-card.kind-offline { box-shadow: inset 0 6px 0 #9aa8b6; } body.tv .ss-card.kind-empty { box-shadow: inset 0 6px 0 #f08a12; }
 </style>
 </head>""", 1), OFFICE_TV_CSS_VALUES)
 
