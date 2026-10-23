@@ -7990,24 +7990,32 @@ OFFICE_CARDS_HTML = """
       {% if s.split %}<span class="ss-row"><span class="ss-split">{{ s.split }}</span></span>{% endif %}
     {% if tv and pc %}</a>{% elif tv %}</div>{% else %}</button>{% endif %}
 
-    {% if s.live or tv %}
+    {% if s.live or s.readings or tv %}
+    {# Readings show whenever the controller reports; out of crop they're shown plain
+       (no green / amber / red edges), since nothing is being judged or recorded. #}
+    {% set roff = not s.readings %}
+    {% set plain = not s.live %}
     <div class="ss-tiles">
-      <div class="ss-tile edge-{{ 'none' if off else s.temp_edge }}">
-        <div class="ss-tile-main"><span class="ss-tile-label">Temp °C</span><span class="ss-big">{{ '--' if off else s.temp }}</span></div>
-        <div class="ss-hilo"><span>H <b>{{ '--' if off else s.temp_hi }}</b></span><span>L <b>{{ '--' if off else s.temp_lo }}</b></span></div>
+      <div class="ss-tile edge-{{ 'none' if plain else s.temp_edge }}">
+        <div class="ss-tile-main"><span class="ss-tile-label">Temp °C</span><span class="ss-big">{{ '--' if roff else s.temp }}</span></div>
+        <div class="ss-hilo"><span>H <b>{{ '--' if roff else s.temp_hi }}</b></span><span>L <b>{{ '--' if roff else s.temp_lo }}</b></span></div>
       </div>
-      <div class="ss-tile edge-{{ 'none' if off else s.rh_edge }}">
-        <div class="ss-tile-main"><span class="ss-tile-label">Humidity %</span><span class="ss-big">{{ '--' if off else s.rh }}</span></div>
-        <div class="ss-hilo"><span>H <b>{{ '--' if off else s.rh_hi }}</b></span><span>L <b>{{ '--' if off else s.rh_lo }}</b></span></div>
+      <div class="ss-tile edge-{{ 'none' if plain else s.rh_edge }}">
+        <div class="ss-tile-main"><span class="ss-tile-label">Humidity %</span><span class="ss-big">{{ '--' if roff else s.rh }}</span></div>
+        <div class="ss-hilo"><span>H <b>{{ '--' if roff else s.rh_hi }}</b></span><span>L <b>{{ '--' if roff else s.rh_lo }}</b></span></div>
       </div>
-      <div class="ss-tile edge-{{ 'none' if off else s.water_edge }}"{% if not off %} data-water-tile="{{ s.shed_no }}"{% endif %}>
-        <div class="ss-tile-main"><span class="ss-tile-label">Water now</span><span class="ss-mid">{% if off %}--{% else %}<span data-water="{{ s.shed_no }}">{{ s.water }}</span> <small>L/min</small>{% endif %}</span></div>
+      <div class="ss-tile edge-{{ 'none' if plain else s.water_edge }}"{% if not roff and not plain %} data-water-tile="{{ s.shed_no }}"{% endif %}>
+        <div class="ss-tile-main"><span class="ss-tile-label">Water now</span><span class="ss-mid">{% if roff %}--{% else %}<span data-water="{{ s.shed_no }}">{{ s.water }}</span> <small>L/min</small>{% endif %}</span></div>
       </div>
-      <div class="ss-tile edge-{{ 'none' if off else s.bin_edge }} ss-tile-bin">
-        <div class="ss-tile-main"><span class="ss-tile-label">Feed bin{% if s.bin_pct is not none and not off %} · {{ s.bin_pct }}%{% endif %}</span><span class="ss-mid">{% if off %}--{% else %}{{ s.bin }} <small>kg</small>{% endif %}</span></div>
-        <div class="ss-bar">{% if s.bin_pct is not none and not off %}<div class="ss-bar-fill edge-{{ s.bin_edge }}" style="width: {{ s.bin_pct }}%"></div>{% endif %}</div>
+      <div class="ss-tile edge-{{ 'none' if plain else s.bin_edge }} ss-tile-bin">
+        <div class="ss-tile-main"><span class="ss-tile-label">Feed bin{% if s.bin_pct is not none and not roff %} · {{ s.bin_pct }}%{% endif %}</span><span class="ss-mid">{% if roff %}--{% else %}{{ s.bin }} <small>kg</small>{% endif %}</span></div>
+        <div class="ss-bar">{% if s.bin_pct is not none and not roff %}<div class="ss-bar-fill edge-{{ 'none' if plain else s.bin_edge }}" style="width: {{ s.bin_pct }}%"></div>{% endif %}</div>
       </div>
     </div>
+    {% if s.readings and not s.live %}
+    <div class="ss-idle ss-idle-note">{{ s.idle_text }}</div>
+    <div class="ss-foot"><span>Updated {{ s.updated }}</span>{% if not tv %}<a href="{{ url_for('shed_detail', shed_no=s.shed_no) }}">Open shed</a>{% endif %}</div>
+    {% else %}
     {% if s.has_alarm %}<div class="ss-card-alarm">{{ s.alarm }}</div>{% endif %}
 
     <div class="ss-more">
@@ -8024,6 +8032,7 @@ OFFICE_CARDS_HTML = """
         {% if not tv %}<a href="{{ url_for('shed_detail', shed_no=s.shed_no) }}">Open shed</a>{% endif %}
       </div>
     </div>
+    {% endif %}
     {% else %}
     <div class="ss-idle">{{ s.idle_text }}</div>
     <div class="ss-foot"><span>Updated {{ s.updated }}</span>{% if not tv %}<a href="{{ url_for('shed_detail', shed_no=s.shed_no) }}">Open shed</a>{% endif %}</div>
@@ -8246,6 +8255,7 @@ OFFICE_HOME_HTML = """
   .ss-foot { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; color: var(--muted); margin-top: auto; }
   .ss-foot a { font-weight: 600; }
   .ss-idle { border-radius: 12px; background: var(--soft-bg); padding: 16px; font-size: 15px; color: #31475e; line-height: 1.4; }
+  .ss-idle.ss-idle-note { padding: 10px 14px; font-size: 14px; }
 
   /* Bore hole */
   .ss-borehole { background: #ffffff; border-radius: 16px; border: 1px solid var(--line); box-shadow: inset 0 4px 0 var(--blue); padding: 16px 20px; display: flex; align-items: center; gap: 14px 28px; flex-wrap: wrap; }
@@ -8340,6 +8350,7 @@ OFFICE_HOME_HTML = """
   body.tv .ss-card-alarm { padding: 5px 8px; font-size: 13px; }
   body.tv .ss-foot { font-size: 11px; }
   body.tv .ss-idle { font-size: 17px; margin: auto 0; }
+  body.tv .ss-idle.ss-idle-note { margin: 0; padding: 8px 12px; font-size: 15px; }
   body.tv { --bg: #b4c2d1; --soft-bg: #e6ecf3; --line: #7f93a9; --rule: #b9c6d4; --muted: #3c5167; }
   body.tv .ss-header { border-bottom: 3px solid #7f93a9; }
   body.tv .ss-sum, body.tv .ss-card { border: 2px solid #7f93a9; }
@@ -8463,7 +8474,7 @@ OFFICE_HOME_HTML = """
   body.tv #ssCards { gap: 10px; }
   body.tv .ss-sum { padding: 6px 14px; }
   body.tv .ss-alarms { padding: 6px 16px; }
-  body.tv .ss-idle { font-size: 22px; }
+  body.tv .ss-idle:not(.ss-idle-note) { font-size: 22px; }
   body.tv .ss-card.kind-offline .ss-big, body.tv .ss-card.kind-offline .ss-mid,
   body.tv .ss-card.kind-empty .ss-big, body.tv .ss-card.kind-empty .ss-mid { color: #6b7d90; }
 </style>
@@ -12355,7 +12366,9 @@ def shed_split_text(state, shed_no):
 
 def office_home_shed(row, meta, split=""):
     meta = meta if isinstance(meta, dict) else {}
-    online = row.get("card_state") == "online"
+    # The controller counts as reporting whether or not there are birds in, so an empty
+    # shed shows "Empty" with its live readings, not "Not syncing".
+    online = row.get("card_state") == "online" or row.get("tile_state") == "online"
     active = bool(row.get("has_active_entry"))
     temp_edge = _edge_kind(row.get("temp_glow"))
     rh_edge = _edge_kind(row.get("rh_glow"))
@@ -12416,7 +12429,7 @@ def office_home_shed(row, meta, split=""):
         else:
             idle_text = "No update from the shed since %s. Check the shed Pi and its network cable." % row.get("updated")
     elif kind == "empty":
-        idle_text = "No active crop in this shed. Readings resume when birds are placed."
+        idle_text = "No crop: live readings only. Nothing is recorded until birds are placed."
 
     return {
         "shed_no": row.get("shed_no"),
@@ -12433,6 +12446,9 @@ def office_home_shed(row, meta, split=""):
         "alloc": row.get("allocation_text", ""),
         "split": split,
         "live": kind not in ["offline", "empty"],
+        # Live temperature, humidity, water flow and bin weight show whenever the
+        # controller is reporting, crop or not.
+        "readings": kind != "offline",
         "idle_text": idle_text,
         "temp": row.get("temp_c", "--"), "temp_hi": row.get("temp_hi", "--"), "temp_lo": row.get("temp_lo", "--"), "temp_edge": temp_edge,
         "rh": row.get("rh_pct", "--"), "rh_hi": row.get("rh_hi", "--"), "rh_lo": row.get("rh_lo", "--"), "rh_edge": rh_edge,
