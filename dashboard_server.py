@@ -8177,7 +8177,8 @@ OFFICE_HOME_HTML = """
   .ss-tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .ss-tile { border-radius: 12px; padding: 10px 12px; background: var(--soft-bg); border: 2px solid var(--green); display: flex; align-items: center; gap: 8px; min-width: 0; }
   .ss-tile.edge-warn { border-color: var(--amber); } .ss-tile.edge-alarm { border-color: var(--red); }
-  .ss-tile-bin { flex-direction: column; align-items: stretch; gap: 4px; }
+  /* The bin tile stacks its figure over the fill bar, centred top to bottom like the others. */
+  .ss-tile-bin { flex-direction: column; align-items: stretch; justify-content: center; gap: 4px; }
   .ss-tile-main { display: flex; flex-direction: column; min-width: 0; }
   .ss-tile-label { font-size: 13px; color: var(--muted); }
   .ss-big { font-size: 32px; font-weight: 700; line-height: 1; }
