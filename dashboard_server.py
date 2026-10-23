@@ -12573,8 +12573,9 @@ def office_home_context(tv=False):
     summary = [
         {"label": "Birds on farm", "value": "%s (%s)" % (overall.get("birds_placed", "--"), overall.get("birds_remaining", "--")), "sub": "Placed (live) · %d shed%s" % (active_sheds, "" if active_sheds == 1 else "s"), "tone": "navy"},
         {"label": "Crop day", "value": crop_day, "sub": overall.get("farm_crop_id", "--"), "tone": "navy"},
-        {"label": "Water this crop", "value": _with_unit(overall.get("water"), "L"), "sub": "Crop to date", "tone": "blue"},
-        {"label": "Feed this crop", "value": _with_unit(overall.get("feed"), "kg"), "sub": "Crop to date", "tone": "green"},
+        # Out of crop (no birds anywhere) these blank off like birds, crop day and mortality.
+        {"label": "Water this crop", "value": _with_unit(overall.get("water"), "L") if ages else "--", "sub": "Crop to date", "tone": "blue"},
+        {"label": "Feed this crop", "value": _with_unit(overall.get("feed"), "kg") if ages else "--", "sub": "Crop to date", "tone": "green"},
         {"label": "Mortality", "value": overall.get("mortality_display", "--"), "sub": "This crop", "tone": "navy"},
         {"label": "Need a look", "value": str(len(alarms)), "sub": "Alarms and warnings", "tone": "amber" if alarms else "navy", "href": "/alarms"},
     ]

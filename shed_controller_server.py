@@ -6823,11 +6823,12 @@ OVERVIEW_HTML = """
             background: var(--card-2); overflow: hidden; box-shadow: 6px 8px 0 rgba(0,0,0,0.3); display: block; color: var(--text); text-decoration: none;
         }
         .bin-fill { position: absolute; left: 0; right: 0; bottom: 0; background: rgba(217,184,106,0.38); transition: height 0.6s; }
-        .bin-cap { position: absolute; left: 50%; top: 30%; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: var(--steel); }
-        .bin-readout { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; padding-bottom: 14px; line-height: 1.05; }
-        .bin-kg { font-size: 22px; font-weight: 600; }
-        .bin-kg-unit { font-size: 14px; font-weight: 500; margin-left: 2px; }
-        .bin-pct { font-size: 17px; font-weight: 600; color: var(--soft); }
+        /* The bin's figures fill the circle: the cap sits near the top, kg and % below it. */
+        .bin-cap { position: absolute; left: 50%; top: 15%; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: var(--steel); }
+        .bin-readout { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding-top: 14px; line-height: 1; }
+        .bin-kg { font-size: 31px; font-weight: 700; white-space: nowrap; letter-spacing: -0.01em; }
+        .bin-kg-unit { font-size: 16px; font-weight: 600; margin-left: 2px; }
+        .bin-pct { margin-top: 3px; font-size: 23px; font-weight: 700; color: var(--soft); }
         .bin-label-sub { font-size: 14px; color: var(--muted); }
         .bin-label { width: 124px; text-align: center; }
         .bin-label-name { font-size: 16px; font-weight: 600; }
